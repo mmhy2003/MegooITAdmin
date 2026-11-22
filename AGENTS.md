@@ -47,7 +47,8 @@ this file says what each one means here. [docs/releasing.md](docs/releasing.md) 
 
 Run these before any merge:
 
-- **Backend** (`backend/`): `megoocolab-runner services run test -- uv run pytest`.
+- **Backend** (`backend/`): `megoocolab-runner services run test -- uv run pytest`, then the container start-up
+  tests: `megoocolab-runner services run image -- uv run pytest -m docker`.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`.
 - **Security suites**: `make test-security`. It runs the secret-leak, approval-bypass and audit-coverage suites
   against the fake-server fixture.
