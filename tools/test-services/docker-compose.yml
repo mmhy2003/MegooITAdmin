@@ -1,0 +1,16 @@
+# Test services for megoocolab-runner (see megoocolab.toml). The credentials are throwaway test values.
+services:
+  db:
+    image: timescale/timescaledb-ha:pg18
+    environment:
+      POSTGRES_USER: megooitadmin
+      POSTGRES_PASSWORD: megooitadmin
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "127.0.0.1:${DB_PORT}:5432"
+    healthcheck:
+      # TCP, not the socket: on first start the image's temporary server listens only on its socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U megooitadmin -d ${DB_NAME}"]
+      interval: 2s
+      timeout: 5s
+      retries: 60

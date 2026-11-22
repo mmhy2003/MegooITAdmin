@@ -47,7 +47,8 @@ this file says what each one means here. [docs/releasing.md](docs/releasing.md) 
 
 Run these before any merge:
 
-- **Backend** (`backend/`): `uv run pytest`.
+- **Backend** (`backend/`): `megoocolab-runner services run test -- uv run pytest`, then the container start-up
+  tests: `megoocolab-runner services run image -- uv run pytest -m docker`.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`.
 - **Security suites**: `make test-security`. It runs the secret-leak, approval-bypass and audit-coverage suites
   against the fake-server fixture.
@@ -59,17 +60,21 @@ Never report a skipped check as passed.
 
 ## Migrations
 
-- Alembic revisions are numbered, not hashed: `0001_initial.py`, `0002_add_users.py`. Create each one with the
-  next number: `alembic revision --autogenerate --rev-id 0002 -m "add users"`.
+- Alembic revisions are numbered, not hashed: `0001_initial.py`, `0002_add_users.py`.
 - Generate and try migrations only on the scratch database `megooitadmin_migrate`, never on the dev database and
-  never inside a running container.
-- Before committing, check on the scratch database that the migration goes down and up again:
-  `uv run alembic downgrade -1`, then `uv run alembic upgrade head`.
+  never inside a running container. The `migrate` service set starts that database, empty, in this worktree's own
+  container, and removes it when the command ends. Run these from `backend/`.
+- Create each migration with the next number:
+  `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic revision --autogenerate --rev-id 0002 -m "add users"'`
+- Before committing, check that the migration goes down and up again:
+  `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head'`
 
 ## Safety
 
-- Docker: use only the `megooitadmin-dev` and `megooitadmin-e2e` Compose projects. Never stop, remove or change
-  any other container. A `megooitadmin` project and its `megooitadmin-*` containers are the owner's real instance.
+- Docker: start containers for checks only with `megoocolab-runner services run`. It gives this worktree its own
+  `megoo-…` containers and removes them when the command ends. Apart from those, use only the `megooitadmin-dev`
+  and `megooitadmin-e2e` Compose projects. Never stop, remove or change any other container. A `megooitadmin`
+  project and its `megooitadmin-*` containers are the owner's real instance.
 - Never read files that hold credentials or secrets (`.env` files, tokens, keys).
 - Never connect to a managed server. Use the fake-server fixture (containers with sshd) instead.
 - You have no access to production. Don't try to reach it.

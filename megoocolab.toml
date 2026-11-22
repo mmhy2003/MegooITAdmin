@@ -1,0 +1,29 @@
+[services.test]
+description = "PostgreSQL with TimescaleDB and pgvector for backend pytest"
+compose = ["tools/test-services/docker-compose.yml"]
+ports = ["DB_PORT"]
+
+[services.test.env]
+DB_NAME = "megooitadmin_test"
+TEST_DATABASE_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin_test"
+
+[services.migrate]
+description = "The empty scratch database megooitadmin_migrate, for generating and trying migrations"
+compose = ["tools/test-services/docker-compose.yml"]
+ports = ["DB_PORT"]
+
+[services.migrate.env]
+DB_NAME = "megooitadmin_migrate"
+DATABASE_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin_migrate"
+
+[services.image]
+description = "The backend image built from this checkout, started with its own database, for pytest -m docker"
+compose = ["tools/test-services/docker-compose.yml", "tools/test-services/docker-compose.image.yml"]
+ports = ["DB_PORT", "API_PORT"]
+
+[services.image.env]
+DB_NAME = "megooitadmin"
+BACKEND_IMAGE = "megooitadmin-backend:${MEGOO_SERVICES_PROJECT}"
+BACKEND_NETWORK = "${MEGOO_SERVICES_PROJECT}_default"
+BACKEND_URL = "http://localhost:${API_PORT}"
+IMAGE_DATABASE_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin"
