@@ -59,12 +59,14 @@ Never report a skipped check as passed.
 
 ## Migrations
 
-- Alembic revisions are numbered, not hashed: `0001_initial.py`, `0002_add_users.py`. Create each one with the
-  next number: `alembic revision --autogenerate --rev-id 0002 -m "add users"`.
+- Alembic revisions are numbered, not hashed: `0001_initial.py`, `0002_add_users.py`.
 - Generate and try migrations only on the scratch database `megooitadmin_migrate`, never on the dev database and
-  never inside a running container.
-- Before committing, check on the scratch database that the migration goes down and up again:
-  `uv run alembic downgrade -1`, then `uv run alembic upgrade head`.
+  never inside a running container. The `migrate` service set starts that database, empty, in this worktree's own
+  container, and removes it when the command ends. Run these from `backend/`.
+- Create each migration with the next number:
+  `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic revision --autogenerate --rev-id 0002 -m "add users"'`
+- Before committing, check that the migration goes down and up again:
+  `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head'`
 
 ## Safety
 
