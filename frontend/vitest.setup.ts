@@ -1,0 +1,32 @@
+import "@testing-library/jest-dom/vitest";
+import { cleanup } from "@testing-library/react";
+import { createElement, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import { afterEach, beforeEach, vi } from "vitest";
+import { mockMatchMedia } from "./src/__tests__/helpers/match-media";
+
+// next/link needs the app router; in jsdom it is a plain <a> that does not navigate.
+vi.mock("next/link", () => ({
+  default: ({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) =>
+    createElement("a", { href, ...rest, onClick: (e: MouseEvent<HTMLAnchorElement>) => { onClick?.(e); e.preventDefault(); } }),
+}));
+// Tests set the route with vi.mocked(usePathname).mockReturnValue(...).
+vi.mock("next/navigation", () => ({ usePathname: vi.fn(() => "/"), notFound: vi.fn() }));
+
+beforeEach(() => {
+  mockMatchMedia();
+  localStorage.clear();
+  delete document.documentElement.dataset.theme;
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+
+// jsdom has no ResizeObserver or pointer capture; Radix popups use them.
+if (!("ResizeObserver" in globalThis)) {
+  globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+}
+Element.prototype.hasPointerCapture ??= () => false;
+Element.prototype.releasePointerCapture ??= () => {};
+Element.prototype.scrollIntoView ??= () => {};
