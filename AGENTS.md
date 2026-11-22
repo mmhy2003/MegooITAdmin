@@ -47,7 +47,7 @@ this file says what each one means here. [docs/releasing.md](docs/releasing.md) 
 
 Run these before any merge:
 
-- **Backend** (`backend/`): `uv run pytest`.
+- **Backend** (`backend/`): `megoocolab-runner services run test -- uv run pytest`.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`.
 - **Security suites**: `make test-security`. It runs the secret-leak, approval-bypass and audit-coverage suites
   against the fake-server fixture.
@@ -68,8 +68,10 @@ Never report a skipped check as passed.
 
 ## Safety
 
-- Docker: use only the `megooitadmin-dev` and `megooitadmin-e2e` Compose projects. Never stop, remove or change
-  any other container. A `megooitadmin` project and its `megooitadmin-*` containers are the owner's real instance.
+- Docker: start containers for checks only with `megoocolab-runner services run`. It gives this worktree its own
+  `megoo-…` containers and removes them when the command ends. Apart from those, use only the `megooitadmin-dev`
+  and `megooitadmin-e2e` Compose projects. Never stop, remove or change any other container. A `megooitadmin`
+  project and its `megooitadmin-*` containers are the owner's real instance.
 - Never read files that hold credentials or secrets (`.env` files, tokens, keys).
 - Never connect to a managed server. Use the fake-server fixture (containers with sshd) instead.
 - You have no access to production. Don't try to reach it.
