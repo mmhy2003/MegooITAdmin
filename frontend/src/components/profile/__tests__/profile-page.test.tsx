@@ -14,6 +14,8 @@ const ME: Me = {
   recovery_codes_left: 10,
 };
 
+const ENROLMENT = { secret: "ABCDEFGHIJKLMNOP", uri: "otpauth://totp/x?secret=ABCDEFGHIJKLMNOP" };
+
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
 });
@@ -51,6 +53,53 @@ describe("ProfilePage", () => {
     render(<ProfilePage />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The server is not answering. Try again in a moment.");
+  });
+
+  it("shows when the authenticator was added and how many recovery codes are left", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ ...ME, recovery_codes_left: 3 });
+    render(<ProfilePage />);
+
+    expect(await screen.findByText("3 of 10 recovery codes left")).toBeInTheDocument();
+    expect(screen.getByText(`Authenticator app added ${formatTime("2026-11-20T09:31:00Z")}`)).toBeInTheDocument();
+  });
+
+  it("opens the authenticator and the recovery codes dialogs", async () => {
+    mockApi();
+    render(<ProfilePage />);
+    await screen.findByText("Ada Owner");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Replace authenticator" }));
+    expect(screen.getByRole("dialog", { name: "Replace authenticator" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "New recovery codes" }));
+    expect(screen.getByRole("dialog", { name: "New recovery codes" })).toBeInTheDocument();
+  });
+
+  it("shows the notice and loads the profile again after the authenticator is replaced", async () => {
+    vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+      if (path === "/auth/me") return ME;
+      if (path === "/auth/mfa/enrol") return ENROLMENT;
+      if (path === "/auth/mfa/enrol/confirm") return { recovery_codes: null };
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<ProfilePage />);
+    await screen.findByText("Ada Owner");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Replace authenticator" }));
+    await user.type(screen.getByLabelText("Code"), "123456");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.type(await screen.findByLabelText("Code"), "654321");
+    await user.click(screen.getByRole("button", { name: "Verify" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Authenticator replaced. Your other sessions were signed out.",
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(vi.mocked(apiFetch).mock.calls.filter(([path]) => path === "/auth/me")).toHaveLength(2);
   });
 
   it("opens the password dialog", async () => {

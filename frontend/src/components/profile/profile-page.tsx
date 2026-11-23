@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { AuthenticatorDialog } from "@/components/profile/authenticator-dialog";
 import { PasswordDialog } from "@/components/profile/password-dialog";
+import { RecoveryCodesDialog } from "@/components/profile/recovery-codes-dialog";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,12 +27,14 @@ export function formatTime(iso: string): string {
   return TIME_FORMAT.format(new Date(iso));
 }
 
-/** The Profile and security page: the account and its password. */
+/** The Profile and security page: the account, its password and its second factor. */
 export function ProfilePage() {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [authenticatorOpen, setAuthenticatorOpen] = useState(false);
+  const [codesOpen, setCodesOpen] = useState(false);
 
   const reload = useCallback(
     () =>
@@ -51,6 +55,12 @@ export function ProfilePage() {
   function passwordChanged() {
     setPasswordOpen(false);
     setNotice("Password changed. Your other sessions were signed out.");
+    void reload();
+  }
+
+  function authenticatorReplaced() {
+    setAuthenticatorOpen(false);
+    setNotice("Authenticator replaced. Your other sessions were signed out.");
     void reload();
   }
 
@@ -87,9 +97,36 @@ export function ProfilePage() {
               </Button>
             </CardContent>
           </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                <h2>Two-step verification</h2>
+              </CardTitle>
+              {me.totp_confirmed_at && (
+                <CardDescription>Authenticator app added {formatTime(me.totp_confirmed_at)}</CardDescription>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm">{me.recovery_codes_left} of 10 recovery codes left</p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => setAuthenticatorOpen(true)}>
+                  Replace authenticator
+                </Button>
+                <Button variant="outline" onClick={() => setCodesOpen(true)}>
+                  New recovery codes
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
       <PasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} onChanged={passwordChanged} />
+      <AuthenticatorDialog
+        open={authenticatorOpen}
+        onOpenChange={setAuthenticatorOpen}
+        onReplaced={authenticatorReplaced}
+      />
+      <RecoveryCodesDialog open={codesOpen} onOpenChange={setCodesOpen} onCreated={() => void reload()} />
     </div>
   );
 }
