@@ -9,6 +9,7 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { type GrantOut, PERMISSION_LABELS, PERMISSIONS, ROLE_LABELS } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { SessionUser } from "@/lib/auth/gate";
 import { messageFor } from "@/lib/auth/messages";
@@ -19,6 +20,7 @@ export type Me = {
   password_changed_at: string;
   totp_confirmed_at: string | null;
   recovery_codes_left: number;
+  grants: GrantOut[];
 };
 
 const TIME_FORMAT = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" });
@@ -26,6 +28,38 @@ const TIME_FORMAT = new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", time
 /** A time from the API, for people. */
 export function formatTime(iso: string): string {
   return TIME_FORMAT.format(new Date(iso));
+}
+
+/** The labels of the switches `grant` has on, or "No grants". */
+function switchesOn(grant: GrantOut): string {
+  const on = PERMISSIONS.filter((p) => grant[p]).map((p) => PERMISSION_LABELS[p]);
+  return on.length > 0 ? on.join(", ") : "No grants";
+}
+
+/** What a person may do: their platform role, or their role and switches in each group. */
+function AccessList({ me }: { me: Me }) {
+  const role = me.user.platform_role;
+  if (role === "owner" || role === "auditor") {
+    return (
+      <div className="flex items-center gap-2 text-sm">
+        <Badge>{ROLE_LABELS[role]}</Badge>
+        <span>{role === "owner" ? "Runs the platform." : "Reads every group. Holds none of the grants."}</span>
+      </div>
+    );
+  }
+  if (me.grants.length === 0) {
+    return <p className="text-sm text-muted-foreground">No access yet. Ask the Owner of this installation.</p>;
+  }
+  return (
+    <ul className="space-y-2 text-sm">
+      {me.grants.map((g) => (
+        <li key={g.group_id}>
+          <p className="font-medium">{`${ROLE_LABELS[g.role]} in ${g.group_name}`}</p>
+          <p className="text-muted-foreground">{switchesOn(g)}</p>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 /** The Profile and security page: the account, its password and its second factor. */
@@ -77,12 +111,15 @@ export function ProfilePage() {
                 <h2>Account</h2>
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{me.user.name}</span>
-                {me.user.platform_role === "owner" && <Badge>Owner</Badge>}
+            <CardContent className="space-y-4">
+              <div className="space-y-1">
+                <p className="font-medium">{me.user.name}</p>
+                <p className="text-sm text-muted-foreground">{me.user.email}</p>
               </div>
-              <p className="text-sm text-muted-foreground">{me.user.email}</p>
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold">Access</h3>
+                <AccessList me={me} />
+              </div>
             </CardContent>
           </Card>
           <Card>

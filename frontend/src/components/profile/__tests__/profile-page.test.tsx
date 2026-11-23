@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatTime, ProfilePage, type Me } from "@/components/profile/profile-page";
+import type { GrantOut } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
@@ -12,6 +13,20 @@ const ME: Me = {
   password_changed_at: "2026-11-20T09:30:00Z",
   totp_confirmed_at: "2026-11-20T09:31:00Z",
   recovery_codes_left: 10,
+  grants: [],
+};
+
+const STAGING_ADMIN: GrantOut = {
+  group_id: "g1",
+  group_name: "staging",
+  role: "admin",
+  connect_ssh: true,
+  connect_rdp: false,
+  view_logs: true,
+  view_processes: false,
+  manage_processes: false,
+  run_playbooks: false,
+  manage_playbooks: false,
 };
 
 const ENROLMENT = { secret: "ABCDEFGHIJKLMNOP", uri: "otpauth://totp/x?secret=ABCDEFGHIJKLMNOP" };
@@ -42,19 +57,47 @@ describe("ProfilePage", () => {
     expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
   });
 
-  it("shows no Owner badge for someone else", async () => {
-    mockApi(undefined, { ...ME, user: { ...ME.user, platform_role: null } });
+  it("shows that the Owner runs the platform", async () => {
+    mockApi();
     render(<ProfilePage />);
 
-    expect(await screen.findByText("Ada Owner")).toBeInTheDocument();
-    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Access" })).toBeInTheDocument();
+    expect(screen.getByText("Runs the platform.")).toBeInTheDocument();
   });
 
-  it("shows no Owner badge for an Auditor", async () => {
+  it("shows that an Auditor reads every group and holds no grants", async () => {
     mockApi(undefined, { ...ME, user: { ...ME.user, platform_role: "auditor" } });
     render(<ProfilePage />);
 
-    expect(await screen.findByText("Ada Owner")).toBeInTheDocument();
+    expect(await screen.findByText("Auditor")).toBeInTheDocument();
+    expect(screen.getByText("Reads every group. Holds none of the grants.")).toBeInTheDocument();
+    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
+  });
+
+  it("lists each group's role and the switches that are on", async () => {
+    const operator: GrantOut = {
+      ...STAGING_ADMIN,
+      group_id: "g2",
+      group_name: "production",
+      role: "operator",
+      connect_ssh: false,
+      view_logs: false,
+    };
+    mockApi(undefined, { ...ME, user: { ...ME.user, platform_role: null }, grants: [STAGING_ADMIN, operator] });
+    render(<ProfilePage />);
+
+    expect(await screen.findByText("Admin in staging")).toBeInTheDocument();
+    expect(screen.getByText("Connect SSH, View logs")).toBeInTheDocument();
+    expect(screen.getByText("Operator in production")).toBeInTheDocument();
+    expect(screen.getByText("No grants")).toBeInTheDocument();
+    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
+  });
+
+  it("says a person with no access to ask the Owner", async () => {
+    mockApi(undefined, { ...ME, user: { ...ME.user, platform_role: null } });
+    render(<ProfilePage />);
+
+    expect(await screen.findByText("No access yet. Ask the Owner of this installation.")).toBeInTheDocument();
     expect(screen.queryByText("Owner")).not.toBeInTheDocument();
   });
 
