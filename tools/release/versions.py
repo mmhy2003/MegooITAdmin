@@ -2,6 +2,7 @@
 
     python tools/release/versions.py check    every version file agrees with VERSION
     python tools/release/versions.py guard    a product that changed since its last tag carries a higher version
+    python tools/release/versions.py plan     whether this version needs a release (key=value lines, for $GITHUB_OUTPUT)
 
 One product: MegooITAdmin, whose version is `VERSION`, kept equal in every Python package's pyproject.toml and
 uv.lock and in the frontend's package.json and package-lock.json. A release is tagged vX.Y.Z.
@@ -22,6 +23,7 @@ from pathlib import Path
 RELEASE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 TAG = "v"
 VERSION_FILE = "VERSION"
+NOTES = "docs/releases"
 # where the Python packages are: each of these directories that holds a pyproject.toml, with its uv.lock beside it
 PACKAGES = ["backend", "workers/*", "gateway", "executor"]
 # the uv.lock entry of the package itself, not of a dependency
@@ -167,9 +169,26 @@ def guard(root: Path) -> list[str]:
     return []
 
 
+def plan(root: Path) -> tuple[dict[str, str], list[str]]:
+    """Whether VERSION needs a release (no tag vVERSION yet), and the errors that stop it."""
+    errors = check(root)
+    errors += [e for e in guard(root) if e not in errors]
+    try:
+        version = _version(root)
+    except Problem:
+        return {}, errors
+    release = not _git(root, "tag", "--list", f"{TAG}{version}").strip()
+    if release and parse(version):
+        note = f"{NOTES}/{TAG}{version}.md"
+        if not _git(root, "ls-files", "--", note).strip():  # the index: a staged note counts, one only on disk not
+            errors.append(f"{note} is missing (or not added to git): every release needs its release note")
+    return {"release": "true" if release else "false", "version": version}, errors
+
+
 COMMANDS = {
     "check": lambda root: ({}, check(root)),
     "guard": lambda root: ({}, guard(root)),
+    "plan": plan,
 }
 
 

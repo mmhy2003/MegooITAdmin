@@ -330,3 +330,70 @@ def test_cli_guard(repo):
     change(repo, "backend/app/main.py")
     result = run(repo, "guard")
     assert (result.returncode, result.stdout, result.stderr) == (1, "", product_changed("backend/app/main.py") + "\n")
+
+
+NOTE_MISSING = "docs/releases/v0.1.0.md is missing (or not added to git): every release needs its release note"
+
+
+def test_plan_before_any_release(repo):
+    assert versions.plan(repo) == ({"release": "true", "version": "0.1.0"}, [])
+
+
+def test_plan_without_the_release_note_fails(repo):
+    git(repo, "rm", "-q", "docs/releases/v0.1.0.md")
+    commit(repo, "remove the note")
+    assert versions.plan(repo)[1] == [NOTE_MISSING]
+
+
+def test_a_note_only_on_disk_does_not_count(repo):
+    git(repo, "rm", "-q", "--cached", "docs/releases/v0.1.0.md")
+    assert (repo / "docs" / "releases" / "v0.1.0.md").is_file()
+    assert versions.plan(repo)[1] == [NOTE_MISSING]
+
+
+def test_a_staged_note_counts(repo):
+    tag(repo, "v0.1.0")
+    set_version(repo, "0.2.0")
+    (repo / "docs" / "releases" / "v0.2.0.md").write_text("MegooITAdmin 0.2.0.\n")
+    git(repo, "add", "docs/releases/v0.2.0.md")
+    assert versions.plan(repo) == ({"release": "true", "version": "0.2.0"}, [])
+
+
+def test_a_tagged_version_without_product_change_releases_nothing(repo):
+    tag(repo, "v0.1.0")
+    change(repo, "docs/notes.md")
+    assert versions.plan(repo) == ({"release": "false", "version": "0.1.0"}, [])
+
+
+def test_a_tagged_version_with_product_change_fails(repo):
+    tag(repo, "v0.1.0")
+    change(repo, "backend/app/main.py")
+    assert product_changed("backend/app/main.py") in versions.plan(repo)[1]
+
+
+def test_a_check_error_fails_the_plan(repo):
+    write_frontend(repo, package="0.2.0")
+    assert "frontend/package.json says 0.2.0, VERSION says 0.1.0: they must be equal" in versions.plan(repo)[1]
+
+
+def test_plan_reports_a_bad_version_once(repo):
+    (repo / "VERSION").write_text("dev\n")
+    assert versions.plan(repo)[1].count(_not_release("dev")) == 1
+
+
+def test_cli_plan_prints_two_lines(repo):
+    result = run(repo, "plan")
+    assert (result.returncode, result.stdout, result.stderr) == (0, "release=true\nversion=0.1.0\n", "")
+    tag(repo, "v0.1.0")
+    change(repo, "docs/notes.md")
+    result = run(repo, "plan")
+    assert (result.returncode, result.stdout, result.stderr) == (0, "release=false\nversion=0.1.0\n", "")
+
+
+def test_cli_plan_failing_prints_nothing_on_stdout(repo):
+    git(repo, "rm", "-q", "docs/releases/v0.1.0.md")
+    commit(repo, "remove the note")
+    result = run(repo, "plan")
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert NOTE_MISSING in result.stderr
