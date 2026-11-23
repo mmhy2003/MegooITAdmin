@@ -1,0 +1,161 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { formatTime } from "@/components/profile/profile-page";
+import { UsersPage } from "@/components/settings/users-page";
+import { apiFetch } from "@/lib/api";
+import { type InviteLink, type ServerGroup, switchesFor, type UserRow } from "@/lib/access";
+
+vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
+vi.mock("@/lib/auth/navigate");
+
+const GROUPS: ServerGroup[] = [
+  { id: "g-production", name: "production", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 1 },
+  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 1 },
+];
+
+const OWNER: UserRow = {
+  id: "u-owner",
+  name: "Olive Owner",
+  email: "owner@example.com",
+  platform_role: "owner",
+  status: "active",
+  mfa_enrolled: true,
+  invite_expires_at: null,
+  grants: [],
+};
+
+const ADA: UserRow = {
+  id: "u-ada",
+  name: "Ada Admin",
+  email: "ada@example.com",
+  platform_role: null,
+  status: "active",
+  mfa_enrolled: true,
+  invite_expires_at: null,
+  grants: [
+    { group_id: "g-production", group_name: "production", role: "operator", ...switchesFor("operator") },
+    { group_id: "g-staging", group_name: "staging", role: "admin", ...switchesFor("admin") },
+  ],
+};
+
+const BEN: UserRow = {
+  id: "u-ben",
+  name: "Ben Invited",
+  email: "ben@example.com",
+  platform_role: "auditor",
+  status: "invited",
+  mfa_enrolled: false,
+  invite_expires_at: "2026-12-01T10:00:00Z",
+  grants: [],
+};
+
+const CY: UserRow = {
+  id: "u-cy",
+  name: "Cy Disabled",
+  email: "cy@example.com",
+  platform_role: null,
+  status: "disabled",
+  mfa_enrolled: false,
+  invite_expires_at: null,
+  grants: [],
+};
+
+const LINK: InviteLink = { user_id: "u-new", token: "tok-new", expires_at: "2026-12-02T10:00:00Z" };
+
+beforeEach(() => {
+  vi.mocked(apiFetch).mockReset();
+});
+
+function mockApi() {
+  vi.mocked(apiFetch).mockImplementation(async (path: string, init?: { method?: string }) => {
+    if (path === "/users" && init?.method === "POST") return LINK;
+    if (path === "/users") return [ADA, BEN, CY, OWNER];
+    if (path === "/server-groups") return GROUPS;
+    throw new Error(`unexpected ${path}`);
+  });
+}
+
+function rowOf(name: string) {
+  return screen.getByRole("row", { name: new RegExp(name) });
+}
+
+async function menuItemsOf(name: string) {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: `Actions for ${name}` }));
+  const items = (await screen.findAllByRole("menuitem")).map((item) => item.textContent);
+  await user.keyboard("{Escape}");
+  return items;
+}
+
+describe("UsersPage", () => {
+  it("lists each person with their access, status and two-step verification", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    expect(await screen.findByRole("heading", { name: "People" })).toBeInTheDocument();
+    const ada = within(await screen.findByRole("row", { name: /Ada Admin/ }));
+    expect(ada.getByText("ada@example.com")).toBeInTheDocument();
+    expect(ada.getByText("Operator · production")).toBeInTheDocument();
+    expect(ada.getByText("Admin · staging")).toBeInTheDocument();
+    expect(ada.getByText("Active")).toBeInTheDocument();
+    expect(ada.getByText("On")).toBeInTheDocument();
+
+    const ben = within(rowOf("Ben Invited"));
+    expect(ben.getByText("Auditor")).toBeInTheDocument();
+    expect(ben.getByText(`Invited · link expires ${formatTime(BEN.invite_expires_at!)}`)).toBeInTheDocument();
+    expect(ben.getByText("Not set up")).toBeInTheDocument();
+
+    const cy = within(rowOf("Cy Disabled"));
+    expect(cy.getByText("No access")).toBeInTheDocument();
+    expect(cy.getByText("Disabled")).toBeInTheDocument();
+  });
+
+  it("marks the Owner's own row and gives it no menu", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    const own = within(await screen.findByRole("row", { name: /Olive Owner/ }));
+    expect(own.getByText("You")).toBeInTheDocument();
+    expect(own.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Actions for Olive Owner" })).not.toBeInTheDocument();
+  });
+
+  it("offers the actions that fit each status", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+    await screen.findByRole("row", { name: /Ada Admin/ });
+
+    expect(await menuItemsOf("Ada Admin")).toEqual(["Change access", "Reset two-step verification", "Disable"]);
+    expect(await menuItemsOf("Ben Invited")).toEqual(["Change access", "New invite link", "Disable"]);
+    expect(await menuItemsOf("Cy Disabled")).toEqual(["Change access", "Enable"]);
+  });
+
+  it("invites a person, shows the link once and lists them", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Invite person" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Invite a person" }));
+    await user.type(dialog.getByLabelText("Name"), "Dee New");
+    await user.type(dialog.getByLabelText("Email"), "dee@example.com");
+    await user.click(dialog.getByRole("radio", { name: "Auditor" }));
+    await user.click(dialog.getByRole("button", { name: "Create invite link" }));
+
+    expect(apiFetch).toHaveBeenCalledWith("/users", {
+      method: "POST",
+      body: { name: "Dee New", email: "dee@example.com", platform_role: "auditor", grants: [] },
+    });
+    const linkDialog = within(await screen.findByRole("dialog", { name: "Invite link for Dee New" }));
+    expect(linkDialog.getByRole("textbox", { name: "Invite link" })).toHaveValue(
+      `${window.location.origin}/invite#tok-new`,
+    );
+    expect(screen.queryByRole("dialog", { name: "Invite a person" })).not.toBeInTheDocument();
+    await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.filter(([p]) => p === "/users")).toHaveLength(3));
+
+    await user.click(linkDialog.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByDisplayValue(/tok-new/)).not.toBeInTheDocument();
+  });
+});
