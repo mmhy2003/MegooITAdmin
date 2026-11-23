@@ -16,6 +16,9 @@ from app.auth.schemas import (
     EnrolOut,
     LoginIn,
     MeOut,
+    PasswordIn,
+    RecoveryCodesIn,
+    RecoveryCodesOut,
     SessionOut,
     SessionStatusOut,
     SetupIn,
@@ -141,3 +144,27 @@ async def revoke_session(
 ) -> Response:
     await service.revoke_session(db, request, session, user, session_id)
     return Response(status_code=204)
+
+
+@router.post("/password", response_model=StatusOut, dependencies=[audited(actions.PASSWORD_CHANGED)])
+async def change_password(
+    body: PasswordIn, request: Request, db: DbSession, session: CurrentSession, user: CurrentUser
+) -> StatusOut | JSONResponse:
+    refusal = await service.change_password(db, request, session, user, body)
+    if refusal is not None:
+        return refused(refusal)
+    return StatusOut(status="active")
+
+
+@router.post(
+    "/recovery-codes",
+    response_model=RecoveryCodesOut,
+    dependencies=[audited(actions.RECOVERY_CODES_CREATED, actions.MFA_FAILED)],
+)
+async def new_recovery_codes(
+    body: RecoveryCodesIn, request: Request, db: DbSession, user: CurrentUser
+) -> RecoveryCodesOut | JSONResponse:
+    result = await service.new_recovery_codes(db, request, user, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    return RecoveryCodesOut(recovery_codes=result)

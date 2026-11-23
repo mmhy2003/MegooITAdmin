@@ -81,3 +81,16 @@ class SessionOut(BaseModel):
     ip: str | None
     user_agent: str | None
     mfa_method: str | None
+
+
+class PasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=PASSWORD_MIN, max_length=PASSWORD_MAX)
+
+
+class RecoveryCodesIn(BaseModel):
+    code: str = Field(min_length=1, max_length=64)  # a current TOTP code
+
+
+class RecoveryCodesOut(BaseModel):
+    recovery_codes: list[str]

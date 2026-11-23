@@ -20,7 +20,18 @@ from app.auth.sessions import create_session, delete_expired, end_sessions, is_e
 from app.core.config import get_settings
 
 if TYPE_CHECKING:
-    from app.auth.schemas import CodeIn, ConfirmIn, EnrolIn, EnrolOut, LoginIn, MeOut, SessionOut, SetupIn
+    from app.auth.schemas import (
+        CodeIn,
+        ConfirmIn,
+        EnrolIn,
+        EnrolOut,
+        LoginIn,
+        MeOut,
+        PasswordIn,
+        RecoveryCodesIn,
+        SessionOut,
+        SetupIn,
+    )
 
 MAX_FAILURES = 5
 LOCK_TIME = timedelta(minutes=15)
@@ -519,3 +530,90 @@ async def revoke_session(
             mfa=True,
         ),
     )
+
+
+async def change_password(
+    db: AsyncSession, request: Request, session: AuthSession, user: User, body: "PasswordIn"
+) -> Refusal | None:
+    """Sets a new password, proven with the current one, and ends the person's other sessions."""
+    user = await lock_user(db, user.id)
+    now = clock.now()
+    if is_locked(user, now):
+        await record(
+            db,
+            auth_event(
+                request,
+                actions.PASSWORD_CHANGED,
+                actor_of(user),
+                target=target_of(user),
+                mfa=True,
+                result=Result.FAILURE,
+                detail={"reason": actions.LOCKED},
+            ),
+        )
+        return Refusal(401, "locked")
+
+    if not await passwords.verify_password(user.password_hash, body.current_password):
+        locked = await fail_attempt(
+            db, request, user, action=actions.PASSWORD_CHANGED, reason=actions.WRONG_PASSWORD, mfa=True
+        )
+        return Refusal(401, "locked" if locked else "wrong_password")
+
+    user.password_hash = await hash_password(body.new_password)
+    user.password_changed_at = now
+    register_success(user)
+    # Whoever knew the old password may hold the other sessions.
+    ended = await end_sessions(db, user.id, keep=session.id)
+    await record(db, auth_event(request, actions.PASSWORD_CHANGED, actor_of(user), target=target_of(user), mfa=True))
+    for other in ended:
+        await record(
+            db,
+            auth_event(
+                request,
+                actions.SESSION_REVOKED,
+                actor_of(user),
+                target=Target(type="auth_session", id=str(other.id)),
+                mfa=True,
+            ),
+        )
+    return None
+
+
+async def new_recovery_codes(
+    db: AsyncSession, request: Request, user: User, body: "RecoveryCodesIn"
+) -> list[str] | Refusal:
+    """Replaces the person's recovery codes with 10 new ones, proven with a current TOTP code."""
+    user = await lock_user(db, user.id)
+    now = clock.now()
+    if is_locked(user, now):
+        await _record_mfa_failed(db, request, user, reason=actions.LOCKED, mfa=True, method="totp")
+        return Refusal(401, "locked")
+
+    reason = await check_second_factor(db, user, body.code, "totp", now)
+    if reason == actions.UNDECRYPTABLE:
+        # Not counted: the code may be right, the key is what changed.
+        await _record_mfa_failed(db, request, user, reason=reason, mfa=True, method="totp")
+        return Refusal(401, "undecryptable")
+    if reason is not None:
+        locked = await fail_attempt(
+            db, request, user, action=actions.MFA_FAILED, reason=reason, mfa=True, method="totp"
+        )
+        return Refusal(401, "locked" if locked else "wrong_code")
+
+    register_success(user)
+    await db.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user.id))
+    codes = [recovery.new_code() for _ in range(recovery.RECOVERY_CODE_COUNT)]
+    db.add_all(RecoveryCode(user_id=user.id, code_hash=hash_code(code)) for code in codes)
+    await db.flush()
+    await record(
+        db,
+        auth_event(
+            request,
+            actions.RECOVERY_CODES_CREATED,
+            actor_of(user),
+            target=target_of(user),
+            mfa=True,
+            detail={"count": len(codes)},
+        ),
+    )
+    return codes
