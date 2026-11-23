@@ -15,7 +15,9 @@ PUBLIC: dict[str, str] = {
     "POST /api/auth/login": "the password step of sign-in; it gives only a pending session",
 }
 # Routes that also work with a pending session (password right, second factor still to come).
-PENDING: dict[str, str] = {}
+PENDING: dict[str, str] = {
+    "POST /api/auth/login/mfa": "the code step: it turns the pending session of a right password into an active one",
+}
 
 
 def test_every_route_needs_an_active_session_or_is_pinned():

@@ -54,6 +54,15 @@ def code_for(secret: str, at: datetime) -> str:
     return pyotp.TOTP(secret).at(at)
 
 
+async def sign_in(api, clock, secret: str, *, email: str = EMAIL, password: str = PASSWORD) -> None:
+    """Signs the client in with the password and a TOTP code, then moves the clock on so the next code is new."""
+    response = await api.post("/api/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    response = await api.post("/api/auth/login/mfa", json={"code": code_for(secret, clock.now), "method": "totp"})
+    assert response.status_code == 200, response.text
+    clock.advance(seconds=30)
+
+
 async def actions() -> list[str]:
     """The actions of audit_log, oldest first."""
     async with SessionLocal() as session:

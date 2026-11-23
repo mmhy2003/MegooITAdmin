@@ -1,6 +1,6 @@
 """The request and response bodies of /api/auth."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -37,3 +37,11 @@ class SetupIn(BaseModel):
 class LoginIn(BaseModel):
     email: str = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1, max_length=1024)
+
+
+Method = Literal["totp", "recovery_code"]
+
+
+class CodeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+    method: Method = "totp"

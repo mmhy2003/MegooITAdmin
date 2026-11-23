@@ -7,18 +7,20 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from fastapi import HTTPException, Request
-from sqlalchemy import exists, select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import Actor, ActorType, Event, Result, Target, record, source_of
-from app.auth import actions, clock, passwords
-from app.auth.models import SetupCode, User
+from app.auth import actions, clock, passwords, totp
+from app.auth.crypto import SecretUndecryptable, decrypt_secret
+from app.auth.models import AuthSession, RecoveryCode, SetupCode, User
 from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
 from app.auth.sessions import create_session, delete_expired, lookup_session
+from app.core.config import get_settings
 
 if TYPE_CHECKING:
-    from app.auth.schemas import LoginIn, SetupIn
+    from app.auth.schemas import CodeIn, LoginIn, SetupIn
 
 MAX_FAILURES = 5
 LOCK_TIME = timedelta(minutes=15)
@@ -122,6 +124,26 @@ async def fail_attempt(
             db, auth_event(request, actions.ACCOUNT_LOCKED, actor_of(user), target=target_of(user), mfa=mfa)
         )
     return locked
+
+
+async def check_second_factor(db: AsyncSession, user: User, code: str, method: str, now: datetime) -> str | None:
+    """None when the code is accepted, else the reason: WRONG_CODE or UNDECRYPTABLE. A used code cannot come again."""
+    if method == "totp":
+        try:
+            secret = decrypt_secret(get_settings().auth_key(), user.id, user.totp_secret)
+        except SecretUndecryptable:
+            return actions.UNDECRYPTABLE
+        step = totp.verify(secret, code, user.totp_last_step, now)
+        if step is None:
+            return actions.WRONG_CODE
+        user.totp_last_step = step
+        return None
+    used = await db.scalar(
+        delete(RecoveryCode)
+        .where(RecoveryCode.user_id == user.id, RecoveryCode.code_hash == hash_code(code))
+        .returning(RecoveryCode.id)
+    )
+    return None if used is not None else actions.WRONG_CODE
 
 
 async def _any_user(db: AsyncSession) -> bool:
@@ -245,3 +267,66 @@ async def login(db: AsyncSession, request: Request, body: "LoginIn") -> tuple[st
     token = await create_session(db, user, source_of(request), stage="pending")
     await record(db, auth_event(request, actions.PASSWORD_ACCEPTED, actor_of(user), target=target_of(user), mfa=False))
     return token, ("mfa_required" if user.totp_secret is not None else "enrolment_required")
+
+
+async def verify_second_factor(
+    db: AsyncSession, request: Request, session: AuthSession, body: "CodeIn"
+) -> str | Refusal:
+    """The code step. A right TOTP or recovery code replaces the pending session with an active one, under a new
+    token, which is returned."""
+    if session.stage == "active":
+        raise HTTPException(409, "already_signed_in")
+    user = await lock_user(db, session.user_id)
+    if user.totp_secret is None:
+        raise HTTPException(409, "not_enrolled")
+    method = body.method
+
+    if is_locked(user, clock.now()):
+        await record(
+            db,
+            auth_event(
+                request,
+                actions.MFA_FAILED,
+                actor_of(user),
+                target=target_of(user),
+                mfa=False,
+                result=Result.FAILURE,
+                detail={"reason": actions.LOCKED, "method": method},
+            ),
+        )
+        return Refusal(401, "locked")
+
+    reason = await check_second_factor(db, user, body.code, method, clock.now())
+    if reason == actions.UNDECRYPTABLE:
+        # Not counted: the code may be right, the key is what changed.
+        await record(
+            db,
+            auth_event(
+                request,
+                actions.MFA_FAILED,
+                actor_of(user),
+                target=target_of(user),
+                mfa=False,
+                result=Result.FAILURE,
+                detail={"reason": reason, "method": method},
+            ),
+        )
+        return Refusal(401, "undecryptable")
+    if reason is not None:
+        locked = await fail_attempt(
+            db, request, user, action=actions.MFA_FAILED, reason=reason, mfa=False, method=method
+        )
+        return Refusal(401, "locked" if locked else "wrong_code")
+
+    register_success(user)
+    await db.delete(session)
+    await db.flush()
+    token = await create_session(db, user, source_of(request), stage="active", mfa_method=method)
+    await record(
+        db,
+        auth_event(
+            request, actions.MFA_USED, actor_of(user), target=target_of(user), mfa=True, detail={"method": method}
+        ),
+    )
+    await record(db, auth_event(request, actions.SIGN_IN, actor_of(user), target=target_of(user), mfa=True))
+    return token

@@ -5,7 +5,8 @@ from fastapi.responses import JSONResponse
 
 from app.audit import audited
 from app.auth import actions, service
-from app.auth.schemas import LoginIn, SessionStatusOut, SetupIn, StatusOut, UserOut
+from app.auth.deps import CurrentSession
+from app.auth.schemas import CodeIn, LoginIn, SessionStatusOut, SetupIn, StatusOut, UserOut
 from app.auth.sessions import COOKIE, set_cookie
 from app.core.db import DbSession
 
@@ -52,3 +53,19 @@ async def login(body: LoginIn, request: Request, response: Response, db: DbSessi
     token, status = result
     set_cookie(response, request, token)
     return StatusOut(status=status)
+
+
+@router.post(
+    "/login/mfa",
+    response_model=StatusOut,
+    dependencies=[audited(actions.SIGN_IN, actions.MFA_FAILED)],
+)
+async def login_mfa(
+    body: CodeIn, request: Request, response: Response, db: DbSession, session: CurrentSession
+) -> StatusOut | JSONResponse:
+    # Pending: the code step finishes the sign-in that the password step started.
+    result = await service.verify_second_factor(db, request, session, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    set_cookie(response, request, result)
+    return StatusOut(status="active")
