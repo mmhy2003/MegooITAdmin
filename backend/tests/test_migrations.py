@@ -201,5 +201,35 @@ def test_an_operator_cannot_hold_manage_playbooks():
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group'")
 
 
+def test_0006_goes_down_and_up_again():
+    command.downgrade(_config(), "0005")
+    try:
+        assert _fetch("SELECT to_regclass('servers'), to_regclass('server_tags')") == [(None, None)]
+    finally:
+        upgrade_to_head()
+    assert _fetch("SELECT to_regclass('servers'), to_regclass('server_tags')") == [("servers", "server_tags")]
+
+
+def _insert_probe_server(name: str, port: int) -> None:
+    _execute(
+        "INSERT INTO servers (id, server_group_id, name, address, port, os)"
+        f" SELECT gen_random_uuid(), id, '{name}', '10.0.0.6', {port}, 'linux' FROM server_groups"
+        " WHERE name = 'Migration probe group 0006'"
+    )
+
+
+def test_the_database_refuses_an_uppercase_tag_and_a_port_of_0():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0006')")
+    try:
+        _insert_probe_server("probe-0006", 22)
+        with pytest.raises(IntegrityError, match="server_tags_tag_check"):
+            _execute("INSERT INTO server_tags (server_id, tag) SELECT id, 'Web' FROM servers WHERE name = 'probe-0006'")
+        with pytest.raises(IntegrityError, match="servers_port_check"):
+            _insert_probe_server("probe-0006-port", 0)
+    finally:
+        _execute("DELETE FROM servers WHERE name LIKE 'probe-0006%'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0006'")
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())
