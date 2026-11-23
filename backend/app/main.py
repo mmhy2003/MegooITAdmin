@@ -1,16 +1,19 @@
 from fastapi import APIRouter, FastAPI
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 
 
-def create_app() -> FastAPI:
-    # Caddy forwards /api/* unchanged, and nothing is served outside /api, the docs included.
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+    # Caddy forwards /api/* unchanged, and nothing is served outside /api, the docs included. The docs are open to
+    # anyone who reaches them, so they are served only on request (decision 20).
+    docs = settings.api_docs
     app = FastAPI(
         title="MegooITAdmin",
-        version=get_settings().app_version,
-        openapi_url="/api/openapi.json",
-        docs_url="/api/docs",
-        swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
+        version=settings.app_version,
+        openapi_url="/api/openapi.json" if docs else None,
+        docs_url="/api/docs" if docs else None,
+        swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect" if docs else None,
         redoc_url=None,
     )
     # The parent of every route, so a feature cannot forget the prefix: include feature routers into it.
