@@ -70,6 +70,7 @@ beforeEach(() => {
 function mockApi() {
   vi.mocked(apiFetch).mockImplementation(async (path: string, init?: { method?: string }) => {
     if (path === "/users" && init?.method === "POST") return LINK;
+    if (path === `/users/${ADA.id}/access` && init?.method === "PUT") return undefined;
     if (path === "/users") return [ADA, BEN, CY, OWNER];
     if (path === "/server-groups") return GROUPS;
     throw new Error(`unexpected ${path}`);
@@ -129,6 +130,24 @@ describe("UsersPage", () => {
     expect(await menuItemsOf("Ada Admin")).toEqual(["Change access", "Reset two-step verification", "Disable"]);
     expect(await menuItemsOf("Ben Invited")).toEqual(["Change access", "New invite link", "Disable"]);
     expect(await menuItemsOf("Cy Disabled")).toEqual(["Change access", "Enable"]);
+  });
+
+  it("changes a person's access from their menu and says it is saved", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Actions for Ada Admin" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Change access" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Change access of Ada Admin" }));
+    expect(dialog.getByRole("checkbox", { name: "Manage playbooks in staging" })).toBeChecked();
+    await user.click(dialog.getByRole("checkbox", { name: "View logs in staging" }));
+    await user.click(dialog.getByRole("button", { name: "Save" }));
+
+    expect(apiFetch).toHaveBeenCalledWith(`/users/${ADA.id}/access`, expect.objectContaining({ method: "PUT" }));
+    expect(await screen.findByText("Access of Ada Admin saved.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.filter(([p]) => p === "/users")).toHaveLength(2));
   });
 
   it("invites a person, shows the link once and lists them", async () => {

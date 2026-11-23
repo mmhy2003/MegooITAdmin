@@ -3,6 +3,7 @@
 import { MoreHorizontal, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { formatTime } from "@/components/profile/profile-page";
+import { AccessDialog } from "@/components/settings/access-dialog";
 import { InviteDialog } from "@/components/settings/invite-dialog";
 import { InviteLinkDialog } from "@/components/settings/invite-link-dialog";
 import { Alert } from "@/components/ui/alert";
@@ -41,6 +42,8 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
   const [link, setLink] = useState<{ link: InviteLink; name: string } | null>(null);
+  const [changing, setChanging] = useState<UserRow | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const reload = useCallback(
     () =>
@@ -65,9 +68,20 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
     void reload();
   }
 
+  function accessSaved() {
+    setNotice(`Access of ${changing?.name ?? ""} saved.`);
+    setChanging(null);
+    void reload();
+  }
+
+  function reloadGroups() {
+    apiFetch<ServerGroup[]>("/server-groups").then(setGroups, () => undefined);
+  }
+
   return (
     <div className="space-y-6">
       {error && <Alert variant="destructive">{messageFor(error)}</Alert>}
+      {notice && <Alert>{notice}</Alert>}
       <Card>
         <CardHeader>
           <CardTitle>
@@ -126,7 +140,12 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
                               {ACTIONS[row.status].map((action) => (
-                                <DropdownMenuItem key={action}>{action}</DropdownMenuItem>
+                                <DropdownMenuItem
+                                  key={action}
+                                  onSelect={action === "Change access" ? () => setChanging(row) : undefined}
+                                >
+                                  {action}
+                                </DropdownMenuItem>
                               ))}
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -141,6 +160,14 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
         </CardContent>
       </Card>
       <InviteDialog groups={groups} open={inviting} onOpenChange={setInviting} onCreated={invited} />
+      <AccessDialog
+        user={changing}
+        groups={groups}
+        open={changing !== null}
+        onOpenChange={(open) => !open && setChanging(null)}
+        onSaved={accessSaved}
+        onStale={reloadGroups}
+      />
       <InviteLinkDialog link={link?.link ?? null} name={link?.name ?? ""} onDone={() => setLink(null)} />
     </div>
   );
