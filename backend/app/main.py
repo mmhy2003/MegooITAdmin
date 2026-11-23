@@ -2,6 +2,7 @@ from fastapi import APIRouter, FastAPI
 
 from app.auth.router import router as auth_router
 from app.core.config import Settings, get_settings
+from app.users.router import router as users_router
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -27,6 +28,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     api.include_router(auth_router)
+    api.include_router(users_router)
     app.include_router(api)
     return app
 
