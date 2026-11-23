@@ -1,11 +1,12 @@
 """Shared helpers of the auth tests: accounts, codes, server groups, grants and the audit events they record."""
 
+import json
 import uuid
 from datetime import datetime
 
 import pyotp
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import inspect, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.access.models import RoleGrant
@@ -81,6 +82,14 @@ async def events(action: str) -> list[AuditEvent]:
     async with SessionLocal() as session:
         query = select(AuditEvent).where(AuditEvent.action == action).order_by(AuditEvent.seq)
         return list((await session.scalars(query)).all())
+
+
+async def audit_rows() -> list[str]:
+    """Every audit_log row, all its columns, as JSON."""
+    async with SessionLocal() as session:
+        rows = (await session.scalars(select(AuditEvent).order_by(AuditEvent.seq))).all()
+        columns = [c.key for c in inspect(AuditEvent).column_attrs]
+        return [json.dumps({key: getattr(row, key) for key in columns}, default=str) for row in rows]
 
 
 async def load_user(email: str = EMAIL) -> User:

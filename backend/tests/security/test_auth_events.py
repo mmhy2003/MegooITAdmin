@@ -1,15 +1,13 @@
 """One walk through every auth flow: each auth action is audited, and no event holds a secret."""
 
-import json
 import re
 from datetime import timedelta
 
 import pyotp
-from auth_helpers import EMAIL, NAME, PASSWORD, actions, code_for
+from auth_helpers import EMAIL, NAME, PASSWORD, actions, audit_rows, code_for
 from httpx import AsyncClient, Response
-from sqlalchemy import inspect, select
 
-from app.audit import AuditEvent, verify_chain
+from app.audit import verify_chain
 from app.auth import cli, recovery, sessions
 from app.auth.actions import ALL_ACTIONS
 from app.core.db import SessionLocal
@@ -143,14 +141,6 @@ async def lock_with_five_wrong_passwords(walk: Walk) -> None:
 async def host_resets(walk: Walk) -> None:
     assert await cli.reset_password(EMAIL, CLI_PASSWORD) == 0
     assert await cli.reset_mfa(EMAIL) == 0
-
-
-async def audit_rows() -> list[str]:
-    """Every audit_log row, all its columns, as JSON."""
-    async with SessionLocal() as session:
-        rows = (await session.scalars(select(AuditEvent).order_by(AuditEvent.seq))).all()
-        columns = [c.key for c in inspect(AuditEvent).column_attrs]
-        return [json.dumps({key: getattr(row, key) for key in columns}, default=str) for row in rows]
 
 
 async def test_one_walk_records_every_auth_action_and_no_secret(api, clock, capsys):
