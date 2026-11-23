@@ -1,11 +1,15 @@
-"""Shared helpers of the auth tests: accounts, codes and the audit events they record."""
+"""Shared helpers of the auth tests: accounts, codes, server groups, grants and the audit events they record."""
 
+import uuid
 from datetime import datetime
 
 import pyotp
-from sqlalchemy import select
+from httpx import AsyncClient
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from app.access.models import RoleGrant
+from app.access.permissions import USUAL, GroupRole, Permission
 from app.audit import AuditEvent
 from app.auth import clock, totp
 from app.auth.crypto import encrypt_secret
@@ -14,6 +18,7 @@ from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
 from app.core.config import get_settings
 from app.core.db import SessionLocal
+from app.inventory.models import ServerGroup
 
 EMAIL = "owner@example.com"
 NAME = "Olive Owner"
@@ -91,4 +96,33 @@ async def put_setup_code(code: str, failed_attempts: int = 0) -> None:
         await session.execute(
             insert(SetupCode).values(id=1, **values).on_conflict_do_update(index_elements=["id"], set_=values)
         )
+        await session.commit()
+
+
+def other_client(api) -> AsyncClient:
+    """A second browser on the same app."""
+    return AsyncClient(transport=api._transport, base_url="http://test")
+
+
+async def make_group(name: str, description: str | None = None) -> ServerGroup:
+    async with SessionLocal() as session:
+        group = ServerGroup(name=name, description=description)
+        session.add(group)
+        await session.commit()
+        return group
+
+
+async def add_grant(user_id: uuid.UUID, group_id: uuid.UUID, role: str = "admin", **switches: bool) -> RoleGrant:
+    """Gives the person `role` in the group with the role's usual switches, each one overridable by name."""
+    values = {p.value: p in USUAL[GroupRole(role)] for p in Permission} | switches
+    async with SessionLocal() as session:
+        grant = RoleGrant(user_id=user_id, server_group_id=group_id, role=role, **values)
+        session.add(grant)
+        await session.commit()
+        return grant
+
+
+async def set_switch(grant_id: uuid.UUID, name: str, value: bool) -> None:
+    async with SessionLocal() as session:
+        await session.execute(update(RoleGrant).where(RoleGrant.id == grant_id).values({name: value}))
         await session.commit()

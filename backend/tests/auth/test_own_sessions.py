@@ -1,15 +1,9 @@
-from auth_helpers import PASSWORD, events, make_user, sign_in
-from httpx import AsyncClient
+from auth_helpers import PASSWORD, events, make_user, other_client, sign_in
 from sqlalchemy import select
 
 from app.auth import sessions
 from app.auth.models import AuthSession
 from app.core.db import SessionLocal
-
-
-def other_client(api) -> AsyncClient:
-    """A second browser on the same app."""
-    return AsyncClient(transport=api._transport, base_url="http://test")
 
 
 async def session_rows() -> list[AuthSession]:
