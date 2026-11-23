@@ -117,10 +117,10 @@ def test_migration_without_a_valid_name_runs_nothing(workdir, args):
     assert not (bin_dir / "ran").exists()
 
 
-def test_test_security_says_its_suites_are_not_in_the_repository_yet(workdir):
-    result = make(workdir, "test-security")
-    assert result.returncode != 0
-    assert "the security suites are not in the repository yet" in result.stderr
+def test_test_security_runs_the_security_suites(workdir):
+    result = make(workdir, "-n", "test-security")
+    assert result.returncode == 0, result.stderr
+    assert "cd backend && megoocolab-runner services run test -- uv run pytest tests/security" in result.stdout.splitlines()
 
 
 def test_release_check_runs_the_version_check_then_the_release_plan(workdir):
