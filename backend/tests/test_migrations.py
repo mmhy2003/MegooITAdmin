@@ -9,6 +9,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from conftest import owner_session, upgrade_to_head
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 BACKEND = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND / "alembic.ini"
@@ -27,6 +28,15 @@ def _fetch(sql: str) -> list:
             return (await session.execute(text(sql))).all()
 
     return asyncio.run(run())
+
+
+def _execute(sql: str) -> None:
+    async def run():
+        async with owner_session() as session:
+            await session.execute(text(sql))
+            await session.commit()
+
+    asyncio.run(run())
 
 
 def _head() -> str:
@@ -130,6 +140,65 @@ def test_0004_goes_down_and_up_again_with_the_auth_tables():
         "SELECT has_table_privilege('megooitadmin_api', 'users', 'DELETE'),"
         " has_table_privilege('megooitadmin_api', 'auth_sessions', 'DELETE')"
     ) == [(False, True)]
+
+
+def _insert_user(email: str, extra: str = "", values: str = "") -> None:
+    _execute(
+        f"INSERT INTO users (id, email, name, password_hash, password_changed_at{extra})"
+        f" VALUES (gen_random_uuid(), '{email}', 'Migration Probe', 'hash', now(){values})"
+    )
+
+
+def test_0005_goes_down_and_up_again_and_keeps_the_owner():
+    command.downgrade(_config(), "0004")
+    _insert_user("owner-0004@example.com", ", is_owner", ", true")
+    _insert_user("other-0004@example.com", ", is_owner", ", false")
+    try:
+        upgrade_to_head()
+        assert _fetch(
+            "SELECT email, platform_role FROM users WHERE email LIKE '%-0004@example.com' ORDER BY email"
+        ) == [("other-0004@example.com", None), ("owner-0004@example.com", "owner")]
+        assert [row[0] for row in _fetch("SELECT key FROM roles ORDER BY position")] == [
+            "owner",
+            "admin",
+            "operator",
+            "auditor",
+        ]
+        command.downgrade(_config(), "0004")
+        assert _fetch(
+            "SELECT email, is_owner FROM users WHERE email LIKE '%-0004@example.com' ORDER BY email"
+        ) == [("other-0004@example.com", False), ("owner-0004@example.com", True)]
+    finally:
+        upgrade_to_head()
+        _execute("DELETE FROM users WHERE email LIKE '%-0004@example.com'")
+
+
+def test_0005_downgrade_gives_an_invited_account_an_unusable_hash():
+    _execute(
+        "INSERT INTO users (id, email, name, password_changed_at)"
+        " VALUES (gen_random_uuid(), 'invited-0005@example.com', 'Invited Probe', now())"
+    )
+    try:
+        command.downgrade(_config(), "0004")
+        assert _fetch("SELECT password_hash FROM users WHERE email = 'invited-0005@example.com'") == [("!",)]
+    finally:
+        upgrade_to_head()
+        _execute("DELETE FROM users WHERE email = 'invited-0005@example.com'")
+
+
+def test_an_operator_cannot_hold_manage_playbooks():
+    _insert_user("operator-0005@example.com")
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group')")
+    try:
+        with pytest.raises(IntegrityError, match="role_grants_manage_playbooks_check"):
+            _execute(
+                "INSERT INTO role_grants (id, user_id, server_group_id, role, manage_playbooks)"
+                " SELECT gen_random_uuid(), u.id, g.id, 'operator', true FROM users u, server_groups g"
+                " WHERE u.email = 'operator-0005@example.com' AND g.name = 'Migration probe group'"
+            )
+    finally:
+        _execute("DELETE FROM users WHERE email = 'operator-0005@example.com'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group'")
 
 
 def test_the_models_match_the_migrations():

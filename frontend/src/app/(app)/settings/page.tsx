@@ -1,9 +1,5 @@
-import type { Metadata } from "next";
-import { PlaceholderPage } from "@/components/placeholder-page";
-import { navItem } from "@/lib/navigation";
-
-export const metadata: Metadata = { title: navItem("/settings").title };
+import { redirect } from "next/navigation";
 
 export default function SettingsPage() {
-  return <PlaceholderPage href="/settings" />;
+  redirect("/settings/users");
 }

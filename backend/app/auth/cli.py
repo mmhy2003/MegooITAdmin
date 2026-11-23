@@ -14,11 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import Actor, Event, record
 from app.auth import actions, clock, recovery
-from app.auth.models import RecoveryCode, SetupCode, User
+from app.auth.models import SetupCode, User
 from app.auth.passwords import PasswordRuleError, check_rule, hash_password
-from app.auth.service import target_of
+from app.auth.service import reset_second_factor, target_of
 from app.auth.sessions import end_sessions
 from app.core.db import SessionLocal, engine
+from app.users.models import UserInvite
 
 CLI_ACTOR = Actor.system("cli")
 
@@ -58,12 +59,7 @@ async def reset_mfa(email: str) -> int:
         user = await _find_user(session, email)
         if user is None:
             return 1
-        user.totp_secret = None
-        user.totp_pending_secret = None
-        user.totp_confirmed_at = None
-        user.totp_last_step = None
-        await session.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user.id))
-        ended = len(await end_sessions(session, user.id))
+        ended = len(await reset_second_factor(session, user))
         await record(
             session,
             Event(
@@ -97,6 +93,8 @@ async def reset_password(email: str, password: str) -> int:
         user.password_changed_at = clock.now()
         user.failed_attempts = 0
         user.locked_until = None
+        # An invited account now has its password, so its link must not set another one.
+        await session.execute(delete(UserInvite).where(UserInvite.user_id == user.id))
         ended = len(await end_sessions(session, user.id))
         await record(
             session,

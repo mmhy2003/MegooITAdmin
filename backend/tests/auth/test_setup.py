@@ -57,7 +57,7 @@ async def test_the_right_code_creates_the_owner_and_a_pending_session(api):
     assert response.cookies.get(sessions.COOKIE)
 
     user = await load_user("owner@example.com")
-    assert (user.name, user.is_owner, user.totp_secret) == ("Olive Owner", True, None)
+    assert (user.name, user.platform_role, user.totp_secret) == ("Olive Owner", "owner", None)
     assert await setup_row() is None
     status = await api.get("/api/auth/session")
     assert status.json() == {"status": "enrolment_required", "user": None}

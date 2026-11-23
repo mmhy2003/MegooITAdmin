@@ -1,11 +1,16 @@
-"""Shared helpers of the auth tests: accounts, codes and the audit events they record."""
+"""Shared helpers of the auth tests: accounts, codes, server groups, grants and the audit events they record."""
 
+import json
+import uuid
 from datetime import datetime
 
 import pyotp
-from sqlalchemy import select
+from httpx import AsyncClient
+from sqlalchemy import inspect, select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from app.access.models import RoleGrant
+from app.access.permissions import USUAL, GroupRole, Permission
 from app.audit import AuditEvent
 from app.auth import clock, totp
 from app.auth.crypto import encrypt_secret
@@ -14,6 +19,7 @@ from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
 from app.core.config import get_settings
 from app.core.db import SessionLocal
+from app.inventory.models import ServerGroup
 
 EMAIL = "owner@example.com"
 NAME = "Olive Owner"
@@ -24,18 +30,21 @@ async def make_user(
     *,
     email: str = EMAIL,
     name: str = NAME,
-    password: str = PASSWORD,
+    password: str | None = PASSWORD,
     enrolled: bool = True,
-    is_owner: bool = True,
+    platform_role: str | None = "owner",
+    disabled: bool = False,
     recovery_codes: list[str] = (),
 ) -> tuple[User, str | None]:
-    """Inserts an account through the API role. Returns it and its plain TOTP secret (None when not enrolled)."""
+    """Inserts an account through the API role. Returns it and its plain TOTP secret (None when not enrolled).
+    `password=None` stores no hash, as for an invited account; `disabled` disables the account now."""
     async with SessionLocal() as session:
         user = User(
             email=email,
             name=name,
-            password_hash=await hash_password(password),
-            is_owner=is_owner,
+            password_hash=None if password is None else await hash_password(password),
+            platform_role=platform_role,
+            disabled_at=clock.now() if disabled else None,
             password_changed_at=clock.now(),
         )
         session.add(user)
@@ -75,6 +84,14 @@ async def events(action: str) -> list[AuditEvent]:
         return list((await session.scalars(query)).all())
 
 
+async def audit_rows() -> list[str]:
+    """Every audit_log row, all its columns, as JSON."""
+    async with SessionLocal() as session:
+        rows = (await session.scalars(select(AuditEvent).order_by(AuditEvent.seq))).all()
+        columns = [c.key for c in inspect(AuditEvent).column_attrs]
+        return [json.dumps({key: getattr(row, key) for key in columns}, default=str) for row in rows]
+
+
 async def load_user(email: str = EMAIL) -> User:
     """A fresh read of the account, past any session's identity map."""
     async with SessionLocal() as session:
@@ -88,4 +105,33 @@ async def put_setup_code(code: str, failed_attempts: int = 0) -> None:
         await session.execute(
             insert(SetupCode).values(id=1, **values).on_conflict_do_update(index_elements=["id"], set_=values)
         )
+        await session.commit()
+
+
+def other_client(api) -> AsyncClient:
+    """A second browser on the same app."""
+    return AsyncClient(transport=api._transport, base_url="http://test")
+
+
+async def make_group(name: str, description: str | None = None) -> ServerGroup:
+    async with SessionLocal() as session:
+        group = ServerGroup(name=name, description=description)
+        session.add(group)
+        await session.commit()
+        return group
+
+
+async def add_grant(user_id: uuid.UUID, group_id: uuid.UUID, role: str = "admin", **switches: bool) -> RoleGrant:
+    """Gives the person `role` in the group with the role's usual switches, each one overridable by name."""
+    values = {p.value: p in USUAL[GroupRole(role)] for p in Permission} | switches
+    async with SessionLocal() as session:
+        grant = RoleGrant(user_id=user_id, server_group_id=group_id, role=role, **values)
+        session.add(grant)
+        await session.commit()
+        return grant
+
+
+async def set_switch(grant_id: uuid.UUID, name: str, value: bool) -> None:
+    async with SessionLocal() as session:
+        await session.execute(update(RoleGrant).where(RoleGrant.id == grant_id).values({name: value}))
         await session.commit()

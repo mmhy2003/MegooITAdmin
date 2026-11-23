@@ -45,7 +45,7 @@ async def test_an_active_session_is_active_with_its_user(api):
     user, _ = await make_user()
     assert await status(api, await start(user, "active")) == {
         "status": "active",
-        "user": {"id": str(user.id), "name": NAME, "email": EMAIL, "is_owner": True},
+        "user": {"id": str(user.id), "name": NAME, "email": EMAIL, "platform_role": "owner"},
     }
 
 

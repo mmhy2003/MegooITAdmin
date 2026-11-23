@@ -11,6 +11,9 @@ export class ApiError extends Error {
   }
 }
 
+/** The pages where a person is not signed in yet, so a signed-out answer must not send them to sign-in. */
+const SIGN_IN_PAGES = ["/login", "/setup", "/invite"];
+
 /**
  * Calls `/api${path}` from the browser and returns its JSON (undefined on a 204).
  * A body is sent as JSON, with POST unless another method is given. A refusal throws `ApiError`.
@@ -37,7 +40,7 @@ export async function apiFetch<T>(path: string, options: { method?: string; body
   const raw = (json as { detail?: unknown } | null)?.detail;
   const detail = typeof raw === "string" ? raw : "invalid";
   const { pathname, search } = window.location;
-  if (response.status === 401 && detail === "not_signed_in" && pathname !== "/login" && pathname !== "/setup") {
+  if (response.status === 401 && detail === "not_signed_in" && !SIGN_IN_PAGES.includes(pathname)) {
     goTo("/login?next=" + encodeURIComponent(pathname + search));
   }
   throw new ApiError(response.status, detail);

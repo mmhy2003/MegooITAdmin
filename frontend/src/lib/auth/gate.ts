@@ -1,8 +1,10 @@
+import type { PlatformRole } from "@/lib/access";
+
 /** Where a person stands in the sign-in flow, as `/api/auth/session` reports it. */
 export type AuthStatus = "setup_required" | "signed_out" | "mfa_required" | "enrolment_required" | "active";
 
 /** The signed-in person, as `/api/auth/session` reports them. */
-export type SessionUser = { id: string; name: string; email: string; is_owner: boolean };
+export type SessionUser = { id: string; name: string; email: string; platform_role: PlatformRole | null };
 
 /** The body of `/api/auth/session`. */
 export type SessionInfo = { status: AuthStatus; user: SessionUser | null };
@@ -37,7 +39,7 @@ export function gateRedirect(status: AuthStatus | null, pathname: string, search
     case "active":
       return pathname === "/login" || pathname === "/setup" ? "/" : null;
     default:
-      if (pathname === "/login") return null;
+      if (pathname === "/login" || pathname === "/invite") return null;
       if (pathname === "/") return "/login";
       return "/login?next=" + encodeURIComponent(pathname + search);
   }

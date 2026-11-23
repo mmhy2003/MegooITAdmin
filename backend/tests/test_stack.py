@@ -267,6 +267,50 @@ def test_caddy_accepts_the_caddyfile_and_finds_nothing_to_reformat():
     assert fmt.stdout == CADDYFILE.read_text()
 
 
+def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disabled(owner):
+    # The design's walkthrough on the real stack: two groups, an Admin on staging only, then disabled.
+    groups = {}
+    for name in ("staging", "production"):
+        response = owner.post("/api/server-groups", json={"name": name})
+        assert response.status_code == 200, response.text
+        groups[name] = response.json()["id"]
+    invite = {
+        "name": "Ada",
+        "email": "ada@stack.invalid",
+        "platform_role": None,
+        "grants": [{"group_id": groups["staging"], "role": "admin", "connect_ssh": True}],
+    }
+    response = owner.post("/api/users", json=invite)
+    assert response.status_code == 200, response.text
+    ada_id, token = response.json()["user_id"], response.json()["token"]
+    with httpx.Client(base_url=_env("STACK_URL"), timeout=10) as client:
+        response = client.post("/api/auth/invite/check", json={"token": token})
+        assert response.status_code == 200, response.text
+        assert response.json() == {"name": "Ada", "email": "ada@stack.invalid"}
+        response = client.post("/api/auth/invite/accept", json={"token": token, "password": "ada's own long password"})
+        assert response.status_code == 200, response.text
+        response = client.post("/api/auth/mfa/enrol", json={})
+        assert response.status_code == 200, response.text
+        code = pyotp.TOTP(response.json()["secret"]).now()
+        response = client.post("/api/auth/mfa/enrol/confirm", json={"code": code})
+        assert response.status_code == 200, response.text
+
+        response = client.get("/api/auth/me")
+        assert response.status_code == 200, response.text
+        assert [(g["group_name"], g["role"]) for g in response.json()["grants"]] == [("staging", "admin")]
+        response = client.get("/api/server-groups")
+        assert response.status_code == 200, response.text
+        assert [group["name"] for group in response.json()] == ["staging"]
+        assert client.get("/api/users").status_code == 403
+        assert client.get("/settings").status_code == 200
+
+        response = owner.post(f"/api/users/{ada_id}/disable")
+        assert response.status_code == 204, response.text
+        assert client.get("/api/auth/me").status_code == 401
+        response = client.post("/api/auth/login", json={"email": "ada@stack.invalid", "password": "ada's own long password"})
+        assert (response.status_code, response.json()) == (401, {"detail": "invalid_credentials"})
+
+
 def test_after_sign_out_pages_redirect_to_login(owner):
     # Last in the file: it ends the session the `owner` fixture holds.
     response = owner.post("/api/auth/logout")

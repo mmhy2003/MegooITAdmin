@@ -1,5 +1,5 @@
-"""Reads the audit declarations and the session requirement of an app's routes, for the audit- and auth-coverage
-suites.
+"""Reads the audit declarations, the session requirement and the access requirement of an app's routes, for the
+audit-, auth- and permission-coverage suites.
 
 Since FastAPI 0.165, include_router keeps the router as one node in app.routes instead of copying its routes.
 iter_route_contexts, which FastAPI's OpenAPI generator uses too, yields every route as it is served: the full
@@ -88,4 +88,22 @@ def unguarded_routes(app: FastAPI, public: Mapping[str, str], pending: Mapping[s
         if (requirement := session_requirement(context)) != "active"
         for method in context.methods
         if (name := f"{method} {context.path}") not in pinned[requirement]
+    )
+
+
+def access_requirement(context: RouteContext) -> str | None:
+    """What the route's access guard requires ('owner', a permission, 'group'), or None when it has no guard.
+    require_owner, require_grant(...) and require_group_visible(...) carry it as an `access_requirement` attribute."""
+    requirements = (getattr(call, "access_requirement", None) for call in dependency_calls(context))
+    return min((requirement for requirement in requirements if requirement), default=None)
+
+
+def undeclared_routes(app: FastAPI, any_signed_in: Mapping[str, str]) -> list[str]:
+    """'METHOD /path' of every route that needs an active session, has no access guard and is not pinned, sorted."""
+    return sorted(
+        name
+        for context in api_routes(app)
+        if session_requirement(context) == "active" and access_requirement(context) is None
+        for method in context.methods
+        if (name := f"{method} {context.path}") not in any_signed_in
     )

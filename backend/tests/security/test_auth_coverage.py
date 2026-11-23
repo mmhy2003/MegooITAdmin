@@ -13,6 +13,8 @@ PUBLIC: dict[str, str] = {
     "GET /api/auth/session": "the page gate asks it which page to show before anyone is signed in",
     "POST /api/auth/setup": "claims a fresh install with the one-time code from the host, before any account exists",
     "POST /api/auth/login": "the password step of sign-in; it gives only a pending session",
+    "POST /api/auth/invite/check": "the invite page shows whose link it is before the person has a password",
+    "POST /api/auth/invite/accept": "the invited person sets their first password; it gives only a pending session",
 }
 # Routes that also work with a pending session (password right, second factor still to come).
 PENDING: dict[str, str] = {
