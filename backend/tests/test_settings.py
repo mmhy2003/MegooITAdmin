@@ -25,6 +25,14 @@ def test_app_version_defaults_to_dev(monkeypatch):
     assert Settings(database_url=URL).app_version == "dev"
 
 
-def test_alembic_url_doubles_percent_signs():
-    settings = Settings(database_url="postgresql+asyncpg://user:p%40ss@localhost/example_test")
-    assert settings.alembic_url() == "postgresql+asyncpg://user:p%%40ss@localhost/example_test"
+def test_alembic_url_is_the_owners_url_with_percent_signs_doubled():
+    settings = Settings(
+        database_url=URL, database_owner_url="postgresql+asyncpg://owner:p%40ss@localhost/example_test"
+    )
+    assert settings.alembic_url() == "postgresql+asyncpg://owner:p%%40ss@localhost/example_test"
+
+
+def test_alembic_url_without_the_owners_url_names_the_variable(monkeypatch):
+    monkeypatch.delenv("DATABASE_OWNER_URL", raising=False)
+    with pytest.raises(RuntimeError, match="DATABASE_OWNER_URL"):
+        Settings(database_url=URL).alembic_url()

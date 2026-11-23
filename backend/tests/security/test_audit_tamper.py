@@ -1,14 +1,24 @@
-"""The audit log refuses changes, and the chain check finds what a superuser changed or removed anyway."""
+"""The API role may not change the audit log, by privilege; the triggers refuse even the owner; and the chain check
+finds what the owner changed or removed anyway."""
 
 import pytest
+from conftest import owner_session
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from app.audit import Actor, AuditEvent, Event, Problem, event_hash, record_alone, verify_chain
 from app.audit.models import CHAINED_COLUMNS
 from app.core.db import SessionLocal
+from app.core.db_roles import API_ROLE
 
 pytestmark = pytest.mark.usefixtures("empty_audit_log")
+
+INSUFFICIENT_PRIVILEGE = "42501"
+CHANGES = [
+    "UPDATE audit_log SET reason = 'changed' WHERE seq = 3",
+    "DELETE FROM audit_log WHERE seq = 3",
+    "TRUNCATE audit_log",
+]
 
 
 @pytest.fixture
@@ -20,8 +30,8 @@ async def chain(empty_audit_log) -> list[AuditEvent]:
 
 
 async def tamper(sql: str, params: dict | None = None) -> None:
-    """Runs the statement with the triggers switched off, as a superuser can."""
-    async with SessionLocal() as session:
+    """Runs the statement as the owner, with the triggers switched off."""
+    async with owner_session() as session:
         await session.execute(text("SET LOCAL session_replication_role = replica"))
         await session.execute(text(sql), params or {})
         await session.commit()
@@ -32,35 +42,137 @@ async def check(**kw):
         return await verify_chain(session, **kw)
 
 
-async def refused(sql: str) -> str:
-    async with SessionLocal() as session:
+async def refused_for_the_owner(sql: str) -> str:
+    async with owner_session() as session:
         with pytest.raises(DBAPIError) as exc:
             await session.execute(text(sql))
         await session.rollback()
     return str(exc.value)
 
 
-@pytest.mark.usefixtures("chain")
-async def test_update_on_audit_log_is_refused():
-    assert "append-only" in await refused("UPDATE audit_log SET reason = 'changed' WHERE seq = 3")
+async def refused_for_the_api_role(sql: str) -> str:
+    async with SessionLocal() as session:
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(text(sql))
+        await session.rollback()
+    return exc.value.orig.sqlstate
+
+
+async def audit_rows() -> int:
+    async with owner_session() as session:
+        return (await session.execute(text("SELECT count(*) FROM audit_log"))).scalar_one()
+
+
+async def a_chunk() -> str:
+    async with owner_session() as session:
+        return (
+            await session.execute(
+                text(
+                    "SELECT chunk_schema || '.' || chunk_name FROM timescaledb_information.chunks"
+                    " WHERE hypertable_name = 'audit_log' LIMIT 1"
+                )
+            )
+        ).scalar_one()
+
+
+@pytest.fixture
+async def triggers_off_for_the_api_role():
+    async with owner_session() as session:
+        await session.execute(text(f"ALTER ROLE {API_ROLE} SET session_replication_role = replica"))
+        await session.commit()
+    yield
+    async with owner_session() as session:
+        await session.execute(text(f"ALTER ROLE {API_ROLE} RESET session_replication_role"))
+        await session.commit()
 
 
 @pytest.mark.usefixtures("chain")
-async def test_delete_on_audit_log_is_refused():
-    assert "append-only" in await refused("DELETE FROM audit_log WHERE seq = 3")
+@pytest.mark.parametrize("sql", CHANGES)
+async def test_the_api_role_may_not_change_audit_log(sql):
+    assert await refused_for_the_api_role(sql) == INSUFFICIENT_PRIVILEGE
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DELETE FROM audit_chain_head",
+        "TRUNCATE audit_chain_head",
+        "INSERT INTO audit_chain_head (id, seq, hash) VALUES (2, 0, decode(repeat('00', 32), 'hex'))",
+    ],
+)
+async def test_the_api_role_may_not_remove_or_add_a_chain_head(sql):
+    assert await refused_for_the_api_role(sql) == INSUFFICIENT_PRIVILEGE
+
+
+@pytest.mark.usefixtures("chain", "triggers_off_for_the_api_role")
+@pytest.mark.parametrize("sql", CHANGES)
+async def test_the_api_role_may_not_change_audit_log_with_the_triggers_off(sql):
+    async with SessionLocal() as session:
+        assert (await session.execute(text("SHOW session_replication_role"))).scalar_one() == "replica"
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(text(sql))
+        await session.rollback()
+
+    assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE
 
 
 @pytest.mark.usefixtures("chain")
-async def test_truncate_on_audit_log_is_refused():
-    assert "append-only" in await refused("TRUNCATE audit_log")
+async def test_the_api_role_cannot_switch_the_triggers_off():
+    attempts = [
+        "SET session_replication_role = replica",
+        "ALTER TABLE audit_log DISABLE TRIGGER USER",
+        "DROP TRIGGER audit_log_refuse_change ON audit_log",
+        "CREATE OR REPLACE FUNCTION audit_refuse_change() RETURNS trigger LANGUAGE plpgsql"
+        " AS $$ BEGIN RETURN OLD; END $$",
+        "SELECT drop_chunks('audit_log', older_than => now() + INTERVAL '1 day')",
+    ]
+
+    for sql in attempts:
+        assert await refused_for_the_api_role(sql) == INSUFFICIENT_PRIVILEGE, sql
+    assert await audit_rows() == 5
 
 
-async def test_delete_on_the_chain_head_is_refused():
-    assert "append-only" in await refused("DELETE FROM audit_chain_head")
+@pytest.mark.usefixtures("chain")
+async def test_the_api_role_may_not_change_a_chunk_of_audit_log():
+    chunk = await a_chunk()
+
+    for sql in [f"UPDATE {chunk} SET reason = 'changed'", f"DELETE FROM {chunk}", f"TRUNCATE {chunk}"]:
+        assert await refused_for_the_api_role(sql) == INSUFFICIENT_PRIVILEGE, sql
 
 
-async def test_truncate_on_the_chain_head_is_refused():
-    assert "append-only" in await refused("TRUNCATE audit_chain_head")
+@pytest.mark.usefixtures("chain")
+async def test_a_chunk_takes_only_the_hypertables_grants():
+    chunk = await a_chunk()
+    privileges = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"]
+    columns = ", ".join(f"has_table_privilege(:role, :chunk, '{p}')" for p in privileges)
+
+    async with owner_session() as session:
+        row = (await session.execute(text(f"SELECT {columns}"), {"role": API_ROLE, "chunk": chunk})).one()
+
+    assert tuple(row) == (True, True, False, False, False)
+
+
+@pytest.mark.usefixtures("chain")
+async def test_the_trigger_refuses_the_owner_an_update_on_audit_log():
+    assert "append-only" in await refused_for_the_owner("UPDATE audit_log SET reason = 'changed' WHERE seq = 3")
+
+
+@pytest.mark.usefixtures("chain")
+async def test_the_trigger_refuses_the_owner_a_delete_on_audit_log():
+    assert "append-only" in await refused_for_the_owner("DELETE FROM audit_log WHERE seq = 3")
+
+
+@pytest.mark.usefixtures("chain")
+async def test_the_trigger_refuses_the_owner_a_truncate_on_audit_log():
+    assert "append-only" in await refused_for_the_owner("TRUNCATE audit_log")
+
+
+async def test_the_trigger_refuses_the_owner_a_delete_on_the_chain_head():
+    assert "append-only" in await refused_for_the_owner("DELETE FROM audit_chain_head")
+
+
+async def test_the_trigger_refuses_the_owner_a_truncate_on_the_chain_head():
+    assert "append-only" in await refused_for_the_owner("TRUNCATE audit_chain_head")
 
 
 @pytest.mark.usefixtures("chain")

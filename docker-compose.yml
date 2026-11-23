@@ -43,7 +43,8 @@ services:
     build: ./backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+      DATABASE_URL: postgresql+asyncpg://megooitadmin_api:${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+      DATABASE_OWNER_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
     networks: [edge, core, servers]
     depends_on:
       db:
@@ -57,7 +58,8 @@ services:
     image: timescale/timescaledb-ha:pg18
     restart: unless-stopped
     environment:
-      # The image's superuser, so the first migration can create the extensions. Separate roles come later.
+      # The image's superuser owns the tables and runs the migrations. The backend serves as megooitadmin_api
+      # (migration 0003).
       POSTGRES_USER: megooitadmin
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}
       POSTGRES_DB: megooitadmin

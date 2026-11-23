@@ -18,7 +18,8 @@ def create_app() -> FastAPI:
 
     @api.get("/health")
     async def health() -> dict[str, str]:
-        # Liveness only: the entrypoint migrated before Uvicorn started, so an answer means "migrated and serving".
+        # Liveness only: the entrypoint migrated and set the API role's password before Uvicorn started, so an
+        # answer means "migrated and serving".
         return {"status": "ok"}
 
     app.include_router(api)

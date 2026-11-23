@@ -1,9 +1,11 @@
 """Points the app at the test database before any app module is imported.
 
-`megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL.
+`megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL, the URL
+the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with.
 """
 
 import os
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -20,16 +22,23 @@ def _own_file(config: pytest.Config) -> str | None:
     return ONLY.get(config.getoption("markexpr"))
 
 
+def _test_url(name: str) -> str:
+    url = os.environ.get(name)
+    if not url:
+        pytest.exit(f"{name} is not set. Run the suite as: {RUN_TESTS}", returncode=2)
+    database = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if not database.endswith("_test"):
+        pytest.exit(
+            f"Refusing to run against {database!r} ({name}): the test database name must end in _test.", returncode=2
+        )
+    return url
+
+
 def pytest_configure(config: pytest.Config) -> None:
     if _own_file(config):
         return
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url:
-        pytest.exit(f"TEST_DATABASE_URL is not set. Run the suite as: {RUN_TESTS}", returncode=2)
-    database = url.rsplit("/", 1)[-1].split("?", 1)[0]
-    if not database.endswith("_test"):
-        pytest.exit(f"Refusing to run against {database!r}: the test database name must end in _test.", returncode=2)
-    os.environ["DATABASE_URL"] = url
+    os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
+    os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
     os.environ["DB_NULL_POOL"] = "true"
 
 
@@ -41,23 +50,45 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
-@pytest.fixture(scope="session")
-def database_at_head():
-    # Sync: Alembic's env.py runs its own event loop. Imported here: DATABASE_URL is set in pytest_configure.
+@cache
+def _owner_engine():
+    # Imported here: DATABASE_OWNER_URL is set in pytest_configure.
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    return create_async_engine(os.environ["DATABASE_OWNER_URL"], poolclass=NullPool)
+
+
+def owner_session():
+    """A session as megooitadmin, the owner of the tables, for what the API role may not do."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    return AsyncSession(_owner_engine(), expire_on_commit=False)
+
+
+def upgrade_to_head() -> None:
+    """Migrates as the owner, then sets the API role's password, as the entrypoint does. Sync: Alembic's env.py
+    runs its own event loop. A downgrade below 0003 drops the API role, so every way back to head goes through here."""
     from alembic import command
     from alembic.config import Config
 
+    from app.core.db_roles import sync_api_role_password
+
     command.upgrade(Config(str(ALEMBIC_INI)), "head")
+    sync_api_role_password()
+
+
+@pytest.fixture(scope="session")
+def database_at_head():
+    upgrade_to_head()
 
 
 @pytest.fixture
 async def empty_audit_log(database_at_head):
     from sqlalchemy import text
 
-    from app.core.db import SessionLocal
-
-    # The triggers refuse DELETE, so they are switched off for this transaction only, as a superuser can.
-    async with SessionLocal() as session:
+    # The triggers refuse DELETE, so the owner switches them off for this transaction only.
+    async with owner_session() as session:
         await session.execute(text("SET LOCAL session_replication_role = replica"))
         await session.execute(text("DELETE FROM audit_log"))
         await session.execute(

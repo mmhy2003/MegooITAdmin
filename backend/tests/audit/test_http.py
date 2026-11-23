@@ -1,4 +1,5 @@
 import pytest
+from conftest import owner_session
 from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
@@ -6,6 +7,7 @@ from starlette.requests import Request as StarletteRequest
 
 from app.audit import Actor, AuditChainHead, AuditEvent, Event, audited, record, source_of
 from app.core.db import DbSession, SessionLocal
+from app.core.db_roles import API_ROLE
 
 pytestmark = pytest.mark.usefixtures("empty_audit_log")
 
@@ -13,12 +15,14 @@ PROBE = "audit_http_probe"
 
 
 @pytest.fixture(autouse=True)
-async def probe_table():
-    async with SessionLocal() as session:
+async def probe_table(database_at_head):
+    # The API role cannot create tables, so the owner creates the probe and grants it.
+    async with owner_session() as session:
         await session.execute(text(f"CREATE TABLE {PROBE} (id int)"))
+        await session.execute(text(f"GRANT SELECT, INSERT ON {PROBE} TO {API_ROLE}"))
         await session.commit()
     yield
-    async with SessionLocal() as session:
+    async with owner_session() as session:
         await session.execute(text(f"DROP TABLE IF EXISTS {PROBE}"))
         await session.commit()
 

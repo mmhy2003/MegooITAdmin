@@ -7,9 +7,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from conftest import owner_session, upgrade_to_head
 from sqlalchemy import text
-
-from app.core.db import SessionLocal
 
 BACKEND = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = BACKEND / "alembic.ini"
@@ -24,7 +23,7 @@ def _config() -> Config:
 def _fetch(sql: str) -> list:
     # Alembic's env.py runs its own event loop, so these tests are sync and query through a short-lived one.
     async def run():
-        async with SessionLocal() as session:
+        async with owner_session() as session:
             return (await session.execute(text(sql))).all()
 
     return asyncio.run(run())
@@ -38,9 +37,13 @@ def _extensions() -> set[str]:
     return {row[0] for row in _fetch("SELECT extname FROM pg_extension")}
 
 
+def _api_role() -> list:
+    return _fetch("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'megooitadmin_api'")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def migrated():
-    command.upgrade(_config(), "head")
+    upgrade_to_head()
 
 
 def test_upgrade_head_records_the_head_and_enables_the_extensions():
@@ -53,7 +56,7 @@ def test_the_first_revision_goes_down_and_up_again():
     command.downgrade(_config(), "0001")
     command.downgrade(_config(), "-1")
     assert not EXTENSIONS & _extensions()
-    command.upgrade(_config(), "head")
+    upgrade_to_head()
     assert EXTENSIONS <= _extensions()
     assert [row[0] for row in _fetch("SELECT version_num FROM alembic_version")] == [_head()]
 
@@ -94,8 +97,20 @@ def test_0002_goes_down_and_up_again_with_an_empty_chain():
     command.downgrade(_config(), "0001")
     assert _fetch("SELECT to_regclass('audit_log'), to_regclass('audit_chain_head')") == [(None, None)]
     assert _fetch("SELECT proname FROM pg_proc WHERE proname = 'audit_refuse_change'") == []
-    command.upgrade(_config(), "head")
+    upgrade_to_head()
     assert _fetch("SELECT id, seq, hash, time FROM audit_chain_head") == [(1, 0, bytes(32), None)]
+
+
+def test_0003_goes_down_and_up_again_with_the_api_role_and_its_grants():
+    command.downgrade(_config(), "0002")
+    assert _api_role() == []
+    upgrade_to_head()
+    assert _api_role() == [("megooitadmin_api", False)]
+    assert _fetch(
+        "SELECT has_table_privilege('megooitadmin_api', 'audit_log', 'INSERT'),"
+        " has_table_privilege('megooitadmin_api', 'audit_log', 'UPDATE'),"
+        " has_table_privilege('megooitadmin_api', 'audit_chain_head', 'UPDATE')"
+    ) == [(True, False, True)]
 
 
 def test_the_models_match_the_migrations():
