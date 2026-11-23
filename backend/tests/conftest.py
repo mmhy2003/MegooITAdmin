@@ -5,6 +5,7 @@ the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic m
 """
 
 import os
+from functools import cache
 from pathlib import Path
 
 import pytest
@@ -49,13 +50,34 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
-@pytest.fixture(scope="session")
-def database_at_head():
-    # Sync: Alembic's env.py runs its own event loop. Imported here: DATABASE_URL is set in pytest_configure.
+@cache
+def _owner_engine():
+    # Imported here: DATABASE_OWNER_URL is set in pytest_configure.
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    return create_async_engine(os.environ["DATABASE_OWNER_URL"], poolclass=NullPool)
+
+
+def owner_session():
+    """A session as megooitadmin, the owner of the tables, for what the API role may not do."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    return AsyncSession(_owner_engine(), expire_on_commit=False)
+
+
+def upgrade_to_head() -> None:
+    """Migrates as the owner. Sync: Alembic's env.py runs its own event loop. A downgrade below 0003 drops the API
+    role, so every way back to head goes through here."""
     from alembic import command
     from alembic.config import Config
 
     command.upgrade(Config(str(ALEMBIC_INI)), "head")
+
+
+@pytest.fixture(scope="session")
+def database_at_head():
+    upgrade_to_head()
 
 
 @pytest.fixture
