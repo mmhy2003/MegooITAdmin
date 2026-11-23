@@ -55,7 +55,9 @@ Run these before any merge:
   Compose stack and checks it through Caddy. `make test` runs the backend, frontend and stack checks in one go.
 - **Security suites**: `make test-security`. It runs the secret-leak, approval-bypass and audit-coverage suites
   against the fake-server fixture.
-- **Release tools**: `make release-check`. It runs `python tools/release/versions.py check` and `plan`.
+- **Release tools** (repository root): `uv run --project backend pytest tools/release`, then
+  `python tools/release/versions.py check`. `make release-check` runs `check` and `plan` and belongs to a release
+  (step 6 below), because `plan` passes only there.
 
 A check applies once its part is in the repository. While a part is missing (a directory that holds only
 `.gitkeep`, a Makefile target that doesn't exist yet or says its part is not in the repository yet), skip its
@@ -117,9 +119,10 @@ When the owner says "release":
 5. **Write the release note** `docs/releases/vX.Y.Z.md`, for the person installing it: one opening sentence, then
    `## New`, `## Improved` and `## Fixed` (leave out an empty one; each item starts with a bold sentence), and
    `## Upgrading` last.
-6. **Check:** `git add` the changed files, then `python tools/release/versions.py check` and
-   `python tools/release/versions.py plan`. Both must pass. Check the lock files by hand:
-   `git diff --cached` shows the new version in every `uv.lock` and in `frontend/package-lock.json`.
+6. **Check:** `git add` the changed files, then `make release-check`. It runs
+   `python tools/release/versions.py check` (every file in the table above, the lock files included, carries the
+   same version) and `python tools/release/versions.py plan` (the version went up and the release note is in
+   git). Both must pass.
 7. **Commit and push:** `git commit -m "release: MegooITAdmin X.Y.Z"`, then `git push origin main`.
 8. **Bring develop up to date:** `git checkout develop && git merge main && git push origin develop`.
 9. **Watch the Release workflow** (`gh run list --workflow Release`, then `gh run watch <id>`) until every job is
