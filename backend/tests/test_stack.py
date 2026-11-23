@@ -189,6 +189,33 @@ def test_the_database_keeps_its_data_inside_the_db_data_volume():
     assert data_directory == mount or data_directory.startswith(mount + "/"), (data_directory, mount)
 
 
+def test_the_server_holds_only_the_api_roles_url():
+    # Names and booleans only, so a failure never prints a password.
+    result = _compose("exec", "-T", "backend", "cat", "/proc/1/environ")
+    assert result.returncode == 0, result.stderr
+    variables = dict(item.split("=", 1) for item in result.stdout.split("\0") if "=" in item)
+    names = set(variables)
+    assert "DATABASE_OWNER_URL" not in names
+    serves_as_api_role = variables.get("DATABASE_URL", "").startswith("postgresql+asyncpg://megooitadmin_api:")
+    assert serves_as_api_role is True
+
+
+def _psql_as_api_role(sql: str) -> subprocess.CompletedProcess[str]:
+    return _compose(
+        "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_API_PASSWORD')}", "db",
+        "psql", "-h", "127.0.0.1", "-U", "megooitadmin_api", "-d", "megooitadmin", "-tAc", sql,
+    )
+
+
+def test_the_api_role_logs_in_and_may_not_update_audit_log():
+    login = _psql_as_api_role("SELECT current_user")
+    assert login.returncode == 0, login.stderr
+    assert login.stdout.strip() == "megooitadmin_api"
+    update = _psql_as_api_role("UPDATE audit_log SET reason = 'changed'")
+    assert update.returncode != 0, update.stdout
+    assert "permission denied" in update.stderr
+
+
 def test_caddy_accepts_the_caddyfile_and_finds_nothing_to_reformat():
     validate = _compose("exec", "-T", "caddy", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
     assert validate.returncode == 0, validate.stdout + validate.stderr

@@ -19,6 +19,6 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh && useradd --system --uid 10001 megooitadmin
 USER megooitadmin
 EXPOSE 8000
-# The entrypoint migrates first; if a migration fails, Uvicorn never starts.
+# The entrypoint migrates and sets the API role's password first; if either fails, Uvicorn never starts.
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

@@ -28,8 +28,8 @@ def _head() -> str:
     return max(path.name[:4] for path in VERSIONS.glob("[0-9][0-9][0-9][0-9]_*.py"))
 
 
-async def _fetch(sql: str) -> list[asyncpg.Record]:
-    url = _env("IMAGE_DATABASE_URL").replace("postgresql+asyncpg://", "postgresql://", 1)
+async def _fetch(sql: str, variable: str = "IMAGE_DATABASE_URL") -> list[asyncpg.Record]:
+    url = _env(variable).replace("postgresql+asyncpg://", "postgresql://", 1)
     connection = await asyncpg.connect(url)
     try:
         return await connection.fetch(sql)
@@ -58,19 +58,34 @@ async def test_the_proxy_headers_are_honoured():
     assert response.headers["location"].startswith("https://")
 
 
-def test_it_refuses_to_serve_when_a_migration_fails():
-    result = subprocess.run(
-        [
-            "docker", "run", "--rm",
-            "--network", _env("BACKEND_NETWORK"),
-            "-e", f"DATABASE_URL=postgresql+asyncpg://megooitadmin:megooitadmin@db:5432/{_env('DB_NAME')}",
-            "-e", f"DATABASE_OWNER_URL=postgresql+asyncpg://megooitadmin:megooitadmin@db:5432/{_env('DB_NAME')}",
-            "-v", f"{FAILING_REVISION}:/app/migrations/versions/9999_fails.py:ro",
-            _env("BACKEND_IMAGE"),
-        ],
+async def test_the_api_role_logs_in_and_is_not_a_superuser():
+    sql = "SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user"
+    rows = await _fetch(sql, variable="IMAGE_API_DATABASE_URL")
+    assert [tuple(row) for row in rows] == [("megooitadmin_api", False)]
+
+
+def _url(credentials: str) -> str:
+    return f"postgresql+asyncpg://{credentials}@db:5432/{_env('DB_NAME')}"
+
+
+def _run_once(env: dict[str, str], *extra_args: str) -> subprocess.CompletedProcess[str]:
+    """Runs a one-off container of the image on the image set's network, with the given environment."""
+    variables = [arg for name, value in env.items() for arg in ("-e", f"{name}={value}")]
+    return subprocess.run(
+        ["docker", "run", "--rm", "--network", _env("BACKEND_NETWORK"), *variables, *extra_args, _env("BACKEND_IMAGE")],
         capture_output=True,
         text=True,
         timeout=180,
+    )
+
+
+def test_it_refuses_to_serve_when_a_migration_fails():
+    result = _run_once(
+        {
+            "DATABASE_URL": _url("megooitadmin_api:megooitadminapi"),
+            "DATABASE_OWNER_URL": _url("megooitadmin:megooitadmin"),
+        },
+        "-v", f"{FAILING_REVISION}:/app/migrations/versions/9999_fails.py:ro",
     )
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
@@ -79,3 +94,14 @@ def test_it_refuses_to_serve_when_a_migration_fails():
     assert "Uvicorn running" not in output
     versions = [row["version_num"] for row in asyncio.run(_fetch("SELECT version_num FROM alembic_version"))]
     assert versions == [_head()]
+
+
+def test_it_refuses_to_serve_as_any_other_role():
+    owner = _url("megooitadmin:megooitadmin")
+    result = _run_once({"DATABASE_URL": owner, "DATABASE_OWNER_URL": owner})
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "Applying database migrations..." in output
+    assert "DATABASE_URL must connect as megooitadmin_api" in output
+    assert "Uvicorn running" not in output
+    assert "megooitadmin:megooitadmin@" not in output
