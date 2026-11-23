@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from fastapi import HTTPException, Request
-from sqlalchemy import delete, exists, select
+from sqlalchemy import delete, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import Actor, ActorType, Event, Result, Target, record, source_of
@@ -16,11 +16,11 @@ from app.auth.crypto import SecretUndecryptable, decrypt_secret, encrypt_secret
 from app.auth.models import AuthSession, RecoveryCode, SetupCode, User
 from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
-from app.auth.sessions import create_session, delete_expired, end_sessions, lookup_session
+from app.auth.sessions import create_session, delete_expired, end_sessions, is_expired, lookup_session
 from app.core.config import get_settings
 
 if TYPE_CHECKING:
-    from app.auth.schemas import CodeIn, ConfirmIn, EnrolIn, EnrolOut, LoginIn, SetupIn
+    from app.auth.schemas import CodeIn, ConfirmIn, EnrolIn, EnrolOut, LoginIn, MeOut, SessionOut, SetupIn
 
 MAX_FAILURES = 5
 LOCK_TIME = timedelta(minutes=15)
@@ -445,3 +445,77 @@ async def confirm_enrolment(
             ),
         )
     return None, None
+
+
+async def logout(db: AsyncSession, request: Request, session: AuthSession) -> None:
+    """Ends this browser's session, pending or active."""
+    user = session.user
+    await db.delete(session)
+    await db.flush()
+    await record(
+        db,
+        auth_event(
+            request, actions.SIGN_OUT, actor_of(user), target=target_of(user), mfa=session.stage == "active"
+        ),
+    )
+
+
+async def me(db: AsyncSession, user: User) -> "MeOut":
+    from app.auth.schemas import MeOut, UserOut
+
+    left = await db.scalar(select(func.count()).select_from(RecoveryCode).where(RecoveryCode.user_id == user.id))
+    return MeOut(
+        user=UserOut.model_validate(user),
+        password_changed_at=user.password_changed_at,
+        totp_confirmed_at=user.totp_confirmed_at,
+        recovery_codes_left=left,
+    )
+
+
+async def list_sessions(db: AsyncSession, session: AuthSession, user: User) -> "list[SessionOut]":
+    """The person's signed-in sessions, newest first. Expired rows are left out, not deleted: this only reads."""
+    from app.auth.schemas import SessionOut
+
+    query = (
+        select(AuthSession)
+        .where(AuthSession.user_id == user.id, AuthSession.stage == "active")
+        .order_by(AuthSession.created_at.desc())
+    )
+    now = clock.now()
+    return [
+        SessionOut(
+            id=s.id,
+            current=s.id == session.id,
+            created_at=s.created_at,
+            last_seen_at=s.last_seen_at,
+            ip=str(s.ip) if s.ip is not None else None,
+            user_agent=s.user_agent,
+            mfa_method=s.mfa_method,
+        )
+        for s in (await db.scalars(query)).all()
+        if not is_expired(s, now)
+    ]
+
+
+async def revoke_session(
+    db: AsyncSession, request: Request, session: AuthSession, user: User, session_id: UUID
+) -> None:
+    """Ends another of the person's sessions. This one ends with sign-out instead."""
+    if session_id == session.id:
+        raise HTTPException(409, "current_session")
+    other = await db.scalar(select(AuthSession).where(AuthSession.id == session_id, AuthSession.user_id == user.id))
+    if other is None:
+        # Someone else's session answers the same as none, so IDs cannot be probed.
+        raise HTTPException(404, "not_found")
+    await db.delete(other)
+    await db.flush()
+    await record(
+        db,
+        auth_event(
+            request,
+            actions.SESSION_REVOKED,
+            actor_of(user),
+            target=Target(type="auth_session", id=str(session_id)),
+            mfa=True,
+        ),
+    )

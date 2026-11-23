@@ -1,5 +1,6 @@
 """The request and response bodies of /api/auth."""
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -63,3 +64,20 @@ class ConfirmIn(BaseModel):
 
 class ConfirmOut(BaseModel):
     recovery_codes: list[str] | None  # only at the first enrolment
+
+
+class MeOut(BaseModel):
+    user: UserOut
+    password_changed_at: datetime
+    totp_confirmed_at: datetime | None
+    recovery_codes_left: int
+
+
+class SessionOut(BaseModel):
+    id: UUID
+    current: bool
+    created_at: datetime
+    last_seen_at: datetime
+    ip: str | None
+    user_agent: str | None
+    mfa_method: str | None

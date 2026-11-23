@@ -19,6 +19,7 @@ PENDING: dict[str, str] = {
     "POST /api/auth/login/mfa": "the code step: it turns the pending session of a right password into an active one",
     "POST /api/auth/mfa/enrol": "an account without an authenticator enrols one before its first sign-in",
     "POST /api/auth/mfa/enrol/confirm": "confirming the first authenticator finishes the sign-in",
+    "POST /api/auth/logout": "a sign-in stopped at the code step can be abandoned",
 }
 
 

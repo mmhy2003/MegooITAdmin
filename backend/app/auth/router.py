@@ -1,11 +1,13 @@
 """The routes under /api/auth."""
 
+from uuid import UUID
+
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.audit import audited
 from app.auth import actions, service
-from app.auth.deps import CurrentSession
+from app.auth.deps import CurrentSession, CurrentUser
 from app.auth.schemas import (
     CodeIn,
     ConfirmIn,
@@ -13,12 +15,14 @@ from app.auth.schemas import (
     EnrolIn,
     EnrolOut,
     LoginIn,
+    MeOut,
+    SessionOut,
     SessionStatusOut,
     SetupIn,
     StatusOut,
     UserOut,
 )
-from app.auth.sessions import COOKIE, set_cookie
+from app.auth.sessions import COOKIE, clear_cookie, set_cookie
 from app.core.db import DbSession
 
 router = APIRouter(prefix="/auth")
@@ -111,3 +115,29 @@ async def confirm_enrolment(
     if token is not None:
         set_cookie(response, request, token)
     return ConfirmOut(recovery_codes=codes)
+
+
+@router.post("/logout", response_model=StatusOut, dependencies=[audited(actions.SIGN_OUT)])
+async def logout(request: Request, response: Response, db: DbSession, session: CurrentSession) -> StatusOut:
+    # Pending too: a sign-in stopped at the code step can be abandoned.
+    await service.logout(db, request, session)
+    clear_cookie(response, request)
+    return StatusOut(status="signed_out")
+
+
+@router.get("/me")
+async def me(db: DbSession, user: CurrentUser) -> MeOut:
+    return await service.me(db, user)
+
+
+@router.get("/sessions")
+async def list_sessions(db: DbSession, session: CurrentSession, user: CurrentUser) -> list[SessionOut]:
+    return await service.list_sessions(db, session, user)
+
+
+@router.delete("/sessions/{session_id}", status_code=204, dependencies=[audited(actions.SESSION_REVOKED)])
+async def revoke_session(
+    session_id: UUID, request: Request, db: DbSession, session: CurrentSession, user: CurrentUser
+) -> Response:
+    await service.revoke_session(db, request, session, user, session_id)
+    return Response(status_code=204)
