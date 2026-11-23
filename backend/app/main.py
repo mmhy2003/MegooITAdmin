@@ -3,6 +3,7 @@ from fastapi import APIRouter, FastAPI
 from app.auth.router import router as auth_router
 from app.core.config import Settings, get_settings
 from app.inventory.router import router as inventory_router
+from app.inventory.server_router import router as server_router
 from app.users.router import router as users_router
 
 
@@ -31,6 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(auth_router)
     api.include_router(users_router)
     api.include_router(inventory_router)
+    api.include_router(server_router)
     app.include_router(api)
     return app
 

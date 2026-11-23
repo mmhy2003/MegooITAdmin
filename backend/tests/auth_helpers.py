@@ -1,7 +1,9 @@
-"""Shared helpers of the auth tests: accounts, codes, server groups, grants and the audit events they record."""
+"""Shared helpers of the auth tests: accounts, codes, server groups, servers, grants and the audit events they
+record."""
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import pyotp
@@ -19,7 +21,7 @@ from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-from app.inventory.models import ServerGroup
+from app.inventory.models import Server, ServerGroup, ServerTag
 
 EMAIL = "owner@example.com"
 NAME = "Olive Owner"
@@ -135,3 +137,32 @@ async def set_switch(grant_id: uuid.UUID, name: str, value: bool) -> None:
     async with SessionLocal() as session:
         await session.execute(update(RoleGrant).where(RoleGrant.id == grant_id).values({name: value}))
         await session.commit()
+
+
+@asynccontextmanager
+async def signed_in(api, clock, email: str, platform_role: str | None = None):
+    """A signed-in browser of a new account named after the email, and the account."""
+    user, secret = await make_user(email=email, name=email.split("@")[0], platform_role=platform_role)
+    async with other_client(api) as client:
+        await sign_in(client, clock, secret, email=email)
+        yield user, client
+
+
+async def make_server(
+    group_id: uuid.UUID,
+    name: str,
+    *,
+    address: str = "10.0.0.1",
+    os: str = "linux",
+    port: int = 22,
+    role: str | None = None,
+    tags: tuple[str, ...] = (),
+) -> Server:
+    """Inserts a server and its tags through the API role, without events."""
+    async with SessionLocal() as session:
+        server = Server(server_group_id=group_id, name=name, address=address, os=os, port=port, role=role)
+        session.add(server)
+        await session.flush()
+        session.add_all(ServerTag(server_id=server.id, tag=tag) for tag in tags)
+        await session.commit()
+        return server
