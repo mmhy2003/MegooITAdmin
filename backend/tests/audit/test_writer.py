@@ -18,6 +18,7 @@ from app.audit import (
     Target,
     record,
     record_alone,
+    verify_chain,
 )
 from app.audit import writer
 from app.audit.models import CHAINED_COLUMNS
@@ -126,6 +127,8 @@ async def test_twenty_concurrent_writers_get_numbers_1_to_20():
     for row in chain:
         assert row.prev_hash == previous
         previous = row.hash
+    async with SessionLocal() as session:
+        assert (await verify_chain(session)).ok
 
 
 async def test_times_never_decrease_along_the_chain(monkeypatch):
