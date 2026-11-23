@@ -16,6 +16,8 @@ ANY_SIGNED_IN: dict[str, str] = {
     "POST /api/auth/password": "a person changes their own password",
     "POST /api/auth/recovery-codes": "a person replaces their own recovery codes",
     "GET /api/server-groups": "the list filters itself by the person's access",
+    "GET /api/servers": "the list filters itself by the person's access",
+    "GET /api/server-tags": "the tags of the servers the person sees",
 }
 
 

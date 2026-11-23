@@ -97,6 +97,30 @@ async def _group(db: AsyncSession, group_id: UUID) -> ServerGroup:
     return group
 
 
+async def list_servers(db: AsyncSession, access: Access, group_id: UUID | None, tags: list[str]) -> list[ServerOut]:
+    """The servers the person sees, by name, in one group when asked, carrying every tag asked for."""
+    query = select(Server, ServerGroup.name).join(ServerGroup, ServerGroup.id == Server.server_group_id)
+    visible = access.visible_group_ids()
+    if visible is not None:
+        query = query.where(Server.server_group_id.in_(visible))
+    if group_id is not None:
+        query = query.where(Server.server_group_id == group_id)
+    for tag in {tag.strip().lower() for tag in tags}:
+        query = query.where(Server.id.in_(select(ServerTag.server_id).where(ServerTag.tag == tag)))
+    rows = (await db.execute(query.order_by(func.lower(Server.name), Server.id))).all()
+    tags_of = await _tags_of(db, [server.id for server, _ in rows])
+    return [_out(server, group_name, tags_of.get(server.id, []), access) for server, group_name in rows]
+
+
+async def list_tags(db: AsyncSession, access: Access) -> list[str]:
+    """The tags in use on the servers the person sees, sorted."""
+    query = select(ServerTag.tag).distinct().join(Server, Server.id == ServerTag.server_id)
+    visible = access.visible_group_ids()
+    if visible is not None:
+        query = query.where(Server.server_group_id.in_(visible))
+    return list((await db.scalars(query.order_by(ServerTag.tag))).all())
+
+
 async def get_server(db: AsyncSession, access: Access, server_id: UUID) -> ServerOut:
     """One server. The route's guard has already answered 404 for a server the person does not see."""
     server, group_name = (
