@@ -1,5 +1,6 @@
 from fastapi import APIRouter, FastAPI
 
+from app.auth.router import router as auth_router
 from app.core.config import Settings, get_settings
 
 
@@ -25,6 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # answer means "migrated and serving".
         return {"status": "ok"}
 
+    api.include_router(auth_router)
     app.include_router(api)
     return app
 

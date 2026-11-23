@@ -127,3 +127,15 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     fake = FakeClock()
     monkeypatch.setattr("app.auth.clock.now", lambda: fake.now)
     return fake
+
+
+@pytest.fixture
+async def api(clean_auth, clock):
+    """An HTTP client for the real app, from a fixed client address, with no account and the fake clock."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    transport = ASGITransport(app=create_app(), client=("127.0.0.1", 50000))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
