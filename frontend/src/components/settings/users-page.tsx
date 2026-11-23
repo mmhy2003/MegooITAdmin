@@ -4,6 +4,7 @@ import { MoreHorizontal, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { formatTime } from "@/components/profile/profile-page";
 import { AccessDialog } from "@/components/settings/access-dialog";
+import { DisableDialog } from "@/components/settings/disable-dialog";
 import { InviteDialog } from "@/components/settings/invite-dialog";
 import { InviteLinkDialog } from "@/components/settings/invite-link-dialog";
 import { Alert } from "@/components/ui/alert";
@@ -43,6 +44,7 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
   const [inviting, setInviting] = useState(false);
   const [link, setLink] = useState<{ link: InviteLink; name: string } | null>(null);
   const [changing, setChanging] = useState<UserRow | null>(null);
+  const [disabling, setDisabling] = useState<UserRow | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const reload = useCallback(
@@ -72,6 +74,58 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
     setNotice(`Access of ${changing?.name ?? ""} saved.`);
     setChanging(null);
     void reload();
+  }
+
+  function disabled() {
+    setDisabling(null);
+    void reload();
+  }
+
+  /** Runs a menu action that posts at once; a success shows `done` and reloads the list. */
+  async function post(row: UserRow, route: string, done: string) {
+    setNotice(null);
+    try {
+      await apiFetch<void>(`/users/${row.id}/${route}`, { method: "POST" });
+      setError(null);
+      setNotice(done);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "error");
+      return;
+    }
+    void reload();
+  }
+
+  async function renewInvite(row: UserRow) {
+    setNotice(null);
+    try {
+      const renewed = await apiFetch<InviteLink>(`/users/${row.id}/invite`, { method: "POST" });
+      setError(null);
+      setLink({ link: renewed, name: row.name });
+    } catch (e) {
+      setError(e instanceof ApiError ? e.detail : "error");
+      return;
+    }
+    void reload();
+  }
+
+  function handlerOf(action: string, row: UserRow): () => void {
+    switch (action) {
+      case "Change access":
+        return () => setChanging(row);
+      case "Disable":
+        return () => setDisabling(row);
+      case "Enable":
+        return () => void post(row, "enable", `${row.name} can sign in again.`);
+      case "Reset two-step verification":
+        return () =>
+          void post(
+            row,
+            "mfa-reset",
+            `Two-step verification of ${row.name} is reset. They set up a new authenticator at their next sign-in.`,
+          );
+      default: // "New invite link"
+        return () => void renewInvite(row);
+    }
   }
 
   function reloadGroups() {
@@ -140,10 +194,7 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
                               {ACTIONS[row.status].map((action) => (
-                                <DropdownMenuItem
-                                  key={action}
-                                  onSelect={action === "Change access" ? () => setChanging(row) : undefined}
-                                >
+                                <DropdownMenuItem key={action} onSelect={handlerOf(action, row)}>
                                   {action}
                                 </DropdownMenuItem>
                               ))}
@@ -167,6 +218,12 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
         onOpenChange={(open) => !open && setChanging(null)}
         onSaved={accessSaved}
         onStale={reloadGroups}
+      />
+      <DisableDialog
+        user={disabling}
+        open={disabling !== null}
+        onOpenChange={(open) => !open && setDisabling(null)}
+        onDone={disabled}
       />
       <InviteLinkDialog link={link?.link ?? null} name={link?.name ?? ""} onDone={() => setLink(null)} />
     </div>

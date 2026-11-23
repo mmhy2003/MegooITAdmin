@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatTime } from "@/components/profile/profile-page";
 import { UsersPage } from "@/components/settings/users-page";
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import { type InviteLink, type ServerGroup, switchesFor, type UserRow } from "@/lib/access";
 
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
@@ -62,6 +62,7 @@ const CY: UserRow = {
 };
 
 const LINK: InviteLink = { user_id: "u-new", token: "tok-new", expires_at: "2026-12-02T10:00:00Z" };
+const RENEWED: InviteLink = { user_id: BEN.id, token: "tok-ben", expires_at: "2026-12-03T10:00:00Z" };
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
@@ -71,6 +72,8 @@ function mockApi() {
   vi.mocked(apiFetch).mockImplementation(async (path: string, init?: { method?: string }) => {
     if (path === "/users" && init?.method === "POST") return LINK;
     if (path === `/users/${ADA.id}/access` && init?.method === "PUT") return undefined;
+    if (path === `/users/${BEN.id}/invite` && init?.method === "POST") return RENEWED;
+    if (/^\/users\/u-\w+\/(disable|enable|mfa-reset)$/.test(path) && init?.method === "POST") return undefined;
     if (path === "/users") return [ADA, BEN, CY, OWNER];
     if (path === "/server-groups") return GROUPS;
     throw new Error(`unexpected ${path}`);
@@ -148,6 +151,86 @@ describe("UsersPage", () => {
     expect(await screen.findByText("Access of Ada Admin saved.")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await waitFor(() => expect(vi.mocked(apiFetch).mock.calls.filter(([p]) => p === "/users")).toHaveLength(2));
+  });
+
+  async function choose(name: string, action: string) {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: `Actions for ${name}` }));
+    await user.click(await screen.findByRole("menuitem", { name: action }));
+    return user;
+  }
+
+  function usersLoads() {
+    return vi.mocked(apiFetch).mock.calls.filter(([p]) => p === "/users").length;
+  }
+
+  it("asks before disabling a person and disables them only after Disable", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    const user = await choose("Ada Admin", "Disable");
+    const dialog = within(await screen.findByRole("dialog", { name: "Disable Ada Admin?" }));
+    expect(apiFetch).not.toHaveBeenCalledWith(`/users/${ADA.id}/disable`, expect.anything());
+    await user.click(dialog.getByRole("button", { name: "Disable" }));
+
+    expect(apiFetch).toHaveBeenCalledWith(`/users/${ADA.id}/disable`, { method: "POST" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(usersLoads()).toBe(2));
+  });
+
+  it("enables a disabled person and says they can sign in", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    await choose("Cy Disabled", "Enable");
+
+    expect(apiFetch).toHaveBeenCalledWith(`/users/${CY.id}/enable`, { method: "POST" });
+    expect(await screen.findByText("Cy Disabled can sign in again.")).toBeInTheDocument();
+    await waitFor(() => expect(usersLoads()).toBe(2));
+  });
+
+  it("resets a person's two-step verification and says what happens next", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    await choose("Ada Admin", "Reset two-step verification");
+
+    expect(apiFetch).toHaveBeenCalledWith(`/users/${ADA.id}/mfa-reset`, { method: "POST" });
+    expect(
+      await screen.findByText(
+        "Two-step verification of Ada Admin is reset. They set up a new authenticator at their next sign-in.",
+      ),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(usersLoads()).toBe(2));
+  });
+
+  it("makes a new invite link and shows it once", async () => {
+    mockApi();
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    await choose("Ben Invited", "New invite link");
+
+    expect(apiFetch).toHaveBeenCalledWith(`/users/${BEN.id}/invite`, { method: "POST" });
+    const linkDialog = within(await screen.findByRole("dialog", { name: "Invite link for Ben Invited" }));
+    expect(linkDialog.getByRole("textbox", { name: "Invite link" })).toHaveValue(
+      `${window.location.origin}/invite#tok-ben`,
+    );
+    await waitFor(() => expect(usersLoads()).toBe(2));
+  });
+
+  it("shows the text of a refusal", async () => {
+    mockApi();
+    const listed = vi.mocked(apiFetch).getMockImplementation()!;
+    vi.mocked(apiFetch).mockImplementation(async (path, init) => {
+      if (path === `/users/${CY.id}/enable`) throw new ApiError(409, "own_account");
+      return listed(path, init);
+    });
+    render(<UsersPage currentUserId={OWNER.id} />);
+
+    await choose("Cy Disabled", "Enable");
+
+    expect(await screen.findByText("You cannot change your own account here.")).toBeInTheDocument();
+    expect(screen.queryByText("Cy Disabled can sign in again.")).not.toBeInTheDocument();
   });
 
   it("invites a person, shows the link once and lists them", async () => {
