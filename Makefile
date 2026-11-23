@@ -6,7 +6,7 @@
 # with the throwaway values of tools/stacks/<STACK>.env. Those never read .env.
 
 .DEFAULT_GOAL := help
-.PHONY: help .env up down logs migrate shell-backend migration test test-security release-check
+.PHONY: help .env up down logs migrate shell-backend migration test test-security release-check setup-code
 
 RUNNER := megoocolab-runner
 VERSIONS := backend/migrations/versions
@@ -29,12 +29,13 @@ help:
 	@echo "  logs                   Follow the logs of the stack"
 	@echo "  migrate                Apply the migrations in the running backend"
 	@echo "  shell-backend          Open a shell in the running backend"
+	@echo "  setup-code             Print a new one-time setup code (only before the first account exists)"
 	@echo "  migration name=<name>  Create the next numbered migration on the scratch database"
 	@echo "  test                   Run every backend, frontend and stack check"
 	@echo "  test-security          Run the security suites"
 	@echo "  release-check          Check the versions and the release plan"
 	@echo ""
-	@echo "Without STACK, up, down, logs, migrate and shell-backend act on the real instance."
+	@echo "Without STACK, up, down, logs, migrate, shell-backend and setup-code act on the real instance."
 
 # Only the real instance reads .env. A missing file is created with both passwords and AUTH_SECRET_KEY. A file
 # without POSTGRES_API_PASSWORD or AUTH_SECRET_KEY gets the missing line appended. No line is ever changed or removed.
@@ -83,6 +84,9 @@ migrate:
 
 shell-backend:
 	$(COMPOSE) exec backend bash
+
+setup-code:
+	$(COMPOSE) exec backend python -m app.auth.cli setup-code
 
 # The highest migration number plus one, with four digits. The leading 1 keeps 0008 from being read as octal.
 LAST_MIGRATION = $(lastword $(sort $(foreach file,$(notdir $(wildcard $(VERSIONS)/[0-9][0-9][0-9][0-9]_*.py)),$(firstword $(subst _, ,$(file))))))

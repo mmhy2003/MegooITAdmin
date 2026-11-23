@@ -11,7 +11,7 @@ import pytest
 
 MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
 UP = "up -d --build --wait --wait-timeout 300"
-TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check"]
+TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code"]
 
 
 @pytest.fixture
@@ -182,6 +182,13 @@ def test_test_security_runs_the_security_suites(workdir):
     result = make(workdir, "-n", "test-security")
     assert result.returncode == 0, result.stderr
     assert "cd backend && megoocolab-runner services run test -- uv run pytest tests/security" in result.stdout.splitlines()
+
+
+def test_setup_code_runs_the_command_in_the_chosen_stack(workdir):
+    result = make(workdir, "-n", "setup-code", "STACK=dev")
+    assert result.returncode == 0, result.stderr
+    command = "docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli setup-code"
+    assert command in result.stdout.splitlines()
 
 
 def test_release_check_runs_the_version_check_then_the_release_plan(workdir):

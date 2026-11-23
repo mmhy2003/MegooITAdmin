@@ -3,6 +3,7 @@ started it with its own database. They do not import the app or run Alembic."""
 
 import asyncio
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -121,3 +122,18 @@ def test_it_refuses_to_serve_without_the_auth_secret_key():
     assert result.returncode != 0, output
     assert "AUTH_SECRET_KEY is not set" in output
     assert "Uvicorn running" not in output
+
+
+def test_the_log_of_a_fresh_install_holds_a_setup_code():
+    project = _env("MEGOO_SERVICES_PROJECT")
+    container = subprocess.run(
+        [
+            "docker", "ps", "-q",
+            "--filter", f"label=com.docker.compose.project={project}",
+            "--filter", "label=com.docker.compose.service=backend",
+        ],
+        capture_output=True, text=True, timeout=30, check=True,
+    ).stdout.strip()
+    assert container, f"No backend container in the Compose project {project}"
+    logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True, timeout=30, check=True)
+    assert re.search(r"Setup code: [A-Z2-7]{4}(-[A-Z2-7]{4}){3}", logs.stdout + logs.stderr), logs.stdout + logs.stderr

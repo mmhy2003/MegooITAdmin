@@ -13,6 +13,10 @@ alembic upgrade head
 echo "Setting the password of the API role..."
 python -m app.core.db_roles
 
+# On a fresh install every start logs a new code, which replaces the last one. Once an account exists, this says nothing.
+echo "Checking for a setup code..."
+python -m app.auth.cli setup-code --if-no-account
+
 # The server never holds the owner's password. docker compose exec still gets it (make migrate).
 unset DATABASE_OWNER_URL
 exec "$@"
