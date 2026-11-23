@@ -4,11 +4,12 @@ from datetime import datetime
 
 import pyotp
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.audit import AuditEvent
 from app.auth import clock, totp
 from app.auth.crypto import encrypt_secret
-from app.auth.models import RecoveryCode, User
+from app.auth.models import RecoveryCode, SetupCode, User
 from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
 from app.core.config import get_settings
@@ -69,3 +70,13 @@ async def load_user(email: str = EMAIL) -> User:
     """A fresh read of the account, past any session's identity map."""
     async with SessionLocal() as session:
         return (await session.scalars(select(User).where(User.email == email))).one()
+
+
+async def put_setup_code(code: str, failed_attempts: int = 0) -> None:
+    """Stores the hash of `code` as the setup code, replacing any earlier one."""
+    values = {"code_hash": hash_code(code), "failed_attempts": failed_attempts}
+    async with SessionLocal() as session:
+        await session.execute(
+            insert(SetupCode).values(id=1, **values).on_conflict_do_update(index_elements=["id"], set_=values)
+        )
+        await session.commit()

@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
-from fastapi.dependencies.utils import get_dependant
+from fastapi.dependencies.utils import get_parameterless_sub_dependant
 from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
 from starlette.routing import Route
 
@@ -64,7 +64,8 @@ def dependency_calls(context: RouteContext) -> set[Callable[..., Any]]:
     for dep in context.dependencies:
         if dep.dependency is not None:
             calls.add(dep.dependency)
-            calls.update(_calls(get_dependant(path=context.path, call=dep.dependency)))
+            # As FastAPI builds it, keeping the dependency's scope: audited(...) has scope="function".
+            calls.update(_calls(get_parameterless_sub_dependant(depends=dep, path=context.path)))
     return calls
 
 

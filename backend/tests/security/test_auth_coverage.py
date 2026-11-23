@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, FastAPI
 from routes import api_routes, unguarded_routes
 
+from app.audit import audited
 from app.auth.deps import CurrentSession, CurrentUser, current_user
 from app.main import create_app
 
@@ -10,6 +11,7 @@ from app.main import create_app
 PUBLIC: dict[str, str] = {
     "GET /api/health": "liveness for Compose and Caddy; it reveals nothing",
     "GET /api/auth/session": "the page gate asks it which page to show before anyone is signed in",
+    "POST /api/auth/setup": "claims a fresh install with the one-time code from the host, before any account exists",
 }
 # Routes that also work with a pending session (password right, second factor still to come).
 PENDING: dict[str, str] = {}
@@ -44,6 +46,10 @@ def sample_app() -> FastAPI:
 
     @app.post("/finish")
     async def finish(session: CurrentSession) -> None: ...
+
+    # A route dependency with scope="function", as audited(...) is, beside the session one.
+    @app.post("/things", dependencies=[audited("thing.created"), Depends(current_user)])
+    async def things() -> None: ...
 
     router = APIRouter(prefix="/servers")
 
