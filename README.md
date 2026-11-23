@@ -42,3 +42,16 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 - `make reset-password email=<email>` asks twice for a new password, sets it and unlocks the account.
 - Both end the account's sessions and are recorded in the audit log, and both take `STACK=` for the copies.
 - After five failed attempts an account is locked for 15 minutes.
+
+### People and access
+
+- The Owner invites a person on Settings → Users and gets a one-time link. The app sends no email: pass the link
+  on by hand. It is valid 7 days. The person opens it, chooses a password and sets up an authenticator.
+- Roles are given per server group (Settings → Server groups). A person is Admin or Operator on each group, or
+  has no access to it, and each group's role carries seven switches. Only Connect SSH and Connect RDP are checked
+  so far; the other five are kept for the features that use them.
+- Auditor and Owner are platform-wide and cover every group. Everyone sees their own access on Profile and
+  security.
+- An account is disabled, never deleted: its sessions end and it can be enabled again. Every change to a person,
+  a role or a switch is recorded in the audit log with before and after.
+- `make reset-password` and `make reset-mfa` still work for every account.
