@@ -123,7 +123,7 @@ def test_test_security_says_its_suites_are_not_in_the_repository_yet(workdir):
     assert "the security suites are not in the repository yet" in result.stderr
 
 
-def test_release_check_says_the_release_tool_is_not_in_the_repository_yet(workdir):
-    result = make(workdir, "release-check")
-    assert result.returncode != 0
-    assert "tools/release/versions.py is not in the repository yet" in result.stderr
+def test_release_check_runs_the_version_check_then_the_release_plan(workdir):
+    result = make(workdir, "-n", "release-check")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["python tools/release/versions.py check", "python tools/release/versions.py plan"]

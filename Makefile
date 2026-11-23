@@ -84,6 +84,5 @@ test-security:
 	@echo "make test-security: the security suites are not in the repository yet. They come with Phases 3 and 4." >&2; exit 1
 
 release-check:
-	@test -f tools/release/versions.py || { echo "make release-check: tools/release/versions.py is not in the repository yet." >&2; exit 1; }
 	python tools/release/versions.py check
 	python tools/release/versions.py plan
