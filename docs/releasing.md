@@ -37,9 +37,15 @@ The version lives in these files, and a release sets the same version in all of 
 | `frontend/package.json` | `"version"` |
 | `frontend/package-lock.json` | Both top-level `"version"` lines |
 
-If the product changed since its last tag, it must carry a new, higher version. The release tooling
-(`tools/release/versions.py` and the Release workflow) refuses anything else. The reason: servers that follow
-`latest` would otherwise get a lower version, or a changed product under a version number they already run.
+`python tools/release/versions.py check` compares every file of this table, the lock files included, with
+`VERSION`.
+
+If the product changed since its last tag, it must carry a new, higher version. The product is `backend`,
+`workers`, `gateway`, `executor`, `frontend`, `caddy`, `docker-compose.yml`, `.env.example`, `Makefile` and
+`VERSION`. A change anywhere else (`docs/`, `tools/`, `.github/`, `AGENTS.md`, `README.md`, `megoocolab.toml`)
+needs none. `python tools/release/versions.py guard` runs this rule alone, and `plan` includes it. The release
+tooling (`tools/release/versions.py` and the Release workflow) refuses anything else. The reason: servers that
+follow `latest` would otherwise get a lower version, or a changed product under a version number they already run.
 
 ## The routine
 
@@ -58,10 +64,9 @@ workflow. If either is not in the repository yet, stop and say so.
    `## New`, `## Improved` and `## Fixed` (leave out an empty one; each item starts with a bold sentence), and
    `## Upgrading` last. The workflow publishes this file as the text of the GitHub release, and fails if it is not
    in git.
-6. **Check:** stage the changed files, then run `python tools/release/versions.py check` (all files carry the same
-   version) and `python tools/release/versions.py plan` (the version went up and the note exists). Both must pass.
-   The tool doesn't read the lock files for you, so check them by hand: `git diff --cached` shows the new version
-   in every `uv.lock` and in `frontend/package-lock.json`.
+6. **Check:** stage the changed files, then run `make release-check`. It runs `python tools/release/versions.py
+   check` (all files of the table, the lock files included, carry the same version) and
+   `python tools/release/versions.py plan` (the version went up and the note is in git). Both must pass.
 7. **Commit and push:** commit as `release: MegooITAdmin X.Y.Z` and push `main`. The push starts the Release
    workflow.
 8. **Bring develop up to date:** merge `main` back into `develop` and push it, so `develop` carries the release
@@ -86,7 +91,6 @@ git add -u
 git add docs/releases/vX.Y.Z.md
 python tools/release/versions.py check
 python tools/release/versions.py plan
-git diff --cached
 
 # 7. Commit and push
 git commit -m "release: MegooITAdmin X.Y.Z"
@@ -111,7 +115,8 @@ compare with. The files already hold `0.1.0`, so step 4 changes nothing and the 
 It runs on every push to `main`. Its jobs, in order:
 
 - **plan** reads the version and fails if it did not go up since the last tag, or if the release note
-  `docs/releases/vX.Y.Z.md` is not in git.
+  `docs/releases/vX.Y.Z.md` is not in git. A version that already has its tag, with no change to the product,
+  releases nothing: `plan` prints `release=false` and the other jobs are skipped.
 - **tests** reuses the CI workflow, so a release runs the same checks as every merge.
 - **app** is a start-up smoke test: it brings the stack up with Docker Compose and calls `curl /api/health`.
 - **images** builds every service image natively for amd64 and for arm64.
