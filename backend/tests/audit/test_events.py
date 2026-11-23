@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.audit import Actor, ActorType, Event, Person, Result, RiskClass, Source, Target, changes
+from app.audit.models import CHAINED_COLUMNS
 
 ALICE = Actor.human(7, "Alice")
 
@@ -133,3 +134,9 @@ def test_changes_reports_a_field_present_on_one_side_only():
         "new": {"before": None, "after": 2},
         "old": {"before": 1, "after": None},
     }
+
+
+def test_columns_match_the_chained_columns_of_the_table():
+    columns = Event(action="server.created", actor=ALICE).columns()
+    assert set(columns) == set(CHAINED_COLUMNS)
+    assert len(CHAINED_COLUMNS) == 20

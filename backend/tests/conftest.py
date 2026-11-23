@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 RUN_TESTS = "megoocolab-runner services run test -- uv run pytest"
+ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
 # The marker of a set without a test database, and the only file a run with that marker collects.
@@ -38,3 +39,28 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     if own_file and collection_path.is_file() and collection_path.name != own_file:
         return True
     return None
+
+
+@pytest.fixture(scope="session")
+def database_at_head():
+    # Sync: Alembic's env.py runs its own event loop. Imported here: DATABASE_URL is set in pytest_configure.
+    from alembic import command
+    from alembic.config import Config
+
+    command.upgrade(Config(str(ALEMBIC_INI)), "head")
+
+
+@pytest.fixture
+async def empty_audit_log(database_at_head):
+    from sqlalchemy import text
+
+    from app.core.db import SessionLocal
+
+    # The triggers refuse DELETE, so they are switched off for this transaction only, as a superuser can.
+    async with SessionLocal() as session:
+        await session.execute(text("SET LOCAL session_replication_role = replica"))
+        await session.execute(text("DELETE FROM audit_log"))
+        await session.execute(
+            text("UPDATE audit_chain_head SET seq = 0, hash = :zero, time = NULL"), {"zero": bytes(32)}
+        )
+        await session.commit()
