@@ -116,3 +116,22 @@ def test_access_is_immutable():
         admin.groups[STAGING].role = GroupRole.OPERATOR
     with pytest.raises(TypeError):
         admin.groups[PRODUCTION] = GroupGrant(GroupRole.ADMIN, ALL_PERMISSIONS)
+
+
+def test_manages_is_true_for_an_owner_everywhere_and_for_an_admin_in_their_group_only():
+    owner = access(PlatformRole.OWNER)
+    admin = access(groups={STAGING: GroupGrant(GroupRole.ADMIN, ALL_PERMISSIONS)})
+
+    for group_id in (STAGING, PRODUCTION):
+        assert owner.manages(group_id) is True
+    assert admin.manages(STAGING) is True
+    assert admin.manages(PRODUCTION) is False
+
+
+def test_an_operator_and_an_auditor_manage_nothing():
+    operator = access(groups={STAGING: GroupGrant(GroupRole.OPERATOR, USUAL[GroupRole.OPERATOR])})
+    auditor = access(PlatformRole.AUDITOR)
+
+    for group_id in (STAGING, PRODUCTION):
+        assert operator.manages(group_id) is False
+        assert auditor.manages(group_id) is False

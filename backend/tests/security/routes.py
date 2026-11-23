@@ -92,8 +92,9 @@ def unguarded_routes(app: FastAPI, public: Mapping[str, str], pending: Mapping[s
 
 
 def access_requirement(context: RouteContext) -> str | None:
-    """What the route's access guard requires ('owner', a permission, 'group'), or None when it has no guard.
-    require_owner, require_grant(...) and require_group_visible(...) carry it as an `access_requirement` attribute."""
+    """What the route's access guard requires ('owner', a permission, 'group', 'admin'), or None when it has no
+    guard. require_owner, require_grant(...), require_group_visible(...) and require_group_admin(...) carry it as an
+    `access_requirement` attribute."""
     requirements = (getattr(call, "access_requirement", None) for call in dependency_calls(context))
     return min((requirement for requirement in requirements if requirement), default=None)
 

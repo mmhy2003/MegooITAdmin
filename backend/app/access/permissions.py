@@ -81,6 +81,13 @@ class Access:
         grant = self.groups.get(group_id)
         return grant is not None and permission in grant.permissions
 
+    def manages(self, group_id: UUID) -> bool:
+        """Whether the person changes the inventory of the group: an Owner everywhere, an Admin in their groups."""
+        if self.is_owner:
+            return True
+        grant = self.groups.get(group_id)
+        return grant is not None and grant.role == GroupRole.ADMIN
+
     def visible_group_ids(self) -> frozenset[UUID] | None:
         """The groups this person sees, or None when they see every group."""
         if self.platform_role is not None:
