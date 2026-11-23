@@ -32,3 +32,8 @@ class SetupIn(BaseModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
     email: str = Field(max_length=254, pattern=r"^[^@\s]+@[^@\s]+$")
     password: str = Field(min_length=PASSWORD_MIN, max_length=PASSWORD_MAX)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=1, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
