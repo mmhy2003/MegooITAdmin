@@ -60,3 +60,30 @@ migrate:
 
 shell-backend:
 	$(COMPOSE) exec backend bash
+
+# The highest migration number plus one, with four digits. The leading 1 keeps 0008 from being read as octal.
+LAST_MIGRATION = $(lastword $(sort $(foreach file,$(notdir $(wildcard $(VERSIONS)/[0-9][0-9][0-9][0-9]_*.py)),$(firstword $(subst _, ,$(file))))))
+NEXT_MIGRATION = $(shell printf '%04d' $$((1$(or $(LAST_MIGRATION),0000) - 10000 + 1)))
+REQUIRE_RUNNER = @command -v $(RUNNER) >/dev/null 2>&1 || { echo "make $@ needs $(RUNNER) on PATH: it starts the throwaway databases of the checks." >&2; exit 1; }
+
+# The name is checked by the shell from the environment, before make puts it into a command.
+migration:
+	@case "$$name" in ''|[!a-z]*|*[!a-z0-9_]*) echo "make migration needs a name of a-z, 0-9 and _ that starts with a letter, for example: make migration name=add_users" >&2; exit 1;; esac
+	$(REQUIRE_RUNNER)
+	cd backend && $(RUNNER) services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic revision --autogenerate --rev-id $(NEXT_MIGRATION) -m "$(subst _, ,$(name))"'
+
+test:
+	$(REQUIRE_RUNNER)
+	cd backend && $(RUNNER) services run test -- uv run pytest
+	cd frontend && if [ ! -d node_modules ]; then npm ci; fi && npx tsc --noEmit && npm test
+	cd backend && $(RUNNER) services run image -- uv run pytest -m docker
+	cd frontend && $(RUNNER) services run web -- npm run test:image
+	cd backend && $(RUNNER) services run stack -- uv run pytest -m stack
+
+test-security:
+	@echo "make test-security: the security suites are not in the repository yet. They come with Phases 3 and 4." >&2; exit 1
+
+release-check:
+	@test -f tools/release/versions.py || { echo "make release-check: tools/release/versions.py is not in the repository yet." >&2; exit 1; }
+	python tools/release/versions.py check
+	python tools/release/versions.py plan

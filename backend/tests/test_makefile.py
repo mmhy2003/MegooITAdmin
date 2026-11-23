@@ -95,3 +95,35 @@ def test_the_env_rule_writes_a_random_password_only_its_owner_can_read(workdir):
     assert second.returncode == 0, second.stderr
     assert "Created" not in second.stdout
     assert (env_file.read_text(), env_file.stat().st_mtime_ns) == (content, mtime)
+
+
+def test_migration_takes_the_next_number_and_the_name_as_its_message(workdir):
+    result = make(workdir, "-n", "migration", "name=add_users")
+    assert result.returncode == 0, result.stderr
+    assert "--rev-id 0008 " in result.stdout
+    assert '-m "add users"' in result.stdout
+
+
+@pytest.mark.parametrize("args", [[], ["name="], ["name=x;y"], ["name=1abc"], ["name=add-users"]])
+def test_migration_without_a_valid_name_runs_nothing(workdir, args):
+    bin_dir = workdir / "bin"
+    bin_dir.mkdir()
+    runner = bin_dir / "megoocolab-runner"
+    runner.write_text('#!/bin/sh\ntouch "$(dirname "$0")/ran"\n')
+    runner.chmod(0o755)
+    result = make(workdir, "migration", *args, path=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert result.returncode != 0
+    assert "make migration needs a name" in result.stderr
+    assert not (bin_dir / "ran").exists()
+
+
+def test_test_security_says_its_suites_are_not_in_the_repository_yet(workdir):
+    result = make(workdir, "test-security")
+    assert result.returncode != 0
+    assert "the security suites are not in the repository yet" in result.stderr
+
+
+def test_release_check_says_the_release_tool_is_not_in_the_repository_yet(workdir):
+    result = make(workdir, "release-check")
+    assert result.returncode != 0
+    assert "tools/release/versions.py is not in the repository yet" in result.stderr
