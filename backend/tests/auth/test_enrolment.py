@@ -131,6 +131,27 @@ async def test_an_enrolled_pending_session_gets_409(api, clock):
     assert await actions() == ["auth.password_accepted"]
 
 
+async def test_an_enrolled_pending_session_cannot_confirm_a_replacement_started_elsewhere(api, clock):
+    code = recovery.new_code()
+    _, secret = await make_user(recovery_codes=[code])
+    await sign_in(api, clock, secret)
+    new_secret = (await enrol(api, code_for(secret, clock.now))).json()["secret"]
+
+    async with other_client(api) as other:
+        assert (await login(other)).json() == {"status": "mfa_required"}
+        response = await confirm(other, code_for(new_secret, clock.now))
+        assert response.status_code == 409
+        assert response.json() == {"detail": "already_enrolled"}
+        assert sessions.COOKIE not in response.cookies
+        assert (await other.get("/api/auth/session")).json()["status"] == "mfa_required"
+
+    stored = await load_user()
+    assert plain_secret(stored, stored.totp_secret) == secret
+    assert plain_secret(stored, stored.totp_pending_secret) == new_secret
+    assert await recovery_hashes() == {recovery.hash_code(code)}
+    assert await events("auth.mfa_enrolled") == []
+
+
 async def test_replacing_needs_a_current_code(api, clock):
     user, secret = await make_user()
     await sign_in(api, clock, secret)

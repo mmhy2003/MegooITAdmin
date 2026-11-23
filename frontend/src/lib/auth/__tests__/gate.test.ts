@@ -38,7 +38,23 @@ describe("safeNext", () => {
     expect(safeNext("/servers?tag=web")).toBe("/servers?tag=web");
   });
 
-  it.each(["//evil.example", "/\\evil", "https://x", "", undefined, null])("refuses %j", (next) => {
+  it("keeps the hash of a local path", () => {
+    expect(safeNext("/servers?tag=web#top")).toBe("/servers?tag=web#top");
+  });
+
+  it.each([
+    "//evil.example",
+    "/\\evil",
+    "https://x",
+    "/\t/evil.example",
+    "/\n/evil.example",
+    "/\r/evil.example",
+    "\t//evil.example",
+    "/servers\\..\\",
+    "",
+    undefined,
+    null,
+  ])("refuses %j", (next) => {
     expect(safeNext(next)).toBeNull();
   });
 });

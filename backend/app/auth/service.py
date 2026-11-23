@@ -413,6 +413,9 @@ async def confirm_enrolment(
     if user.totp_pending_secret is None:
         raise HTTPException(409, "no_enrolment")
     active = session.stage == "active"
+    if not active and user.totp_secret is not None:
+        # The same rule as `start_enrolment`: a replacement started elsewhere is not this session's to confirm.
+        raise HTTPException(409, "already_enrolled")
     now = clock.now()
     if is_locked(user, now):
         await _record_mfa_failed(db, request, user, reason=actions.LOCKED, mfa=active)
