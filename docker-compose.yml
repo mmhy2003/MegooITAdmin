@@ -33,9 +33,11 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:8000
     networks: [edge]
     healthcheck:
-      # The image has no curl.
+      # The image has no curl. fetch follows the redirect to /login, which renders even without the backend.
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
       <<: *healthcheck-timing
 

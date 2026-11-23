@@ -1,8 +1,16 @@
 # The frontend image built from this checkout (the web set in megoocolab.toml).
 services:
+  backend:
+    image: caddy:2
+    volumes:
+      - ./stub-backend.Caddyfile:/etc/caddy/Caddyfile:ro
+
   frontend:
     build: ../../frontend
     image: ${FRONTEND_IMAGE}
+    environment:
+      BACKEND_URL: http://backend:8000
+    depends_on: [backend]
     ports:
       - "127.0.0.1:${WEB_PORT}:3000"
     healthcheck:

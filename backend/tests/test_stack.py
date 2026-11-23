@@ -4,11 +4,13 @@ built docker-compose.yml from this checkout and waited until every service was h
 import base64
 import json
 import os
+import re
 import subprocess
 from functools import cache
 from pathlib import Path
 
 import httpx
+import pyotp
 import pytest
 
 pytestmark = pytest.mark.stack
@@ -63,9 +65,41 @@ def test_api_health_answers_ok_through_caddy():
     assert response.json() == {"status": "ok"}
 
 
-@pytest.mark.parametrize("path", ["/", "/servers"])
-def test_the_frontend_serves_its_pages_through_caddy(path):
+# The tests run in file order on one fresh database per run: the first one needs the install unclaimed, the
+# `owner` fixture claims it, and the sign-out test comes last because it ends the owner's session.
+@pytest.mark.parametrize("path", ["/", "/no-such-page"])
+def test_before_setup_every_page_redirects_to_setup(path):
     response = _get(path)
+    assert response.status_code == 307
+    assert response.headers["location"].endswith("/setup")
+
+
+OWNER_EMAIL = "owner@stack.invalid"
+OWNER_PASSWORD = "correct horse battery staple"
+
+
+@pytest.fixture(scope="module")
+def owner():
+    """A client signed in as the Owner: setup with the code from the host, then an enrolled authenticator."""
+    result = _compose("exec", "-T", "backend", "python", "-m", "app.auth.cli", "setup-code")
+    assert result.returncode == 0, result.stderr
+    match = re.search(r"Setup code: (\S+)", result.stdout)
+    assert match, result.stdout
+    with httpx.Client(base_url=_env("STACK_URL"), timeout=10) as client:
+        setup = {"code": match[1], "name": "Stack Owner", "email": OWNER_EMAIL, "password": OWNER_PASSWORD}
+        response = client.post("/api/auth/setup", json=setup)
+        assert response.status_code == 200, response.text
+        response = client.post("/api/auth/mfa/enrol", json={})
+        assert response.status_code == 200, response.text
+        code = pyotp.TOTP(response.json()["secret"]).now()
+        response = client.post("/api/auth/mfa/enrol/confirm", json={"code": code})
+        assert response.status_code == 200, response.text
+        yield client
+
+
+@pytest.mark.parametrize("path", ["/", "/servers"])
+def test_the_frontend_serves_its_pages_through_caddy(owner, path):
+    response = owner.get(path)
     assert response.status_code == 200
     assert "MegooITAdmin" in response.text
 
@@ -76,10 +110,18 @@ def test_an_unknown_api_path_gets_the_backends_json_404():
     assert response.json() == {"detail": "Not Found"}
 
 
-def test_an_unknown_page_gets_the_frontends_404_page():
-    response = _get("/no-such-page")
+def test_an_unknown_page_gets_the_frontends_404_page(owner):
+    response = owner.get("/no-such-page")
     assert response.status_code == 404
     assert "Page not found" in response.text
+
+
+def test_the_cookie_is_secure_behind_https(owner):
+    login = {"email": OWNER_EMAIL, "password": OWNER_PASSWORD}
+    with httpx.Client(base_url=_env("STACK_URL"), timeout=10) as client:
+        response = client.post("/api/auth/login", json=login, headers={"X-Forwarded-Proto": "https"})
+    assert response.status_code == 200, response.text
+    assert re.search(r";\s*secure(;|$)", response.headers["set-cookie"], re.IGNORECASE), response.headers["set-cookie"]
 
 
 def test_caddy_passes_the_upstream_proxys_forwarded_proto_on():
@@ -223,3 +265,12 @@ def test_caddy_accepts_the_caddyfile_and_finds_nothing_to_reformat():
     fmt = _compose("exec", "-T", "caddy", "caddy", "fmt", "/etc/caddy/Caddyfile")
     assert fmt.returncode == 0, fmt.stderr
     assert fmt.stdout == CADDYFILE.read_text()
+
+
+def test_after_sign_out_pages_redirect_to_login(owner):
+    # Last in the file: it ends the session the `owner` fixture holds.
+    response = owner.post("/api/auth/logout")
+    assert response.status_code == 200, response.text
+    response = owner.get("/")
+    assert response.status_code == 307
+    assert response.headers["location"].endswith("/login")
