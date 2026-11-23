@@ -36,24 +36,36 @@ help:
 	@echo ""
 	@echo "Without STACK, up, down, logs, migrate and shell-backend act on the real instance."
 
-# Only the real instance reads .env. A missing file is created with both passwords. A file without
-# POSTGRES_API_PASSWORD gets one appended. No line is ever changed or removed.
+# Only the real instance reads .env. A missing file is created with both passwords and AUTH_SECRET_KEY. A file
+# without POSTGRES_API_PASSWORD or AUTH_SECRET_KEY gets the missing line appended. No line is ever changed or removed.
 .env:
 	@if [ ! -e .env ]; then \
 		pw=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); api=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
-		if ! printf '%s%s' "$$pw" "$$api" | grep -Eqx '[0-9a-f]{64}'; then \
+		key=$$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \
+		if ! printf '%s%s%s' "$$pw" "$$api" "$$key" | grep -Eqx '[0-9a-f]{128}'; then \
 			echo "Could not read a random password from /dev/urandom: .env was not written." >&2; exit 1; \
 		fi; \
-		(umask 077; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_API_PASSWORD=%s\n' "$$pw" "$$api" > .env); \
-		echo "Created .env with new database passwords. Keep this file: the database keeps the owner's password it was first started with."; \
-	elif ! grep -q '^POSTGRES_API_PASSWORD=' .env; then \
-		api=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
-		if ! printf '%s' "$$api" | grep -Eqx '[0-9a-f]{32}'; then \
-			echo "Could not read a random password from /dev/urandom: .env was not changed." >&2; exit 1; \
+		(umask 077; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_API_PASSWORD=%s\nAUTH_SECRET_KEY=%s\n' "$$pw" "$$api" "$$key" > .env); \
+		echo "Created .env with new database passwords and the key that encrypts the authenticator secrets. Keep this file: the database keeps the owner's password it was first started with."; \
+	else \
+		if ! grep -q '^POSTGRES_API_PASSWORD=' .env; then \
+			api=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
+			if ! printf '%s' "$$api" | grep -Eqx '[0-9a-f]{32}'; then \
+				echo "Could not read a random password from /dev/urandom: .env was not changed." >&2; exit 1; \
+			fi; \
+			if [ -s .env ] && [ -n "$$(tail -c 1 .env)" ]; then echo >> .env; fi; \
+			printf 'POSTGRES_API_PASSWORD=%s\n' "$$api" >> .env; \
+			echo "Added POSTGRES_API_PASSWORD to .env: the backend now serves as the restricted role megooitadmin_api."; \
 		fi; \
-		if [ -s .env ] && [ -n "$$(tail -c 1 .env)" ]; then echo >> .env; fi; \
-		printf 'POSTGRES_API_PASSWORD=%s\n' "$$api" >> .env; \
-		echo "Added POSTGRES_API_PASSWORD to .env: the backend now serves as the restricted role megooitadmin_api."; \
+		if ! grep -q '^AUTH_SECRET_KEY=' .env; then \
+			key=$$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); \
+			if ! printf '%s' "$$key" | grep -Eqx '[0-9a-f]{64}'; then \
+				echo "Could not read a random key from /dev/urandom: .env was not changed." >&2; exit 1; \
+			fi; \
+			if [ -s .env ] && [ -n "$$(tail -c 1 .env)" ]; then echo >> .env; fi; \
+			printf 'AUTH_SECRET_KEY=%s\n' "$$key" >> .env; \
+			echo "Added AUTH_SECRET_KEY to .env: it encrypts the authenticator secrets. Keep this file."; \
+		fi; \
 	fi
 
 up: $(ENV_FILE)

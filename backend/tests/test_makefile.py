@@ -93,12 +93,18 @@ def assert_a_second_run_changes_nothing(workdir: Path) -> None:
     assert (env_file.read_text(), env_file.stat().st_mtime_ns) == (content, mtime)
 
 
-def test_the_env_rule_writes_two_random_passwords_only_its_owner_can_read(workdir):
+KEY_LINE = r"AUTH_SECRET_KEY=[0-9a-f]{64}\n"
+
+
+def test_the_env_rule_writes_two_random_passwords_and_a_key_only_its_owner_can_read(workdir):
     first = make(workdir, ".env")
     assert first.returncode == 0, first.stderr
     assert "Created .env" in first.stdout
     env_file = workdir / ".env"
-    match = re.fullmatch(r"POSTGRES_PASSWORD=([0-9a-f]{32})\nPOSTGRES_API_PASSWORD=([0-9a-f]{32})\n", env_file.read_text())
+    match = re.fullmatch(
+        r"POSTGRES_PASSWORD=([0-9a-f]{32})\nPOSTGRES_API_PASSWORD=([0-9a-f]{32})\nAUTH_SECRET_KEY=([0-9a-f]{64})\n",
+        env_file.read_text(),
+    )
     assert match
     assert match.group(1) != match.group(2)
     assert env_file.stat().st_mode & 0o777 == 0o600
@@ -113,9 +119,26 @@ def test_the_env_rule_adds_the_api_password_to_an_older_env(workdir):
     result = make(workdir, ".env")
     assert result.returncode == 0, result.stderr
     assert "Added POSTGRES_API_PASSWORD" in result.stdout
+    assert "Added AUTH_SECRET_KEY" in result.stdout
     content = env_file.read_text()
     assert content.startswith(original)
-    assert re.fullmatch(r"POSTGRES_API_PASSWORD=[0-9a-f]{32}\n", content[len(original) :])
+    assert re.fullmatch(r"POSTGRES_API_PASSWORD=[0-9a-f]{32}\n" + KEY_LINE, content[len(original) :])
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert_a_second_run_changes_nothing(workdir)
+
+
+def test_the_env_rule_adds_only_the_key_to_an_env_with_both_passwords(workdir):
+    env_file = workdir / ".env"
+    original = "POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\n"
+    env_file.write_text(original)
+    env_file.chmod(0o600)
+    result = make(workdir, ".env")
+    assert result.returncode == 0, result.stderr
+    assert "Added AUTH_SECRET_KEY" in result.stdout
+    assert "Added POSTGRES_API_PASSWORD" not in result.stdout
+    content = env_file.read_text()
+    assert content.startswith(original)
+    assert re.fullmatch(KEY_LINE, content[len(original) :])
     assert env_file.stat().st_mode & 0o777 == 0o600
     assert_a_second_run_changes_nothing(workdir)
 
@@ -125,13 +148,14 @@ def test_the_env_rule_puts_the_added_line_on_a_line_of_its_own(workdir):
     env_file.write_text("POSTGRES_PASSWORD=abc")
     result = make(workdir, ".env")
     assert result.returncode == 0, result.stderr
-    assert re.fullmatch(r"POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=[0-9a-f]{32}\n", env_file.read_text())
+    assert re.fullmatch(r"POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=[0-9a-f]{32}\n" + KEY_LINE, env_file.read_text())
 
 
 def test_the_env_rule_leaves_a_complete_env_untouched(workdir):
-    (workdir / ".env").write_text("POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\n")
+    complete = f"POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\nAUTH_SECRET_KEY={'0f' * 32}\n"
+    (workdir / ".env").write_text(complete)
     assert_a_second_run_changes_nothing(workdir)
-    assert (workdir / ".env").read_text() == "POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\n"
+    assert (workdir / ".env").read_text() == complete
 
 
 def test_migration_takes_the_next_number_and_the_name_as_its_message(workdir):
