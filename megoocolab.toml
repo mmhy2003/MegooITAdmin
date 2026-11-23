@@ -47,4 +47,5 @@ ports = ["STACK_PORT"]
 [services.stack.env]
 MEGOOITADMIN_HTTP_PORT = "127.0.0.1:${STACK_PORT}"
 POSTGRES_PASSWORD = "megooitadmin"
+POSTGRES_API_PASSWORD = "megooitadminapi"
 STACK_URL = "http://localhost:${STACK_PORT}"
