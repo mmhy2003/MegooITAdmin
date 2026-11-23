@@ -1,0 +1,6 @@
+node_modules
+.next
+**/__tests__
+image-tests
+vitest.setup.ts
+vitest*.config.mts
