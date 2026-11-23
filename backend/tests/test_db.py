@@ -1,7 +1,9 @@
+import typing
+
 import pytest
 from sqlalchemy import text
 
-from app.core.db import SessionLocal, get_session
+from app.core.db import DbSession, SessionLocal, get_session
 
 PROBE = "get_session_probe"
 
@@ -40,3 +42,8 @@ async def test_get_session_rolls_back_when_the_handler_raises():
     with pytest.raises(RuntimeError):
         await sessions.athrow(RuntimeError("handler failed"))
     assert not await _probe_exists()
+
+
+def test_db_session_closes_before_the_response():
+    # The commit (and the audit guard) must run before the response is sent, so a failed commit answers 500.
+    assert typing.get_args(DbSession)[1].scope == "function"
