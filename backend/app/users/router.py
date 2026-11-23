@@ -2,14 +2,14 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.access.deps import require_owner
 from app.audit import audited
 from app.auth.deps import CurrentUser
 from app.core.db import DbSession
 from app.users import actions, service
-from app.users.schemas import InviteIn, InviteLinkOut, UserRowOut
+from app.users.schemas import AccessIn, InviteIn, InviteLinkOut, UserRowOut
 
 router = APIRouter(prefix="/users", dependencies=[Depends(require_owner)])
 
@@ -28,3 +28,20 @@ async def invite(body: InviteIn, request: Request, db: DbSession, user: CurrentU
 @router.post("/{user_id}/invite", dependencies=[audited(actions.USER_INVITE_RENEWED)])
 async def renew_invite(user_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> InviteLinkOut:
     return await service.renew_invite(db, request, user, user_id)
+
+
+@router.put(
+    "/{user_id}/access",
+    status_code=204,
+    dependencies=[
+        audited(
+            actions.USER_ROLE_CHANGED,
+            actions.USER_GRANT_ADDED,
+            actions.USER_GRANT_CHANGED,
+            actions.USER_GRANT_REMOVED,
+        )
+    ],
+)
+async def set_access(user_id: UUID, body: AccessIn, request: Request, db: DbSession, user: CurrentUser) -> Response:
+    await service.set_access(db, request, user, user_id, body)
+    return Response(status_code=204)

@@ -8,7 +8,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access.models import RoleGrant
-from app.access.permissions import GRANT_FIELDS
+from app.access.deps import FORBIDDEN, deny
+from app.access.permissions import GRANT_FIELDS, PlatformRole
 from app.audit import Event, changes, record
 from app.auth import clock
 from app.auth.models import User
@@ -17,7 +18,7 @@ from app.inventory.models import ServerGroup
 from app.users import actions
 from app.users.invites import put_invite
 from app.users.models import UserInvite
-from app.users.schemas import GrantIn, GrantOut, InviteIn, InviteLinkOut, UserRowOut
+from app.users.schemas import AccessIn, GrantIn, GrantOut, InviteIn, InviteLinkOut, UserRowOut
 
 
 async def grants_of(db: AsyncSession, user_ids: Iterable[UUID]) -> dict[UUID, list[GrantOut]]:
@@ -152,3 +153,91 @@ async def renew_invite(db: AsyncSession, request: Request, owner: User, user_id:
         ),
     )
     return InviteLinkOut(user_id=user.id, token=token, expires_at=expires_at)
+
+
+_enabled_owner = (User.platform_role == PlatformRole.OWNER) & User.disabled_at.is_(None)
+
+
+async def _lock_for_change(db: AsyncSession, request: Request, owner: User, user_id: UUID) -> User:
+    """Locks the account the Owner changes and returns it. A change to an Owner first locks every enabled Owner, in
+    the order of their IDs, then checks the actor still is one: of two Owners demoting each other, the second is
+    refused, so one always remains."""
+    if user_id == owner.id:
+        raise HTTPException(409, "own_account")
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "not_found")
+    if target.platform_role == PlatformRole.OWNER:
+        await db.execute(select(User.id).where(_enabled_owner).order_by(User.id).with_for_update())
+        actor = await db.scalar(select(User).where(User.id == owner.id).execution_options(populate_existing=True))
+        if actor.platform_role != PlatformRole.OWNER or actor.disabled_at is not None:
+            await deny(request, owner, required="owner", status=403, detail=FORBIDDEN)
+    return await lock_user(db, user_id)
+
+
+async def _keep_an_owner(db: AsyncSession, target: User, new_role: str | None, *, disabling: bool = False) -> None:
+    """Refuses a change that would leave no enabled Owner."""
+    is_enabled_owner = target.platform_role == PlatformRole.OWNER and target.disabled_at is None
+    if not is_enabled_owner or (new_role == PlatformRole.OWNER and not disabling):
+        return
+    others = await db.scalar(select(func.count()).select_from(User).where(_enabled_owner, User.id != target.id))
+    if not others:
+        raise HTTPException(409, "last_owner")
+
+
+async def set_access(db: AsyncSession, request: Request, owner: User, user_id: UUID, body: AccessIn) -> None:
+    """Sets the person's whole access in one transaction, with one event per difference. Nothing differs: 409."""
+    user = await _lock_for_change(db, request, owner, user_id)
+    groups = await _check_groups(db, body.grants)
+    new_role = None if body.platform_role is None else body.platform_role.value
+    await _keep_an_owner(db, user, new_role)
+
+    wanted = {g.group_id: g for g in body.grants}
+    query = (
+        select(RoleGrant, ServerGroup)
+        .join(ServerGroup, ServerGroup.id == RoleGrant.server_group_id)
+        .where(RoleGrant.user_id == user.id)
+    )
+    stored = {grant.server_group_id: (grant, group) for grant, group in await db.execute(query)}
+
+    # (group name, event), so the grant events are recorded by group name.
+    grant_events: list[tuple[str, Event]] = []
+    for group_id, (grant, group) in stored.items():
+        before = grant.fields()
+        if group_id not in wanted:
+            await db.delete(grant)
+            event = _grant_event(request, owner, user, actions.USER_GRANT_REMOVED, group, before, None)
+            grant_events.append((group.name.lower(), event))
+        elif (after := wanted[group_id].fields()) != before:
+            for field, value in after.items():
+                setattr(grant, field, value)
+            grant.updated_at = clock.now()
+            event = _grant_event(request, owner, user, actions.USER_GRANT_CHANGED, group, before, after)
+            grant_events.append((group.name.lower(), event))
+    for group_id, g in wanted.items():
+        if group_id not in stored:
+            db.add(RoleGrant(user_id=user.id, server_group_id=group_id, **g.fields()))
+            group = groups[group_id]
+            event = _grant_event(request, owner, user, actions.USER_GRANT_ADDED, group, None, g.fields())
+            grant_events.append((group.name.lower(), event))
+
+    role_event = None
+    if user.platform_role != new_role:
+        role_event = auth_event(
+            request,
+            actions.USER_ROLE_CHANGED,
+            actor_of(owner),
+            mfa=True,
+            target=target_of(user),
+            change={"platform_role": {"before": user.platform_role, "after": new_role}},
+        )
+        user.platform_role = new_role
+    if role_event is None and not grant_events:
+        raise HTTPException(409, "no_change")
+
+    await db.flush()
+    # record() last: it holds the audit chain lock until the commit.
+    if role_event is not None:
+        await record(db, role_event)
+    for _, event in sorted(grant_events, key=lambda pair: pair[0]):
+        await record(db, event)
