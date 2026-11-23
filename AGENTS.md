@@ -76,8 +76,10 @@ Never report a skipped check as passed.
 
 - Docker: start containers for checks only with `megoocolab-runner services run`. It gives this worktree its own
   `megoo-…` containers and removes them when the command ends. Apart from those, use only the `megooitadmin-dev`
-  and `megooitadmin-e2e` Compose projects. Never stop, remove or change any other container. A `megooitadmin`
-  project and its `megooitadmin-*` containers are the owner's real instance.
+  and `megooitadmin-e2e` Compose projects. Start them with `make up STACK=dev` and `make up STACK=e2e`, and pass
+  the same `STACK=` to `down`, `logs`, `migrate` and `shell-backend`. Never run one of these targets without
+  `STACK=`: it then acts on the owner's real instance. Never stop, remove or change any other container. A
+  `megooitadmin` project and its `megooitadmin-*` containers are the owner's real instance.
 - Never read files that hold credentials or secrets (`.env` files, tokens, keys).
 - Never connect to a managed server. Use the fake-server fixture (containers with sshd) instead.
 - You have no access to production. Don't try to reach it.
