@@ -15,6 +15,7 @@ ANY_SIGNED_IN: dict[str, str] = {
     "DELETE /api/auth/sessions/{session_id}": "a person ends one of their own sessions",
     "POST /api/auth/password": "a person changes their own password",
     "POST /api/auth/recovery-codes": "a person replaces their own recovery codes",
+    "GET /api/server-groups": "the list filters itself by the person's access",
 }
 
 
