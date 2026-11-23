@@ -12,7 +12,7 @@ from app.access.permissions import GRANT_FIELDS
 from app.audit import Event, changes, record
 from app.auth import clock
 from app.auth.models import User
-from app.auth.service import actor_of, auth_event, target_of
+from app.auth.service import actor_of, auth_event, lock_user, target_of
 from app.inventory.models import ServerGroup
 from app.users import actions
 from app.users.invites import put_invite
@@ -129,4 +129,26 @@ async def invite(db: AsyncSession, request: Request, owner: User, body: InviteIn
         await record(
             db, _grant_event(request, owner, user, actions.USER_GRANT_ADDED, groups[g.group_id], None, g.fields())
         )
+    return InviteLinkOut(user_id=user.id, token=token, expires_at=expires_at)
+
+
+async def renew_invite(db: AsyncSession, request: Request, owner: User, user_id: UUID) -> InviteLinkOut:
+    """A new link in place of the old one, which stops working. Once the person has a password: 409."""
+    if await db.get(User, user_id) is None:
+        raise HTTPException(404, "not_found")
+    user = await lock_user(db, user_id)
+    if user.password_hash is not None:
+        raise HTTPException(409, "already_accepted")
+    token, expires_at = await put_invite(db, user.id)
+    await record(
+        db,
+        auth_event(
+            request,
+            actions.USER_INVITE_RENEWED,
+            actor_of(owner),
+            mfa=True,
+            target=target_of(user),
+            detail={"expires_at": expires_at.isoformat()},
+        ),
+    )
     return InviteLinkOut(user_id=user.id, token=token, expires_at=expires_at)

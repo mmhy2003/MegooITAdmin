@@ -27,6 +27,9 @@ from app.auth.schemas import (
 )
 from app.auth.sessions import COOKIE, clear_cookie, set_cookie
 from app.core.db import DbSession
+from app.users import actions as user_actions
+from app.users import invites
+from app.users.schemas import InviteAcceptIn, InviteInfoOut, InviteTokenIn
 
 router = APIRouter(prefix="/auth")
 
@@ -71,6 +74,28 @@ async def login(body: LoginIn, request: Request, response: Response, db: DbSessi
     token, status = result
     set_cookie(response, request, token)
     return StatusOut(status=status)
+
+
+@router.post("/invite/check")
+async def check_invite(body: InviteTokenIn, db: DbSession) -> InviteInfoOut:
+    # Public: the invite page shows whose link it is before the person has a password. It records nothing.
+    return await invites.check_invite(db, body.token)
+
+
+@router.post(
+    "/invite/accept",
+    response_model=StatusOut,
+    dependencies=[audited(user_actions.USER_INVITE_ACCEPTED, user_actions.USER_INVITE_REFUSED)],
+)
+async def accept_invite(
+    body: InviteAcceptIn, request: Request, response: Response, db: DbSession
+) -> StatusOut | JSONResponse:
+    # Public: the invited person sets their first password. It gives only a pending session, as sign-in does.
+    result = await invites.accept_invite(db, request, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    set_cookie(response, request, result)
+    return StatusOut(status="enrolment_required")
 
 
 @router.post(

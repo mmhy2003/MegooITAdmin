@@ -8,7 +8,9 @@ from app.main import create_app
 
 # A POST, PUT, PATCH or DELETE route that needs no audit event, with the reason. Adding one is a visible
 # change to the security suite.
-EXEMPT: dict[str, str] = {}
+EXEMPT: dict[str, str] = {
+    "POST /api/auth/invite/check": "it only reads; POST keeps the token out of addresses and logs",
+}
 
 
 def test_every_state_changing_route_declares_its_audit_actions():

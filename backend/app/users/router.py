@@ -1,5 +1,7 @@
 """The routes under /api/users: the Owner manages the people of the platform."""
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Request
 
 from app.access.deps import require_owner
@@ -21,3 +23,8 @@ async def list_users(db: DbSession) -> list[UserRowOut]:
 async def invite(body: InviteIn, request: Request, db: DbSession, user: CurrentUser) -> InviteLinkOut:
     # `user` is the Owner who invites.
     return await service.invite(db, request, user, body)
+
+
+@router.post("/{user_id}/invite", dependencies=[audited(actions.USER_INVITE_RENEWED)])
+async def renew_invite(user_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> InviteLinkOut:
+    return await service.renew_invite(db, request, user, user_id)
