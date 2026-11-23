@@ -17,6 +17,8 @@ PUBLIC: dict[str, str] = {
 # Routes that also work with a pending session (password right, second factor still to come).
 PENDING: dict[str, str] = {
     "POST /api/auth/login/mfa": "the code step: it turns the pending session of a right password into an active one",
+    "POST /api/auth/mfa/enrol": "an account without an authenticator enrols one before its first sign-in",
+    "POST /api/auth/mfa/enrol/confirm": "confirming the first authenticator finishes the sign-in",
 }
 
 

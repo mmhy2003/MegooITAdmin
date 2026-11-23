@@ -11,16 +11,16 @@ from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import Actor, ActorType, Event, Result, Target, record, source_of
-from app.auth import actions, clock, passwords, totp
-from app.auth.crypto import SecretUndecryptable, decrypt_secret
+from app.auth import actions, clock, passwords, recovery, totp
+from app.auth.crypto import SecretUndecryptable, decrypt_secret, encrypt_secret
 from app.auth.models import AuthSession, RecoveryCode, SetupCode, User
 from app.auth.passwords import hash_password
 from app.auth.recovery import hash_code
-from app.auth.sessions import create_session, delete_expired, lookup_session
+from app.auth.sessions import create_session, delete_expired, end_sessions, lookup_session
 from app.core.config import get_settings
 
 if TYPE_CHECKING:
-    from app.auth.schemas import CodeIn, LoginIn, SetupIn
+    from app.auth.schemas import CodeIn, ConfirmIn, EnrolIn, EnrolOut, LoginIn, SetupIn
 
 MAX_FAILURES = 5
 LOCK_TIME = timedelta(minutes=15)
@@ -330,3 +330,118 @@ async def verify_second_factor(
     )
     await record(db, auth_event(request, actions.SIGN_IN, actor_of(user), target=target_of(user), mfa=True))
     return token
+
+
+async def _record_mfa_failed(
+    db: AsyncSession, request: Request, user: User, *, reason: str, mfa: bool, method: str | None = None
+) -> None:
+    """Records a refused second factor that is not counted: a lock already in place, or a secret that no longer
+    decrypts."""
+    detail = {"reason": reason} if method is None else {"reason": reason, "method": method}
+    await record(
+        db,
+        auth_event(
+            request,
+            actions.MFA_FAILED,
+            actor_of(user),
+            target=target_of(user),
+            mfa=mfa,
+            result=Result.FAILURE,
+            detail=detail,
+        ),
+    )
+
+
+async def start_enrolment(
+    db: AsyncSession, request: Request, session: AuthSession, body: "EnrolIn"
+) -> "EnrolOut | Refusal":
+    """Stores a new secret as the pending one, until a code from it confirms it. A pending session may do this only
+    for an account without an authenticator. An active one replaces its authenticator, and proves itself first
+    with a current code or a recovery code."""
+    from app.auth.schemas import EnrolOut
+
+    user = await lock_user(db, session.user_id)
+    active = session.stage == "active"
+    if not active:
+        if user.totp_secret is not None:
+            raise HTTPException(409, "already_enrolled")
+    else:
+        if body.code is None:
+            raise HTTPException(422, "code_required")
+        method = body.method
+        if is_locked(user, clock.now()):
+            await _record_mfa_failed(db, request, user, reason=actions.LOCKED, mfa=True, method=method)
+            return Refusal(401, "locked")
+        reason = await check_second_factor(db, user, body.code, method, clock.now())
+        if reason == actions.UNDECRYPTABLE:
+            # Not counted: the code may be right, the key is what changed.
+            await _record_mfa_failed(db, request, user, reason=reason, mfa=True, method=method)
+            return Refusal(401, "undecryptable")
+        if reason is not None:
+            locked = await fail_attempt(
+                db, request, user, action=actions.MFA_FAILED, reason=reason, mfa=True, method=method
+            )
+            return Refusal(401, "locked" if locked else "wrong_code")
+        register_success(user)
+
+    secret = totp.new_secret()
+    user.totp_pending_secret = encrypt_secret(get_settings().auth_key(), user.id, secret)
+    await db.flush()
+    await record(
+        db, auth_event(request, actions.MFA_ENROLMENT_STARTED, actor_of(user), target=target_of(user), mfa=active)
+    )
+    return EnrolOut(secret=secret, uri=totp.provisioning_uri(secret, user.email))
+
+
+async def confirm_enrolment(
+    db: AsyncSession, request: Request, session: AuthSession, body: "ConfirmIn"
+) -> tuple[list[str] | None, str | None] | Refusal:
+    """A code from the pending secret makes it the authenticator. The first enrolment returns 10 recovery codes and
+    the token of a new active session. A replacement ends the person's other sessions and returns (None, None)."""
+    user = await lock_user(db, session.user_id)
+    if user.totp_pending_secret is None:
+        raise HTTPException(409, "no_enrolment")
+    active = session.stage == "active"
+    now = clock.now()
+    if is_locked(user, now):
+        await _record_mfa_failed(db, request, user, reason=actions.LOCKED, mfa=active)
+        return Refusal(401, "locked")
+
+    pending = decrypt_secret(get_settings().auth_key(), user.id, user.totp_pending_secret)
+    step = totp.verify(pending, body.code, None, now)
+    if step is None:
+        locked = await fail_attempt(db, request, user, action=actions.MFA_FAILED, reason=actions.WRONG_CODE, mfa=active)
+        return Refusal(401, "locked" if locked else "wrong_code")
+
+    user.totp_secret = user.totp_pending_secret
+    user.totp_pending_secret = None
+    user.totp_confirmed_at = now
+    user.totp_last_step = step
+    register_success(user)
+
+    if not active:
+        await db.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user.id))
+        codes = [recovery.new_code() for _ in range(recovery.RECOVERY_CODE_COUNT)]
+        db.add_all(RecoveryCode(user_id=user.id, code_hash=hash_code(code)) for code in codes)
+        await db.delete(session)
+        await db.flush()
+        token = await create_session(db, user, source_of(request), stage="active", mfa_method="totp")
+        await record(db, auth_event(request, actions.MFA_ENROLLED, actor_of(user), target=target_of(user), mfa=True))
+        await record(db, auth_event(request, actions.SIGN_IN, actor_of(user), target=target_of(user), mfa=True))
+        return codes, token
+
+    # Whoever held the old authenticator may hold the other sessions too.
+    ended = await end_sessions(db, user.id, keep=session.id)
+    await record(db, auth_event(request, actions.MFA_ENROLLED, actor_of(user), target=target_of(user), mfa=True))
+    for other in ended:
+        await record(
+            db,
+            auth_event(
+                request,
+                actions.SESSION_REVOKED,
+                actor_of(user),
+                target=Target(type="auth_session", id=str(other.id)),
+                mfa=True,
+            ),
+        )
+    return None, None

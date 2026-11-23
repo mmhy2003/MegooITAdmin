@@ -6,7 +6,18 @@ from fastapi.responses import JSONResponse
 from app.audit import audited
 from app.auth import actions, service
 from app.auth.deps import CurrentSession
-from app.auth.schemas import CodeIn, LoginIn, SessionStatusOut, SetupIn, StatusOut, UserOut
+from app.auth.schemas import (
+    CodeIn,
+    ConfirmIn,
+    ConfirmOut,
+    EnrolIn,
+    EnrolOut,
+    LoginIn,
+    SessionStatusOut,
+    SetupIn,
+    StatusOut,
+    UserOut,
+)
 from app.auth.sessions import COOKIE, set_cookie
 from app.core.db import DbSession
 
@@ -69,3 +80,34 @@ async def login_mfa(
         return refused(result)
     set_cookie(response, request, result)
     return StatusOut(status="active")
+
+
+@router.post(
+    "/mfa/enrol",
+    response_model=EnrolOut,
+    dependencies=[audited(actions.MFA_ENROLMENT_STARTED, actions.MFA_FAILED)],
+)
+async def enrol(body: EnrolIn, request: Request, db: DbSession, session: CurrentSession) -> EnrolOut | JSONResponse:
+    # Pending: an account without an authenticator enrols before its first sign-in. Active: it replaces it.
+    result = await service.start_enrolment(db, request, session, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    return result
+
+
+@router.post(
+    "/mfa/enrol/confirm",
+    response_model=ConfirmOut,
+    dependencies=[audited(actions.MFA_ENROLLED, actions.MFA_FAILED)],
+)
+async def confirm_enrolment(
+    body: ConfirmIn, request: Request, response: Response, db: DbSession, session: CurrentSession
+) -> ConfirmOut | JSONResponse:
+    # Pending: confirming the first authenticator finishes the sign-in, under a new token.
+    result = await service.confirm_enrolment(db, request, session, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    codes, token = result
+    if token is not None:
+        set_cookie(response, request, token)
+    return ConfirmOut(recovery_codes=codes)

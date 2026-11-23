@@ -45,3 +45,21 @@ Method = Literal["totp", "recovery_code"]
 class CodeIn(BaseModel):
     code: str = Field(min_length=1, max_length=64)
     method: Method = "totp"
+
+
+class EnrolIn(BaseModel):
+    code: str | None = Field(default=None, max_length=64)  # a current code; needed to replace an authenticator
+    method: Method = "totp"
+
+
+class EnrolOut(BaseModel):
+    secret: str
+    uri: str
+
+
+class ConfirmIn(BaseModel):
+    code: str = Field(min_length=1, max_length=64)
+
+
+class ConfirmOut(BaseModel):
+    recovery_codes: list[str] | None  # only at the first enrolment
