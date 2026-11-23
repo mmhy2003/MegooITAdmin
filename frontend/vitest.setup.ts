@@ -12,21 +12,27 @@ vi.mock("next/link", () => ({
 // Tests set the route with vi.mocked(usePathname).mockReturnValue(...).
 vi.mock("next/navigation", () => ({ usePathname: vi.fn(() => "/"), notFound: vi.fn() }));
 
+// Files marked `// @vitest-environment node` have no DOM: the DOM set-up below skips them.
+const hasDom = typeof window !== "undefined";
+
 beforeEach(() => {
+  if (!hasDom) return;
   mockMatchMedia();
   localStorage.clear();
   delete document.documentElement.dataset.theme;
 });
 
 afterEach(() => {
-  cleanup();
+  if (hasDom) cleanup();
   vi.restoreAllMocks();
 });
 
 // jsdom has no ResizeObserver or pointer capture; Radix popups use them.
-if (!("ResizeObserver" in globalThis)) {
-  globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+if (hasDom) {
+  if (!("ResizeObserver" in globalThis)) {
+    globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
+  }
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  Element.prototype.scrollIntoView ??= () => {};
 }
-Element.prototype.hasPointerCapture ??= () => false;
-Element.prototype.releasePointerCapture ??= () => {};
-Element.prototype.scrollIntoView ??= () => {};

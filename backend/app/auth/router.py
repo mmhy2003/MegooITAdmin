@@ -1,0 +1,170 @@
+"""The routes under /api/auth."""
+
+from uuid import UUID
+
+from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
+
+from app.audit import audited
+from app.auth import actions, service
+from app.auth.deps import CurrentSession, CurrentUser
+from app.auth.schemas import (
+    CodeIn,
+    ConfirmIn,
+    ConfirmOut,
+    EnrolIn,
+    EnrolOut,
+    LoginIn,
+    MeOut,
+    PasswordIn,
+    RecoveryCodesIn,
+    RecoveryCodesOut,
+    SessionOut,
+    SessionStatusOut,
+    SetupIn,
+    StatusOut,
+    UserOut,
+)
+from app.auth.sessions import COOKIE, clear_cookie, set_cookie
+from app.core.db import DbSession
+
+router = APIRouter(prefix="/auth")
+
+
+def refused(refusal: service.Refusal) -> JSONResponse:
+    # Returned, not raised, so the transaction commits with the event of the refusal.
+    return JSONResponse({"detail": refusal.reason}, status_code=refusal.status)
+
+
+@router.get("/session")
+async def session_status(request: Request, db: DbSession) -> SessionStatusOut:
+    # Public: the page gate asks it before anyone is signed in. Always 200.
+    status, user = await service.status_of(db, request.cookies.get(COOKIE))
+    return SessionStatusOut(status=status, user=UserOut.model_validate(user) if user else None)
+
+
+@router.post(
+    "/setup",
+    response_model=StatusOut,
+    dependencies=[audited(actions.OWNER_CREATED, actions.SETUP_FAILED)],
+)
+async def setup(body: SetupIn, request: Request, response: Response, db: DbSession) -> StatusOut | JSONResponse:
+    # Public: it claims a fresh install with the code from the host, before any account exists.
+    result = await service.setup(db, request, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    _, token = result
+    set_cookie(response, request, token)
+    return StatusOut(status="enrolment_required")
+
+
+@router.post(
+    "/login",
+    response_model=StatusOut,
+    dependencies=[audited(actions.PASSWORD_ACCEPTED, actions.SIGN_IN_FAILED)],
+)
+async def login(body: LoginIn, request: Request, response: Response, db: DbSession) -> StatusOut | JSONResponse:
+    # Public: the password step, before anyone is signed in. It gives only a pending session.
+    result = await service.login(db, request, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    token, status = result
+    set_cookie(response, request, token)
+    return StatusOut(status=status)
+
+
+@router.post(
+    "/login/mfa",
+    response_model=StatusOut,
+    dependencies=[audited(actions.SIGN_IN, actions.MFA_FAILED)],
+)
+async def login_mfa(
+    body: CodeIn, request: Request, response: Response, db: DbSession, session: CurrentSession
+) -> StatusOut | JSONResponse:
+    # Pending: the code step finishes the sign-in that the password step started.
+    result = await service.verify_second_factor(db, request, session, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    set_cookie(response, request, result)
+    return StatusOut(status="active")
+
+
+@router.post(
+    "/mfa/enrol",
+    response_model=EnrolOut,
+    dependencies=[audited(actions.MFA_ENROLMENT_STARTED, actions.MFA_FAILED)],
+)
+async def enrol(body: EnrolIn, request: Request, db: DbSession, session: CurrentSession) -> EnrolOut | JSONResponse:
+    # Pending: an account without an authenticator enrols before its first sign-in. Active: it replaces it.
+    result = await service.start_enrolment(db, request, session, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    return result
+
+
+@router.post(
+    "/mfa/enrol/confirm",
+    response_model=ConfirmOut,
+    dependencies=[audited(actions.MFA_ENROLLED, actions.MFA_FAILED)],
+)
+async def confirm_enrolment(
+    body: ConfirmIn, request: Request, response: Response, db: DbSession, session: CurrentSession
+) -> ConfirmOut | JSONResponse:
+    # Pending: confirming the first authenticator finishes the sign-in, under a new token.
+    result = await service.confirm_enrolment(db, request, session, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    codes, token = result
+    if token is not None:
+        set_cookie(response, request, token)
+    return ConfirmOut(recovery_codes=codes)
+
+
+@router.post("/logout", response_model=StatusOut, dependencies=[audited(actions.SIGN_OUT)])
+async def logout(request: Request, response: Response, db: DbSession, session: CurrentSession) -> StatusOut:
+    # Pending too: a sign-in stopped at the code step can be abandoned.
+    await service.logout(db, request, session)
+    clear_cookie(response, request)
+    return StatusOut(status="signed_out")
+
+
+@router.get("/me")
+async def me(db: DbSession, user: CurrentUser) -> MeOut:
+    return await service.me(db, user)
+
+
+@router.get("/sessions")
+async def list_sessions(db: DbSession, session: CurrentSession, user: CurrentUser) -> list[SessionOut]:
+    return await service.list_sessions(db, session, user)
+
+
+@router.delete("/sessions/{session_id}", status_code=204, dependencies=[audited(actions.SESSION_REVOKED)])
+async def revoke_session(
+    session_id: UUID, request: Request, db: DbSession, session: CurrentSession, user: CurrentUser
+) -> Response:
+    await service.revoke_session(db, request, session, user, session_id)
+    return Response(status_code=204)
+
+
+@router.post("/password", response_model=StatusOut, dependencies=[audited(actions.PASSWORD_CHANGED)])
+async def change_password(
+    body: PasswordIn, request: Request, db: DbSession, session: CurrentSession, user: CurrentUser
+) -> StatusOut | JSONResponse:
+    refusal = await service.change_password(db, request, session, user, body)
+    if refusal is not None:
+        return refused(refusal)
+    return StatusOut(status="active")
+
+
+@router.post(
+    "/recovery-codes",
+    response_model=RecoveryCodesOut,
+    dependencies=[audited(actions.RECOVERY_CODES_CREATED, actions.MFA_FAILED)],
+)
+async def new_recovery_codes(
+    body: RecoveryCodesIn, request: Request, db: DbSession, user: CurrentUser
+) -> RecoveryCodesOut | JSONResponse:
+    result = await service.new_recovery_codes(db, request, user, body)
+    if isinstance(result, service.Refusal):
+        return refused(result)
+    return RecoveryCodesOut(recovery_codes=result)

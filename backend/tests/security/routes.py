@@ -1,14 +1,20 @@
-"""Reads the audit declarations of an app's routes, for the audit-coverage suite.
+"""Reads the audit declarations and the session requirement of an app's routes, for the audit- and auth-coverage
+suites.
 
 Since FastAPI 0.165, include_router keeps the router as one node in app.routes instead of copying its routes.
 iter_route_contexts, which FastAPI's OpenAPI generator uses too, yields every route as it is served: the full
 path, and the dependencies of the route and of every router it was included through."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from typing import Any, Literal
 
 from fastapi import FastAPI
+from fastapi.dependencies.models import Dependant
+from fastapi.dependencies.utils import get_parameterless_sub_dependant
 from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
 from starlette.routing import Route
+
+from app.auth.deps import current_session, current_user
 
 STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 READ_ONLY = frozenset({"GET", "HEAD"})
@@ -43,3 +49,43 @@ def unknown_routes(app: FastAPI) -> list[str]:
         if not isinstance(route := context.original_route, APIRoute)
         and not (isinstance(route, Route) and route.methods is not None and route.methods <= READ_ONLY)
     ]
+
+
+def _calls(dependant: Dependant) -> Iterator[Callable[..., Any]]:
+    for sub in dependant.dependencies:
+        if sub.call is not None:
+            yield sub.call
+        yield from _calls(sub)
+
+
+def dependency_calls(context: RouteContext) -> set[Callable[..., Any]]:
+    """Every dependency the route runs: its own, nested ones, and those of the routers it was included through."""
+    calls = set(_calls(context.original_route.dependant))
+    for dep in context.dependencies:
+        if dep.dependency is not None:
+            calls.add(dep.dependency)
+            # As FastAPI builds it, keeping the dependency's scope: audited(...) has scope="function".
+            calls.update(_calls(get_parameterless_sub_dependant(depends=dep, path=context.path)))
+    return calls
+
+
+def session_requirement(context: RouteContext) -> Literal["active", "pending", "none"]:
+    calls = dependency_calls(context)
+    if current_user in calls:
+        return "active"
+    if current_session in calls:
+        return "pending"
+    return "none"
+
+
+def unguarded_routes(app: FastAPI, public: Mapping[str, str], pending: Mapping[str, str]) -> list[str]:
+    """'METHOD /path (requirement)' of every route that works without an active session and is not pinned in the
+    list for its requirement, sorted."""
+    pinned = {"none": public, "pending": pending}
+    return sorted(
+        f"{name} ({requirement})"
+        for context in api_routes(app)
+        if (requirement := session_requirement(context)) != "active"
+        for method in context.methods
+        if (name := f"{method} {context.path}") not in pinned[requirement]
+    )

@@ -8,7 +8,7 @@ function renderHeader(pathname: string) {
   vi.mocked(usePathname).mockReturnValue(pathname);
   render(
     <SidebarProvider>
-      <SiteHeader />
+      <SiteHeader user={{ name: "Olive Owner", email: "owner@example.com" }} />
     </SidebarProvider>,
   );
 }
@@ -22,6 +22,11 @@ describe("SiteHeader", () => {
     cleanup();
     renderHeader("/");
     expect(screen.getByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+  });
+
+  it("titles the profile page", () => {
+    renderHeader("/profile");
+    expect(title()).toHaveAccessibleName("Profile and security");
   });
 
   it("says Page not found for an unknown route", () => {

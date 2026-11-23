@@ -113,5 +113,24 @@ def test_0003_goes_down_and_up_again_with_the_api_role_and_its_grants():
     ) == [(True, False, True)]
 
 
+AUTH_TABLES = ("users", "auth_sessions", "recovery_codes", "auth_setup")
+
+
+def _auth_tables() -> list:
+    return _fetch(f"SELECT {', '.join(f'to_regclass({t!r})' for t in AUTH_TABLES)}")
+
+
+def test_0004_goes_down_and_up_again_with_the_auth_tables():
+    command.downgrade(_config(), "0003")
+    assert _auth_tables() == [(None, None, None, None)]
+    upgrade_to_head()
+    assert _auth_tables() == [AUTH_TABLES]
+    # Accounts are never deleted by the API; sessions and codes are.
+    assert _fetch(
+        "SELECT has_table_privilege('megooitadmin_api', 'users', 'DELETE'),"
+        " has_table_privilege('megooitadmin_api', 'auth_sessions', 'DELETE')"
+    ) == [(False, True)]
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())

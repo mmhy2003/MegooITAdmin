@@ -5,12 +5,15 @@ the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic m
 """
 
 import os
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
 
 import pytest
 
 RUN_TESTS = "megoocolab-runner services run test -- uv run pytest"
+# The throwaway key of every test set. Never a real installation's key.
+TEST_AUTH_SECRET_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
@@ -40,6 +43,7 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
     os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
     os.environ["DB_NULL_POOL"] = "true"
+    os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
@@ -95,3 +99,43 @@ async def empty_audit_log(database_at_head):
             text("UPDATE audit_chain_head SET seq = 0, hash = :zero, time = NULL"), {"zero": bytes(32)}
         )
         await session.commit()
+
+
+@pytest.fixture
+async def clean_auth(empty_audit_log):
+    from sqlalchemy import text
+
+    # The owner deletes every account (their sessions and recovery codes cascade) and the setup code.
+    async with owner_session() as session:
+        await session.execute(text("DELETE FROM auth_setup"))
+        await session.execute(text("DELETE FROM users"))
+        await session.commit()
+
+
+class FakeClock:
+    """The time auth code reads through app.auth.clock.now(). It moves only when a test advances it."""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 11, 23, 12, 0, 5, tzinfo=UTC)
+
+    def advance(self, **delta: float) -> None:
+        self.now += timedelta(**delta)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    fake = FakeClock()
+    monkeypatch.setattr("app.auth.clock.now", lambda: fake.now)
+    return fake
+
+
+@pytest.fixture
+async def api(clean_auth, clock):
+    """An HTTP client for the real app, from a fixed client address, with no account and the fake clock."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import create_app
+
+    transport = ASGITransport(app=create_app(), client=("127.0.0.1", 50000))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client

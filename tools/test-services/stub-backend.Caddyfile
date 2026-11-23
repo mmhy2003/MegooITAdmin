@@ -1,0 +1,19 @@
+# A stand-in for the backend in the frontend image check (the web set in megoocolab.toml). It answers only the page
+# gate's question, GET /api/auth/session: "active" for the image test's session cookie, "signed_out" for anyone else.
+:8000 {
+	@signed_in {
+		path /api/auth/session
+		header Cookie *megoo_session=image-test-session*
+	}
+	handle @signed_in {
+		header Content-Type application/json
+		respond `{"status":"active","user":{"id":"00000000-0000-0000-0000-000000000001","name":"Image Test","email":"image@test.invalid","is_owner":true}}` 200
+	}
+	handle /api/auth/session {
+		header Content-Type application/json
+		respond `{"status":"signed_out","user":null}` 200
+	}
+	handle {
+		respond 404
+	}
+}

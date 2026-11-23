@@ -1,8 +1,17 @@
 import { AppSidebar } from "@/components/shell/app-sidebar";
+import type { AccountUser } from "@/components/shell/account-menu";
 import { SiteHeader } from "@/components/shell/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
-export function AppShell({ defaultOpen, children }: { defaultOpen: boolean; children: React.ReactNode }) {
+export function AppShell({
+  defaultOpen,
+  user,
+  children,
+}: {
+  defaultOpen: boolean;
+  user: AccountUser;
+  children: React.ReactNode;
+}) {
   return (
     <>
       <a
@@ -14,7 +23,7 @@ export function AppShell({ defaultOpen, children }: { defaultOpen: boolean; chil
       <SidebarProvider defaultOpen={defaultOpen}>
         <AppSidebar />
         <SidebarInset>
-          <SiteHeader />
+          <SiteHeader user={user} />
           <main id="main" tabIndex={-1} className="flex-1 p-6 outline-none">
             {children}
           </main>

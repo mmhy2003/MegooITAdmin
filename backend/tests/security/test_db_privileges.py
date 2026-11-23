@@ -16,6 +16,10 @@ INSUFFICIENT_PRIVILEGE = "42501"
 API_GRANTS: dict[str, frozenset[str]] = {
     "audit_log": frozenset({"SELECT", "INSERT"}),
     "audit_chain_head": frozenset({"SELECT", "UPDATE"}),
+    "users": frozenset({"SELECT", "INSERT", "UPDATE"}),
+    "auth_sessions": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "recovery_codes": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "auth_setup": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
 }
 ROLE_OID = "(SELECT oid FROM pg_roles WHERE rolname = :role)"
 

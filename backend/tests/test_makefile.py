@@ -11,7 +11,7 @@ import pytest
 
 MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
 UP = "up -d --build --wait --wait-timeout 300"
-TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check"]
+TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password"]
 
 
 @pytest.fixture
@@ -27,8 +27,8 @@ def workdir(tmp_path: Path) -> Path:
 
 
 def make(workdir: Path, *args: str, path: str | None = None) -> subprocess.CompletedProcess[str]:
-    # Without the caller's STACK, name or make flags (make test runs this suite from inside make).
-    env = {k: v for k, v in os.environ.items() if k not in {"STACK", "name", "MAKEFLAGS", "MAKELEVEL", "MFLAGS"}}
+    # Without the caller's STACK, name, email or make flags (make test runs this suite from inside make).
+    env = {k: v for k, v in os.environ.items() if k not in {"STACK", "name", "email", "MAKEFLAGS", "MAKELEVEL", "MFLAGS"}}
     if path:
         env["PATH"] = path
     return subprocess.run(["make", "--no-print-directory", *args], cwd=workdir, env=env, capture_output=True, text=True, timeout=30)
@@ -93,12 +93,18 @@ def assert_a_second_run_changes_nothing(workdir: Path) -> None:
     assert (env_file.read_text(), env_file.stat().st_mtime_ns) == (content, mtime)
 
 
-def test_the_env_rule_writes_two_random_passwords_only_its_owner_can_read(workdir):
+KEY_LINE = r"AUTH_SECRET_KEY=[0-9a-f]{64}\n"
+
+
+def test_the_env_rule_writes_two_random_passwords_and_a_key_only_its_owner_can_read(workdir):
     first = make(workdir, ".env")
     assert first.returncode == 0, first.stderr
     assert "Created .env" in first.stdout
     env_file = workdir / ".env"
-    match = re.fullmatch(r"POSTGRES_PASSWORD=([0-9a-f]{32})\nPOSTGRES_API_PASSWORD=([0-9a-f]{32})\n", env_file.read_text())
+    match = re.fullmatch(
+        r"POSTGRES_PASSWORD=([0-9a-f]{32})\nPOSTGRES_API_PASSWORD=([0-9a-f]{32})\nAUTH_SECRET_KEY=([0-9a-f]{64})\n",
+        env_file.read_text(),
+    )
     assert match
     assert match.group(1) != match.group(2)
     assert env_file.stat().st_mode & 0o777 == 0o600
@@ -113,9 +119,26 @@ def test_the_env_rule_adds_the_api_password_to_an_older_env(workdir):
     result = make(workdir, ".env")
     assert result.returncode == 0, result.stderr
     assert "Added POSTGRES_API_PASSWORD" in result.stdout
+    assert "Added AUTH_SECRET_KEY" in result.stdout
     content = env_file.read_text()
     assert content.startswith(original)
-    assert re.fullmatch(r"POSTGRES_API_PASSWORD=[0-9a-f]{32}\n", content[len(original) :])
+    assert re.fullmatch(r"POSTGRES_API_PASSWORD=[0-9a-f]{32}\n" + KEY_LINE, content[len(original) :])
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    assert_a_second_run_changes_nothing(workdir)
+
+
+def test_the_env_rule_adds_only_the_key_to_an_env_with_both_passwords(workdir):
+    env_file = workdir / ".env"
+    original = "POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\n"
+    env_file.write_text(original)
+    env_file.chmod(0o600)
+    result = make(workdir, ".env")
+    assert result.returncode == 0, result.stderr
+    assert "Added AUTH_SECRET_KEY" in result.stdout
+    assert "Added POSTGRES_API_PASSWORD" not in result.stdout
+    content = env_file.read_text()
+    assert content.startswith(original)
+    assert re.fullmatch(KEY_LINE, content[len(original) :])
     assert env_file.stat().st_mode & 0o777 == 0o600
     assert_a_second_run_changes_nothing(workdir)
 
@@ -125,13 +148,14 @@ def test_the_env_rule_puts_the_added_line_on_a_line_of_its_own(workdir):
     env_file.write_text("POSTGRES_PASSWORD=abc")
     result = make(workdir, ".env")
     assert result.returncode == 0, result.stderr
-    assert re.fullmatch(r"POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=[0-9a-f]{32}\n", env_file.read_text())
+    assert re.fullmatch(r"POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=[0-9a-f]{32}\n" + KEY_LINE, env_file.read_text())
 
 
 def test_the_env_rule_leaves_a_complete_env_untouched(workdir):
-    (workdir / ".env").write_text("POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\n")
+    complete = f"POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\nAUTH_SECRET_KEY={'0f' * 32}\n"
+    (workdir / ".env").write_text(complete)
     assert_a_second_run_changes_nothing(workdir)
-    assert (workdir / ".env").read_text() == "POSTGRES_PASSWORD=abc\nPOSTGRES_API_PASSWORD=def\n"
+    assert (workdir / ".env").read_text() == complete
 
 
 def test_migration_takes_the_next_number_and_the_name_as_its_message(workdir):
@@ -158,6 +182,35 @@ def test_test_security_runs_the_security_suites(workdir):
     result = make(workdir, "-n", "test-security")
     assert result.returncode == 0, result.stderr
     assert "cd backend && megoocolab-runner services run test -- uv run pytest tests/security" in result.stdout.splitlines()
+
+
+def test_setup_code_runs_the_command_in_the_chosen_stack(workdir):
+    result = make(workdir, "-n", "setup-code", "STACK=dev")
+    assert result.returncode == 0, result.stderr
+    command = "docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli setup-code"
+    assert command in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("target", ["reset-mfa", "reset-password"])
+def test_the_reset_targets_run_their_command_in_the_chosen_stack(workdir, target):
+    result = make(workdir, "-n", target, "email=a@b.c", "STACK=dev")
+    assert result.returncode == 0, result.stderr
+    command = f'docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli {target} "a@b.c"'
+    assert command in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("target", ["reset-mfa", "reset-password"])
+@pytest.mark.parametrize("args", [[], ["email="], ["email=a;b"], ["email=a@b@c"]])
+def test_a_reset_target_without_a_valid_email_runs_nothing(workdir, target, args):
+    bin_dir = workdir / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text('#!/bin/sh\ntouch "$(dirname "$0")/ran"\n')
+    docker.chmod(0o755)
+    result = make(workdir, target, *args, path=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert result.returncode != 0
+    assert f"make {target} needs an email" in result.stderr
+    assert not (bin_dir / "ran").exists()
 
 
 def test_release_check_runs_the_version_check_then_the_release_plan(workdir):
