@@ -77,3 +77,26 @@ def test_revisions_are_numbered_consecutively_from_0001():
         expected_down = None if position == 1 else f"{position - 1:04d}"
         assert revision.down_revision == expected_down, f"{path.name}: down_revision should be {expected_down!r}"
     assert script.get_heads() == [f"{len(files):04d}"]
+
+
+def test_audit_log_is_a_hypertable_on_time():
+    rows = _fetch(
+        "SELECT hypertable_name FROM timescaledb_information.hypertables WHERE hypertable_name = 'audit_log'"
+    )
+    assert [row[0] for row in rows] == ["audit_log"]
+    dimensions = _fetch(
+        "SELECT column_name FROM timescaledb_information.dimensions WHERE hypertable_name = 'audit_log'"
+    )
+    assert [row[0] for row in dimensions] == ["time"]
+
+
+def test_0002_goes_down_and_up_again_with_an_empty_chain():
+    command.downgrade(_config(), "0001")
+    assert _fetch("SELECT to_regclass('audit_log'), to_regclass('audit_chain_head')") == [(None, None)]
+    assert _fetch("SELECT proname FROM pg_proc WHERE proname = 'audit_refuse_change'") == []
+    command.upgrade(_config(), "head")
+    assert _fetch("SELECT id, seq, hash, time FROM audit_chain_head") == [(1, 0, bytes(32), None)]
+
+
+def test_the_models_match_the_migrations():
+    command.check(_config())

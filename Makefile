@@ -81,7 +81,8 @@ test:
 	cd backend && $(RUNNER) services run stack -- uv run pytest -m stack
 
 test-security:
-	@echo "make test-security: the security suites are not in the repository yet. They come with Phases 3 and 4." >&2; exit 1
+	$(REQUIRE_RUNNER)
+	cd backend && $(RUNNER) services run test -- uv run pytest tests/security
 
 release-check:
 	python tools/release/versions.py check

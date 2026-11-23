@@ -34,4 +34,6 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-DbSession = Annotated[AsyncSession, Depends(get_session)]
+# scope="function": the commit and the audit guard run before the response is sent, so a failed commit
+# answers 500. The guard depends on this same alias, so FastAPI's dependency cache gives it the handler's session.
+DbSession = Annotated[AsyncSession, Depends(get_session, scope="function")]
