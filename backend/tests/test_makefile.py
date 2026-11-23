@@ -11,7 +11,7 @@ import pytest
 
 MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
 UP = "up -d --build --wait --wait-timeout 300"
-TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code"]
+TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password"]
 
 
 @pytest.fixture
@@ -27,8 +27,8 @@ def workdir(tmp_path: Path) -> Path:
 
 
 def make(workdir: Path, *args: str, path: str | None = None) -> subprocess.CompletedProcess[str]:
-    # Without the caller's STACK, name or make flags (make test runs this suite from inside make).
-    env = {k: v for k, v in os.environ.items() if k not in {"STACK", "name", "MAKEFLAGS", "MAKELEVEL", "MFLAGS"}}
+    # Without the caller's STACK, name, email or make flags (make test runs this suite from inside make).
+    env = {k: v for k, v in os.environ.items() if k not in {"STACK", "name", "email", "MAKEFLAGS", "MAKELEVEL", "MFLAGS"}}
     if path:
         env["PATH"] = path
     return subprocess.run(["make", "--no-print-directory", *args], cwd=workdir, env=env, capture_output=True, text=True, timeout=30)
@@ -189,6 +189,28 @@ def test_setup_code_runs_the_command_in_the_chosen_stack(workdir):
     assert result.returncode == 0, result.stderr
     command = "docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli setup-code"
     assert command in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("target", ["reset-mfa", "reset-password"])
+def test_the_reset_targets_run_their_command_in_the_chosen_stack(workdir, target):
+    result = make(workdir, "-n", target, "email=a@b.c", "STACK=dev")
+    assert result.returncode == 0, result.stderr
+    command = f'docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli {target} "a@b.c"'
+    assert command in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("target", ["reset-mfa", "reset-password"])
+@pytest.mark.parametrize("args", [[], ["email="], ["email=a;b"], ["email=a@b@c"]])
+def test_a_reset_target_without_a_valid_email_runs_nothing(workdir, target, args):
+    bin_dir = workdir / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text('#!/bin/sh\ntouch "$(dirname "$0")/ran"\n')
+    docker.chmod(0o755)
+    result = make(workdir, target, *args, path=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert result.returncode != 0
+    assert f"make {target} needs an email" in result.stderr
+    assert not (bin_dir / "ran").exists()
 
 
 def test_release_check_runs_the_version_check_then_the_release_plan(workdir):
