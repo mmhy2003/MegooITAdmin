@@ -8,7 +8,7 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 vi.mock("@/lib/auth/navigate");
 
 const ME: Me = {
-  user: { id: "u1", name: "Ada Owner", email: "owner@example.com", is_owner: true },
+  user: { id: "u1", name: "Ada Owner", email: "owner@example.com", platform_role: "owner" },
   password_changed_at: "2026-11-20T09:30:00Z",
   totp_confirmed_at: "2026-11-20T09:31:00Z",
   recovery_codes_left: 10,
@@ -43,7 +43,15 @@ describe("ProfilePage", () => {
   });
 
   it("shows no Owner badge for someone else", async () => {
-    mockApi(undefined, { ...ME, user: { ...ME.user, is_owner: false } });
+    mockApi(undefined, { ...ME, user: { ...ME.user, platform_role: null } });
+    render(<ProfilePage />);
+
+    expect(await screen.findByText("Ada Owner")).toBeInTheDocument();
+    expect(screen.queryByText("Owner")).not.toBeInTheDocument();
+  });
+
+  it("shows no Owner badge for an Auditor", async () => {
+    mockApi(undefined, { ...ME, user: { ...ME.user, platform_role: "auditor" } });
     render(<ProfilePage />);
 
     expect(await screen.findByText("Ada Owner")).toBeInTheDocument();

@@ -29,7 +29,7 @@ describe("backendUrl", () => {
 
 describe("fetchSession", () => {
   it("forwards only the session cookie to the backend and returns the session", async () => {
-    const session = { status: "active", user: { id: "u1", name: "Ada", email: "ada@example.com", is_owner: true } };
+    const session = { status: "active", user: { id: "u1", name: "Ada", email: "ada@example.com", platform_role: "owner" } };
     answer(session);
 
     await expect(fetchSession("tok")).resolves.toEqual(session);

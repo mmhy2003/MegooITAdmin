@@ -23,6 +23,11 @@ describe("gateRedirect", () => {
     ["setup_required", "/login", "", "/setup"],
     ["setup_required", "/", "", "/setup"],
     ["setup_required", "/setup", "", null],
+    [null, "/invite", "", null],
+    ["signed_out", "/invite", "", null],
+    ["mfa_required", "/invite", "", null],
+    ["active", "/invite", "", null],
+    ["setup_required", "/invite", "", "/setup"],
   ])("(%s, %s, %j) → %s", (status, pathname, search, expected) => {
     expect(gateRedirect(status, pathname, search)).toBe(expected);
   });

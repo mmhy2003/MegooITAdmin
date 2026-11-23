@@ -9,6 +9,14 @@ const MESSAGES: Record<string, string> = {
   not_signed_in: "Your sign-in took too long. Start again.",
   unreachable: "The server is not answering. Try again in a moment.",
   invalid: "Check the fields and try again.",
+  forbidden: "Only the Owner can do this.",
+  email_taken: "An account with this email exists already.",
+  name_taken: "A server group with this name exists already.",
+  own_account: "You cannot change your own account here.",
+  last_owner: "At least one enabled Owner must remain.",
+  invalid_invite: "This invite link does not work. Ask the Owner for a new one.",
+  already_accepted: "This person has accepted their invite already.",
+  no_change: "Nothing has changed.",
 };
 
 /** The text shown for an `ApiError` detail. */

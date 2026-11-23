@@ -80,7 +80,7 @@ export function ProfilePage() {
             <CardContent className="space-y-1">
               <div className="flex items-center gap-2">
                 <span className="font-medium">{me.user.name}</span>
-                {me.user.is_owner && <Badge>Owner</Badge>}
+                {me.user.platform_role === "owner" && <Badge>Owner</Badge>}
               </div>
               <p className="text-sm text-muted-foreground">{me.user.email}</p>
             </CardContent>

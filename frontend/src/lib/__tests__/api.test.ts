@@ -87,7 +87,7 @@ describe("apiFetch", () => {
     expect(goTo).toHaveBeenCalledWith("/login?next=%2Fservers");
   });
 
-  it.each(["/login", "/setup"])("does not redirect on %s", async (path) => {
+  it.each(["/login", "/setup", "/invite"])("does not redirect on %s", async (path) => {
     window.history.pushState({}, "", path);
     answer({ detail: "not_signed_in" }, 401);
 
