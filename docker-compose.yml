@@ -44,6 +44,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+      DATABASE_OWNER_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
     networks: [edge, core, servers]
     depends_on:
       db:

@@ -5,6 +5,7 @@ services:
     image: ${BACKEND_IMAGE}
     environment:
       DATABASE_URL: postgresql+asyncpg://megooitadmin:megooitadmin@db:5432/${DB_NAME}
+      DATABASE_OWNER_URL: postgresql+asyncpg://megooitadmin:megooitadmin@db:5432/${DB_NAME}
     depends_on:
       db:
         condition: service_healthy

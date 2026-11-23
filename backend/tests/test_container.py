@@ -64,6 +64,7 @@ def test_it_refuses_to_serve_when_a_migration_fails():
             "docker", "run", "--rm",
             "--network", _env("BACKEND_NETWORK"),
             "-e", f"DATABASE_URL=postgresql+asyncpg://megooitadmin:megooitadmin@db:5432/{_env('DB_NAME')}",
+            "-e", f"DATABASE_OWNER_URL=postgresql+asyncpg://megooitadmin:megooitadmin@db:5432/{_env('DB_NAME')}",
             "-v", f"{FAILING_REVISION}:/app/migrations/versions/9999_fails.py:ro",
             _env("BACKEND_IMAGE"),
         ],

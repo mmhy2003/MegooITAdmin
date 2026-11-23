@@ -1,6 +1,7 @@
 """Points the app at the test database before any app module is imported.
 
-`megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL.
+`megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL, the URL
+the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with.
 """
 
 import os
@@ -20,16 +21,23 @@ def _own_file(config: pytest.Config) -> str | None:
     return ONLY.get(config.getoption("markexpr"))
 
 
+def _test_url(name: str) -> str:
+    url = os.environ.get(name)
+    if not url:
+        pytest.exit(f"{name} is not set. Run the suite as: {RUN_TESTS}", returncode=2)
+    database = url.rsplit("/", 1)[-1].split("?", 1)[0]
+    if not database.endswith("_test"):
+        pytest.exit(
+            f"Refusing to run against {database!r} ({name}): the test database name must end in _test.", returncode=2
+        )
+    return url
+
+
 def pytest_configure(config: pytest.Config) -> None:
     if _own_file(config):
         return
-    url = os.environ.get("TEST_DATABASE_URL")
-    if not url:
-        pytest.exit(f"TEST_DATABASE_URL is not set. Run the suite as: {RUN_TESTS}", returncode=2)
-    database = url.rsplit("/", 1)[-1].split("?", 1)[0]
-    if not database.endswith("_test"):
-        pytest.exit(f"Refusing to run against {database!r}: the test database name must end in _test.", returncode=2)
-    os.environ["DATABASE_URL"] = url
+    os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
+    os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
     os.environ["DB_NULL_POOL"] = "true"
 
 
