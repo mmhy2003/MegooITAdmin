@@ -51,13 +51,15 @@ Run these before any merge:
   tests: `megoocolab-runner services run image -- uv run pytest -m docker`.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`, then the image
   check: `megoocolab-runner services run web -- npm run test:image`.
+- **Stack** (`backend/`): `megoocolab-runner services run stack -- uv run pytest -m stack`. It starts the whole
+  Compose stack and checks it through Caddy. `make test` runs the backend, frontend and stack checks in one go.
 - **Security suites**: `make test-security`. It runs the secret-leak, approval-bypass and audit-coverage suites
   against the fake-server fixture.
 - **Release tools**: `make release-check`. It runs `python tools/release/versions.py check` and `plan`.
 
 A check applies once its part is in the repository. While a part is missing (a directory that holds only
-`.gitkeep`, a Makefile target that doesn't exist yet), skip its check and say which checks you skipped and why.
-Never report a skipped check as passed.
+`.gitkeep`, a Makefile target that doesn't exist yet or says its part is not in the repository yet), skip its
+check and say which checks you skipped and why. Never report a skipped check as passed.
 
 ## Migrations
 
@@ -65,7 +67,7 @@ Never report a skipped check as passed.
 - Generate and try migrations only on the scratch database `megooitadmin_migrate`, never on the dev database and
   never inside a running container. The `migrate` service set starts that database, empty, in this worktree's own
   container, and removes it when the command ends. Run these from `backend/`.
-- Create each migration with the next number:
+- Create each migration with the next number: `make migration name=add_users`. It runs, from `backend/`:
   `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic revision --autogenerate --rev-id 0002 -m "add users"'`
 - Before committing, check that the migration goes down and up again:
   `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head'`
@@ -74,8 +76,10 @@ Never report a skipped check as passed.
 
 - Docker: start containers for checks only with `megoocolab-runner services run`. It gives this worktree its own
   `megoo-…` containers and removes them when the command ends. Apart from those, use only the `megooitadmin-dev`
-  and `megooitadmin-e2e` Compose projects. Never stop, remove or change any other container. A `megooitadmin`
-  project and its `megooitadmin-*` containers are the owner's real instance.
+  and `megooitadmin-e2e` Compose projects. Start them with `make up STACK=dev` and `make up STACK=e2e`, and pass
+  the same `STACK=` to `down`, `logs`, `migrate` and `shell-backend`. Never run one of these targets without
+  `STACK=`: it then acts on the owner's real instance. Never stop, remove or change any other container. A
+  `megooitadmin` project and its `megooitadmin-*` containers are the owner's real instance.
 - Never read files that hold credentials or secrets (`.env` files, tokens, keys).
 - Never connect to a managed server. Use the fake-server fixture (containers with sshd) instead.
 - You have no access to production. Don't try to reach it.

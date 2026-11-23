@@ -1,0 +1,85 @@
+# MegooITAdmin's stack. Start and stop it with the Makefile (make up, make down; see README.md).
+# Only caddy publishes a port: an upstream TLS proxy sends plain HTTP to it.
+name: megooitadmin
+
+x-healthcheck-timing: &healthcheck-timing
+  interval: 5s
+  timeout: 5s
+  retries: 5
+  start_period: 120s
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "${MEGOOITADMIN_HTTP_PORT:-80}:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    # Caddy asks for no certificate (auto_https off), so it has nothing to keep.
+    tmpfs:
+      - /data
+      - /config
+    networks: [edge]
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/api/health"]
+      <<: *healthcheck-timing
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    networks: [edge]
+    healthcheck:
+      # The image has no curl.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      <<: *healthcheck-timing
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+    networks: [edge, core, servers]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      <<: *healthcheck-timing
+
+  db:
+    image: timescale/timescaledb-ha:pg18
+    restart: unless-stopped
+    environment:
+      # The image's superuser, so the first migration can create the extensions. Separate roles come later.
+      POSTGRES_USER: megooitadmin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}
+      POSTGRES_DB: megooitadmin
+    volumes:
+      # The image runs as postgres and keeps its data under /home/postgres/pgdata, not /var/lib/postgresql/data.
+      - db_data:/home/postgres/pgdata
+    networks: [core, exec]
+    healthcheck:
+      # TCP, not the socket: on first start the image's temporary server listens only on its socket.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U megooitadmin -d megooitadmin"]
+      <<: *healthcheck-timing
+
+networks:
+  # edge and servers have a route out: caddy publishes a port, and the backend reaches managed servers.
+  edge: {}
+  core:
+    internal: true
+  servers: {}
+  exec:
+    internal: true
+  sandbox:
+    internal: true
+
+volumes:
+  db_data: {}

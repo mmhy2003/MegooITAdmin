@@ -28,5 +28,8 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 # The app is not installed as a package, so tests import it from here.
 pythonpath = ["."]
-markers = ["docker: checks the built backend image; run with megoocolab-runner services run image -- uv run pytest -m docker"]
-addopts = "-m 'not docker'"
+markers = [
+    "docker: checks the built backend image; run with megoocolab-runner services run image -- uv run pytest -m docker",
+    "stack: checks the whole Compose stack through Caddy; run with megoocolab-runner services run stack -- uv run pytest -m stack",
+]
+addopts = "-m 'not docker and not stack'"

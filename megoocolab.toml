@@ -36,3 +36,13 @@ ports = ["WEB_PORT"]
 [services.web.env]
 FRONTEND_IMAGE = "megooitadmin-frontend:${MEGOO_SERVICES_PROJECT}"
 FRONTEND_URL = "http://localhost:${WEB_PORT}"
+
+[services.stack]
+description = "The whole Compose stack built from this checkout (caddy, frontend, backend, db), for pytest -m stack"
+compose = ["docker-compose.yml"]
+ports = ["STACK_PORT"]
+
+[services.stack.env]
+MEGOOITADMIN_HTTP_PORT = "127.0.0.1:${STACK_PORT}"
+POSTGRES_PASSWORD = "megooitadmin"
+STACK_URL = "http://localhost:${STACK_PORT}"
