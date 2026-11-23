@@ -1,9 +1,13 @@
 """MegooITAdmin's release rules, for the Release workflow and for whoever releases (docs/releasing.md).
 
     python tools/release/versions.py check    every version file agrees with VERSION
+    python tools/release/versions.py guard    a product that changed since its last tag carries a higher version
 
 One product: MegooITAdmin, whose version is `VERSION`, kept equal in every Python package's pyproject.toml and
 uv.lock and in the frontend's package.json and package-lock.json. A release is tagged vX.Y.Z.
+
+guard and plan read the tags. A checkout without them (a shallow clone) looks like a first release, so the Release
+workflow must fetch the whole history (fetch-depth: 0).
 
 Standard library only, Python 3.11 or newer (tomllib).
 """
@@ -22,6 +26,11 @@ VERSION_FILE = "VERSION"
 PACKAGES = ["backend", "workers/*", "gateway", "executor"]
 # the uv.lock entry of the package itself, not of a dependency
 SELF = ({"virtual": "."}, {"editable": "."})
+# what MegooITAdmin is made of: a change here since its last release needs a new version
+PRODUCT = [
+    "backend", "workers", "gateway", "executor", "frontend", "caddy",
+    "docker-compose.yml", ".env.example", "Makefile", "VERSION",
+]
 
 
 class Problem(Exception):
@@ -131,8 +140,36 @@ def check(root: Path) -> list[str]:
     return errors
 
 
+def _last_tag(root: Path) -> str | None:
+    tags = [t for t in _git(root, "tag", "--list", f"{TAG}*").split() if parse(t.removeprefix(TAG))]
+    return max(tags, key=lambda t: parse(t.removeprefix(TAG)), default=None)
+
+
+def guard(root: Path) -> list[str]:
+    """A product that changed since its last tag (HEAD against the tag) must carry a higher version."""
+    try:
+        version = _version(root)
+    except Problem as e:
+        return [str(e)]
+    current = parse(version)
+    if current is None:
+        return [_not_release(version)]
+    last = _last_tag(root)
+    if last is None:
+        return []  # the first release: nothing to compare with
+    if current < parse(last):
+        return [f"VERSION says {version}, lower than the last release {last}"]
+    if current > parse(last):
+        return []
+    changed = _git(root, "diff", "--name-only", last, "HEAD", "--", *PRODUCT).splitlines()
+    if changed:
+        return [f"{', '.join(PRODUCT)} changed since {last} but VERSION is still {version}: bump it (e.g. {changed[0]})"]
+    return []
+
+
 COMMANDS = {
     "check": lambda root: ({}, check(root)),
+    "guard": lambda root: ({}, guard(root)),
 }
 
 

@@ -259,3 +259,74 @@ def test_cli_outside_a_git_repository_stops_with_gits_message(tmp_path):
     result = run(outside, "check")
     assert result.returncode == 1
     assert "not a git repository" in result.stderr.lower()
+
+
+def product_changed(path: str) -> str:
+    return f"{', '.join(versions.PRODUCT)} changed since v0.1.0 but VERSION is still 0.1.0: bump it (e.g. {path})"
+
+
+def test_guard_passes_without_tags(repo):
+    assert versions.guard(repo) == []
+
+
+def test_guard_passes_on_the_tagged_commit(repo):
+    tag(repo, "v0.1.0")
+    assert versions.guard(repo) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backend/app/main.py", "workers/collector/main.py", "gateway/main.py", "executor/main.py",
+        "frontend/src/page.tsx", "caddy/Caddyfile", "docker-compose.yml", ".env.example", "Makefile",
+    ],
+)
+def test_a_product_change_needs_a_bump(repo, path):
+    tag(repo, "v0.1.0")
+    change(repo, path)
+    assert versions.guard(repo) == [product_changed(path)]
+    set_version(repo, "0.1.1")
+    assert versions.guard(repo) == []
+
+
+@pytest.mark.parametrize(
+    "path", ["docs/notes.md", "tools/release/notes.txt", ".github/workflows/ci.yml", "AGENTS.md", "README.md", "megoocolab.toml"]
+)
+def test_a_change_outside_the_product_needs_no_bump(repo, path):
+    tag(repo, "v0.1.0")
+    change(repo, path)
+    assert versions.guard(repo) == []
+
+
+def test_a_version_lower_than_the_last_tag_is_refused(repo):
+    tag(repo, "v0.2.0")
+    assert versions.guard(repo) == ["VERSION says 0.1.0, lower than the last release v0.2.0"]
+
+
+def test_the_last_tag_is_picked_by_number(repo):
+    tag(repo, "v0.9.0")
+    tag(repo, "v0.10.0")
+    assert versions._last_tag(repo) == "v0.10.0"
+    set_version(repo, "0.9.5")
+    assert versions.guard(repo) == ["VERSION says 0.9.5, lower than the last release v0.10.0"]
+
+
+def test_tags_that_are_not_release_versions_are_ignored(repo):
+    for name in ["v0.1.0", "v1.0.0-rc1", "latest"]:
+        tag(repo, name)
+    assert versions._last_tag(repo) == "v0.1.0"
+    assert versions.guard(repo) == []
+
+
+def test_guard_reports_a_version_that_is_not_x_y_z(repo):
+    (repo / "VERSION").write_text("dev\n")
+    assert versions.guard(repo) == [_not_release("dev")]
+
+
+def test_cli_guard(repo):
+    result = run(repo, "guard")
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+    tag(repo, "v0.1.0")
+    change(repo, "backend/app/main.py")
+    result = run(repo, "guard")
+    assert (result.returncode, result.stdout, result.stderr) == (1, "", product_changed("backend/app/main.py") + "\n")
