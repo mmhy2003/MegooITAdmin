@@ -5,6 +5,7 @@ the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic m
 """
 
 import os
+from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
 
@@ -98,3 +99,31 @@ async def empty_audit_log(database_at_head):
             text("UPDATE audit_chain_head SET seq = 0, hash = :zero, time = NULL"), {"zero": bytes(32)}
         )
         await session.commit()
+
+
+@pytest.fixture
+async def clean_auth(empty_audit_log):
+    from sqlalchemy import text
+
+    # The owner deletes every account (their sessions and recovery codes cascade) and the setup code.
+    async with owner_session() as session:
+        await session.execute(text("DELETE FROM auth_setup"))
+        await session.execute(text("DELETE FROM users"))
+        await session.commit()
+
+
+class FakeClock:
+    """The time auth code reads through app.auth.clock.now(). It moves only when a test advances it."""
+
+    def __init__(self) -> None:
+        self.now = datetime(2026, 11, 23, 12, 0, 5, tzinfo=UTC)
+
+    def advance(self, **delta: float) -> None:
+        self.now += timedelta(**delta)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    fake = FakeClock()
+    monkeypatch.setattr("app.auth.clock.now", lambda: fake.now)
+    return fake
