@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockMatchMedia } from "@/__tests__/helpers/match-media";
 import { AppShell } from "@/components/shell/app-shell";
 
+const owner = { name: "Olive Owner", email: "owner@example.com" };
 const sidebar = () => document.querySelector('[data-slot="sidebar"]');
 const toggle = () => screen.getByRole("button", { name: "Toggle Sidebar" });
 
@@ -16,7 +17,7 @@ describe("AppShell", () => {
 
   it("collapses and opens the sidebar from the header and remembers it in a cookie", async () => {
     const user = userEvent.setup();
-    render(<AppShell defaultOpen><p>content</p></AppShell>);
+    render(<AppShell user={owner} defaultOpen><p>content</p></AppShell>);
     expect(sidebar()).toHaveAttribute("data-state", "expanded");
 
     await user.click(toggle());
@@ -29,14 +30,14 @@ describe("AppShell", () => {
   });
 
   it("starts collapsed when defaultOpen is false", () => {
-    render(<AppShell defaultOpen={false}><p>content</p></AppShell>);
+    render(<AppShell user={owner} defaultOpen={false}><p>content</p></AppShell>);
     expect(sidebar()).toHaveAttribute("data-state", "collapsed");
   });
 
   it("is a drawer on a small screen that closes when a link is followed", async () => {
     mockMatchMedia({ width: 500 });
     const user = userEvent.setup();
-    render(<AppShell defaultOpen><p>content</p></AppShell>);
+    render(<AppShell user={owner} defaultOpen><p>content</p></AppShell>);
 
     await user.click(toggle());
     const dialog = await screen.findByRole("dialog");
@@ -45,7 +46,7 @@ describe("AppShell", () => {
   });
 
   it("has one main landmark that the skip link points at", () => {
-    render(<AppShell defaultOpen><p>content</p></AppShell>);
+    render(<AppShell user={owner} defaultOpen><p>content</p></AppShell>);
     expect(screen.getByRole("link", { name: "Skip to content" })).toHaveAttribute("href", "#main");
     const mains = document.querySelectorAll("main");
     expect(mains).toHaveLength(1);

@@ -1,6 +1,7 @@
 "use client";
 
 import { CircleUser, LogOut, UserCog } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -10,11 +11,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { apiFetch } from "@/lib/api";
+import { goTo } from "@/lib/auth/navigate";
 
 export type AccountUser = { name: string; email: string };
 
-/** The header's account menu; until login exists (MITA-8) the shell passes no user and both items stay disabled. */
-export function AccountMenu({ user }: { user: AccountUser | null }) {
+/** The header's account menu: who is signed in, their profile page, and sign-out (which always lands on /login). */
+export function AccountMenu({ user }: { user: AccountUser }) {
+  async function signOut() {
+    await apiFetch("/auth/logout", { method: "POST" }).catch(() => undefined);
+    goTo("/login");
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -24,21 +32,17 @@ export function AccountMenu({ user }: { user: AccountUser | null }) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuLabel>
-          {user ? (
-            <>
-              <div>{user.name}</div>
-              <div className="text-xs text-muted-foreground">{user.email}</div>
-            </>
-          ) : (
-            "Sign-in is not available yet"
-          )}
+          <div>{user.name}</div>
+          <div className="text-xs text-muted-foreground">{user.email}</div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>
-          <UserCog aria-hidden />
-          Profile and security
+        <DropdownMenuItem asChild>
+          <Link href="/profile">
+            <UserCog aria-hidden />
+            Profile and security
+          </Link>
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>
+        <DropdownMenuItem onSelect={() => void signOut()}>
           <LogOut aria-hidden />
           Sign out
         </DropdownMenuItem>

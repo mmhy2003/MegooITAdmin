@@ -1,16 +1,16 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { AccountMenu } from "@/components/shell/account-menu";
+import { AccountMenu, type AccountUser } from "@/components/shell/account-menu";
 import { SearchPlaceholder } from "@/components/shell/search-placeholder";
 import { ThemeSwitch } from "@/components/shell/theme-switch";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { findNavItem } from "@/lib/navigation";
+import { pageTitle } from "@/lib/navigation";
 
 /** The bar above every page: the sidebar button, the page title, search, the theme and the account. */
-export function SiteHeader() {
-  const title = findNavItem(usePathname())?.title ?? "Page not found";
+export function SiteHeader({ user }: { user: AccountUser }) {
+  const title = pageTitle(usePathname());
 
   return (
     <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/80 px-4 backdrop-blur">
@@ -20,7 +20,7 @@ export function SiteHeader() {
       <div className="ml-auto flex items-center gap-1">
         <SearchPlaceholder />
         <ThemeSwitch />
-        <AccountMenu user={null} />
+        <AccountMenu user={user} />
       </div>
     </header>
   );

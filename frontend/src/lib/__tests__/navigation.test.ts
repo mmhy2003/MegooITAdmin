@@ -3,7 +3,7 @@ import {
   ScrollText, Server, Settings, ShieldCheck, SquareTerminal,
 } from "lucide-react";
 import { describe, expect, it } from "vitest";
-import { findNavItem, isActive, NAV_GROUPS, NAV_ITEMS, navItem } from "@/lib/navigation";
+import { findNavItem, isActive, NAV_GROUPS, NAV_ITEMS, navItem, pageTitle } from "@/lib/navigation";
 
 describe("navigation", () => {
   it("lists four groups in the PRD's order", () => {
@@ -73,5 +73,13 @@ describe("navItem", () => {
 
   it("throws on an unknown route", () => {
     expect(() => navItem("/nope")).toThrow("No navigation item for /nope");
+  });
+});
+
+describe("pageTitle", () => {
+  it("is the nav item's title, the title of a page outside the nav, or Page not found", () => {
+    expect(pageTitle("/servers/1")).toBe("Servers");
+    expect(pageTitle("/profile")).toBe("Profile and security");
+    expect(pageTitle("/nope")).toBe("Page not found");
   });
 });

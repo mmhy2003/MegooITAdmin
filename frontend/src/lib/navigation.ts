@@ -38,9 +38,17 @@ export function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-/** The item a pathname belongs to, or undefined (the header then says "Page not found"). */
+/** The item a pathname belongs to, or undefined. */
 export function findNavItem(pathname: string): NavItem | undefined {
   return NAV_ITEMS.find((item) => isActive(pathname, item.href));
+}
+
+/** Pages outside the sidebar, by their exact route. */
+const PAGE_TITLES: Record<string, string> = { "/profile": "Profile and security" };
+
+/** The header's title for a pathname: its nav item's title, a page outside the nav, or "Page not found". */
+export function pageTitle(pathname: string): string {
+  return findNavItem(pathname)?.title ?? PAGE_TITLES[pathname] ?? "Page not found";
 }
 
 /** The item with exactly this route; for the page files. Throws on an unknown route. */
