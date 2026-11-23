@@ -67,12 +67,15 @@ def owner_session():
 
 
 def upgrade_to_head() -> None:
-    """Migrates as the owner. Sync: Alembic's env.py runs its own event loop. A downgrade below 0003 drops the API
-    role, so every way back to head goes through here."""
+    """Migrates as the owner, then sets the API role's password, as the entrypoint does. Sync: Alembic's env.py
+    runs its own event loop. A downgrade below 0003 drops the API role, so every way back to head goes through here."""
     from alembic import command
     from alembic.config import Config
 
+    from app.core.db_roles import sync_api_role_password
+
     command.upgrade(Config(str(ALEMBIC_INI)), "head")
+    sync_api_role_password()
 
 
 @pytest.fixture(scope="session")
@@ -84,10 +87,8 @@ def database_at_head():
 async def empty_audit_log(database_at_head):
     from sqlalchemy import text
 
-    from app.core.db import SessionLocal
-
-    # The triggers refuse DELETE, so they are switched off for this transaction only, as a superuser can.
-    async with SessionLocal() as session:
+    # The triggers refuse DELETE, so the owner switches them off for this transaction only.
+    async with owner_session() as session:
         await session.execute(text("SET LOCAL session_replication_role = replica"))
         await session.execute(text("DELETE FROM audit_log"))
         await session.execute(
