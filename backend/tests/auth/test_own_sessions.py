@@ -58,6 +58,7 @@ async def test_me_shows_the_user_and_the_second_factor(api, clock):
         "password_changed_at": created.isoformat().replace("+00:00", "Z"),
         "totp_confirmed_at": created.isoformat().replace("+00:00", "Z"),
         "recovery_codes_left": 2,
+        "grants": [],
     }
 
 

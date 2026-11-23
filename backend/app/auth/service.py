@@ -513,6 +513,7 @@ async def logout(db: AsyncSession, request: Request, session: AuthSession) -> No
 
 async def me(db: AsyncSession, user: User) -> "MeOut":
     from app.auth.schemas import MeOut, UserOut
+    from app.users.service import grants_of
 
     left = await db.scalar(select(func.count()).select_from(RecoveryCode).where(RecoveryCode.user_id == user.id))
     return MeOut(
@@ -520,6 +521,7 @@ async def me(db: AsyncSession, user: User) -> "MeOut":
         password_changed_at=user.password_changed_at,
         totp_confirmed_at=user.totp_confirmed_at,
         recovery_codes_left=left,
+        grants=(await grants_of(db, [user.id])).get(user.id, []),
     )
 
 

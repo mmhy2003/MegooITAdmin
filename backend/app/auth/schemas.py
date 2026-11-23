@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from app.access.permissions import PlatformRole
 from app.auth.passwords import PASSWORD_MAX, PASSWORD_MIN
 from app.auth.service import Status
+from app.users.schemas import GrantOut
 
 
 class UserOut(BaseModel):
@@ -72,6 +73,7 @@ class MeOut(BaseModel):
     password_changed_at: datetime
     totp_confirmed_at: datetime | None
     recovery_codes_left: int
+    grants: list[GrantOut]  # by group name
 
 
 class SessionOut(BaseModel):
