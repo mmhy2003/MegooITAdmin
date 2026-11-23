@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.access.deps import require_owner
 from app.audit import audited
+from app.auth import actions as auth_actions
 from app.auth.deps import CurrentUser
 from app.core.db import DbSession
 from app.users import actions, service
@@ -44,4 +45,22 @@ async def renew_invite(user_id: UUID, request: Request, db: DbSession, user: Cur
 )
 async def set_access(user_id: UUID, body: AccessIn, request: Request, db: DbSession, user: CurrentUser) -> Response:
     await service.set_access(db, request, user, user_id, body)
+    return Response(status_code=204)
+
+
+@router.post("/{user_id}/disable", status_code=204, dependencies=[audited(actions.USER_DISABLED)])
+async def disable(user_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> Response:
+    await service.disable(db, request, user, user_id)
+    return Response(status_code=204)
+
+
+@router.post("/{user_id}/enable", status_code=204, dependencies=[audited(actions.USER_ENABLED)])
+async def enable(user_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> Response:
+    await service.enable(db, request, user, user_id)
+    return Response(status_code=204)
+
+
+@router.post("/{user_id}/mfa-reset", status_code=204, dependencies=[audited(auth_actions.MFA_RESET)])
+async def reset_mfa(user_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> Response:
+    await service.reset_mfa(db, request, user, user_id)
     return Response(status_code=204)

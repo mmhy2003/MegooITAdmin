@@ -4,16 +4,18 @@ from collections.abc import Iterable, Mapping
 from uuid import UUID
 
 from fastapi import HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access.models import RoleGrant
 from app.access.deps import FORBIDDEN, deny
 from app.access.permissions import GRANT_FIELDS, PlatformRole
-from app.audit import Event, changes, record
+from app.audit import Event, Target, changes, record
+from app.auth import actions as auth_actions
 from app.auth import clock
-from app.auth.models import User
-from app.auth.service import actor_of, auth_event, lock_user, target_of
+from app.auth.models import AuthSession, User
+from app.auth.service import actor_of, auth_event, lock_user, reset_second_factor, target_of
+from app.auth.sessions import end_sessions
 from app.inventory.models import ServerGroup
 from app.users import actions
 from app.users.invites import put_invite
@@ -241,3 +243,80 @@ async def set_access(db: AsyncSession, request: Request, owner: User, user_id: U
         await record(db, role_event)
     for _, event in sorted(grant_events, key=lambda pair: pair[0]):
         await record(db, event)
+
+
+async def _record_ended(db: AsyncSession, request: Request, owner: User, ended: list[AuthSession]) -> None:
+    for session in ended:
+        await record(
+            db,
+            auth_event(
+                request,
+                auth_actions.SESSION_REVOKED,
+                actor_of(owner),
+                mfa=True,
+                target=Target(type="auth_session", id=str(session.id)),
+            ),
+        )
+
+
+async def disable(db: AsyncSession, request: Request, owner: User, user_id: UUID) -> None:
+    """Closes the account: no sign-in, no invite link, and its sessions end now. Its roles stay."""
+    user = await _lock_for_change(db, request, owner, user_id)
+    if user.disabled_at is not None:
+        raise HTTPException(409, "no_change")
+    await _keep_an_owner(db, user, user.platform_role, disabling=True)
+    before = _status_of(user)
+    user.disabled_at = clock.now()
+    await db.execute(delete(UserInvite).where(UserInvite.user_id == user.id))
+    ended = await end_sessions(db, user.id)
+    # record() last: it holds the audit chain lock until the commit.
+    await record(
+        db,
+        auth_event(
+            request,
+            actions.USER_DISABLED,
+            actor_of(owner),
+            mfa=True,
+            target=target_of(user),
+            change={"status": {"before": before, "after": "disabled"}},
+        ),
+    )
+    await _record_ended(db, request, owner, ended)
+
+
+async def enable(db: AsyncSession, request: Request, owner: User, user_id: UUID) -> None:
+    """Opens a disabled account again, with the roles it had."""
+    user = await _lock_for_change(db, request, owner, user_id)
+    if user.disabled_at is None:
+        raise HTTPException(409, "no_change")
+    user.disabled_at = None
+    await db.flush()
+    await record(
+        db,
+        auth_event(
+            request,
+            actions.USER_ENABLED,
+            actor_of(owner),
+            mfa=True,
+            target=target_of(user),
+            change={"status": {"before": "disabled", "after": _status_of(user)}},
+        ),
+    )
+
+
+async def reset_mfa(db: AsyncSession, request: Request, owner: User, user_id: UUID) -> None:
+    """Removes the person's authenticator and recovery codes and ends their sessions: the next sign-in enrols."""
+    user = await _lock_for_change(db, request, owner, user_id)
+    ended = await reset_second_factor(db, user)
+    await record(
+        db,
+        auth_event(
+            request,
+            auth_actions.MFA_RESET,
+            actor_of(owner),
+            mfa=True,
+            target=target_of(user),
+            detail={"sessions_ended": len(ended)},
+        ),
+    )
+    await _record_ended(db, request, owner, ended)
