@@ -3,11 +3,13 @@
 from app.audit.chain import GENESIS, canonical, event_hash
 from app.audit.events import Actor, ActorType, Event, Person, Result, RiskClass, Source, Target, changes
 from app.audit.models import AuditChainHead, AuditEvent
+from app.audit.writer import AuditChainBusy, record, record_alone
 
 __all__ = [
     "GENESIS",
     "Actor",
     "ActorType",
+    "AuditChainBusy",
     "AuditChainHead",
     "AuditEvent",
     "Event",
@@ -19,4 +21,6 @@ __all__ = [
     "canonical",
     "changes",
     "event_hash",
+    "record",
+    "record_alone",
 ]
