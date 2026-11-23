@@ -11,8 +11,14 @@ from app.audit import audited
 from app.auth.deps import CurrentUser
 from app.core.db import DbSession
 from app.inventory import actions, servers
-from app.inventory.deps import group_of_new_server, group_of_server, server_in
-from app.inventory.server_schemas import ServerIn, ServerOut
+from app.inventory.deps import (
+    group_of_new_server,
+    group_of_server,
+    server_in,
+    server_patch,
+    target_group_of_server,
+)
+from app.inventory.server_schemas import ServerIn, ServerOut, ServerPatch
 
 router = APIRouter()
 
@@ -49,3 +55,23 @@ async def create_server(
     access: CurrentAccess,
 ) -> ServerOut:
     return await servers.create_server(db, request, user, access, body)
+
+
+@router.patch(
+    "/servers/{server_id}",
+    dependencies=[
+        # A move needs Admin on the group the server leaves and the one it goes to.
+        Depends(require_group_admin(group=group_of_server)),
+        Depends(require_group_admin(group=target_group_of_server)),
+        audited(actions.SERVER_CHANGED, actions.SERVER_MOVED, actions.SERVER_TAGS_CHANGED),
+    ],
+)
+async def update_server(
+    server_id: UUID,
+    body: Annotated[ServerPatch, Depends(server_patch)],
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    access: CurrentAccess,
+) -> ServerOut:
+    return await servers.update_server(db, request, user, access, server_id, body)

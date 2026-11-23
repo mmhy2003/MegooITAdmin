@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access.permissions import Access
@@ -16,7 +16,7 @@ from app.auth.service import actor_of, auth_event
 from app.core.db import flush_refusing
 from app.inventory import actions
 from app.inventory.models import Server, ServerGroup, ServerTag
-from app.inventory.server_schemas import ServerIn, ServerOut
+from app.inventory.server_schemas import ServerIn, ServerOut, ServerPatch
 
 FIELDS = ("name", "address", "port", "os", "role", "connection_settings")
 
@@ -155,3 +155,52 @@ async def create_server(db: AsyncSession, request: Request, user: User, access: 
     after = _fields(server) | {"group": group.name, "tags": body.tags}
     await record(db, _event(request, user, actions.SERVER_CREATED, server, change=changes({}, after)))
     return _out(server, group.name, body.tags, access)
+
+
+async def update_server(
+    db: AsyncSession, request: Request, user: User, access: Access, server_id: UUID, body: ServerPatch
+) -> ServerOut:
+    """Changes the fields sent, moves the server to the group sent and sets its tags: one event for each that
+    differs, in that order. Nothing differs: 409."""
+    server = await db.scalar(select(Server).where(Server.id == server_id).with_for_update())
+    if server is None:
+        raise HTTPException(404, "not_found")
+    group = await _group(db, server.server_group_id)
+    tags = (await _tags_of(db, [server.id])).get(server.id, [])
+
+    before = _fields(server)
+    sent = body.model_dump(include=set(FIELDS) & body.model_fields_set)
+    after = before | sent
+    target = group
+    if body.group_id is not None and body.group_id != group.id:
+        target = await _group(db, body.group_id)
+    new_tags = tags if body.tags is None else body.tags
+
+    changed = changes(before, after)
+    moved = {"group": {"before": group.name, "after": target.name}} if target is not group else None
+    tags_changed = {"tags": {"before": tags, "after": new_tags}} if new_tags != tags else None
+    if changed is None and moved is None and tags_changed is None:
+        raise HTTPException(409, "no_change")
+    if after["name"] != before["name"]:
+        await _check_name(db, after["name"], server.id)
+
+    for field, value in after.items():
+        setattr(server, field, value)
+    server.server_group_id = target.id
+    server.updated_at = func.now()
+    removed = set(tags) - set(new_tags)
+    if removed:
+        await db.execute(delete(ServerTag).where(ServerTag.server_id == server.id, ServerTag.tag.in_(removed)))
+    db.add_all(ServerTag(server_id=server.id, tag=tag) for tag in set(new_tags) - set(tags))
+    await flush_refusing(db, REFUSALS)
+    await db.refresh(server)
+
+    # record() last: it holds the audit chain lock until the commit.
+    if changed is not None:
+        await record(db, _event(request, user, actions.SERVER_CHANGED, server, change=changed))
+    if moved is not None:
+        detail = {"from_group_id": str(group.id), "to_group_id": str(target.id)}
+        await record(db, _event(request, user, actions.SERVER_MOVED, server, change=moved, detail=detail))
+    if tags_changed is not None:
+        await record(db, _event(request, user, actions.SERVER_TAGS_CHANGED, server, change=tags_changed))
+    return _out(server, target.name, new_tags, access)
