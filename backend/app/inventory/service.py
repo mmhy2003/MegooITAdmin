@@ -14,6 +14,8 @@ from app.auth.service import actor_of, auth_event
 from app.inventory import actions
 from app.inventory.models import ServerGroup
 from app.inventory.schemas import ServerGroupIn, ServerGroupOut, ServerGroupPatch
+from app.users import actions as user_actions
+from app.users.service import _grant_event
 
 
 def _out(group: ServerGroup, member_count: int | None) -> ServerGroupOut:
@@ -115,3 +117,35 @@ async def update_group(
         ),
     )
     return _out(group, await _member_count(db, group.id))
+
+
+async def delete_group(db: AsyncSession, request: Request, owner: User, group_id: UUID) -> None:
+    """Deletes the group and the roles in it: one grant_removed per person, by name, then the deletion."""
+    group = await db.scalar(select(ServerGroup).where(ServerGroup.id == group_id).with_for_update())
+    if group is None:
+        raise HTTPException(404, "not_found")
+    query = (
+        select(RoleGrant, User)
+        .join(User, User.id == RoleGrant.user_id)
+        .where(RoleGrant.server_group_id == group.id)
+        .order_by(func.lower(User.name), User.id)
+    )
+    grants = (await db.execute(query)).all()
+    events = [
+        _grant_event(request, owner, user, user_actions.USER_GRANT_REMOVED, group, grant.fields(), None)
+        for grant, user in grants
+    ]
+    deleted = auth_event(
+        request,
+        actions.SERVER_GROUP_DELETED,
+        actor_of(owner),
+        mfa=True,
+        target=_target(group),
+        change=changes(_fields(group), {}),
+    )
+    for grant, _ in grants:
+        await db.delete(grant)
+    await db.delete(group)
+    await db.flush()
+    for event in [*events, deleted]:
+        await record(db, event)
