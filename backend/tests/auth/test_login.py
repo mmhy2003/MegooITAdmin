@@ -5,11 +5,13 @@ import pytest
 from auth_helpers import EMAIL, PASSWORD, actions, events, load_user, make_user
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select, update
+from starlette.requests import Request as StarletteRequest
 
-from app.audit import AuditEvent, Source
+from app.audit import Actor, AuditEvent, Source
 from app.auth import passwords, sessions
 from app.auth.models import AuthSession, User
 from app.auth.passwords import verify_password
+from app.auth.service import auth_event
 from app.core.db import SessionLocal
 from app.main import create_app
 
@@ -209,3 +211,44 @@ async def test_no_event_holds_the_password(api, password):
     for row in rows:
         values = " ".join(repr(getattr(row, column.key)) for column in AuditEvent.__table__.columns)
         assert password not in values
+
+
+async def test_a_disabled_account_is_refused_with_the_usual_message(api):
+    user, _ = await make_user(disabled=True)
+
+    response = await login(api)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_credentials"}
+    assert sessions.COOKIE not in response.cookies
+    (event,) = await events("auth.sign_in_failed")
+    assert (event.actor_id, event.target_type, event.target_id) == (str(user.id), "user", str(user.id))
+    assert (event.result, event.result_detail) == ("failure", {"reason": "disabled"})
+    assert (await load_user()).failed_attempts == 0
+    assert await session_rows() == []
+
+
+async def test_an_account_that_has_not_accepted_its_invite_is_refused(api):
+    user, _ = await make_user(password=None, enrolled=False)
+
+    response = await login(api)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_credentials"}
+    (event,) = await events("auth.sign_in_failed")
+    assert (event.actor_id, event.target_id) == (str(user.id), str(user.id))
+    assert (event.result, event.result_detail) == ("failure", {"reason": "not_accepted"})
+    assert (await load_user()).failed_attempts == 0
+    assert await session_rows() == []
+
+
+def test_auth_event_carries_the_change_and_the_context():
+    request = StarletteRequest({"type": "http", "method": "GET", "path": "/", "headers": [], "client": None})
+    change = {"role": {"before": "operator", "after": "admin"}}
+
+    event = auth_event(
+        request, "user.role_changed", Actor.system("test"), mfa=True, change=change, context={"group": "staging"}
+    )
+
+    assert (event.change, event.context) == (change, {"group": "staging"})
+    assert auth_event(request, "user.role_changed", Actor.system("test"), mfa=True).context == {}

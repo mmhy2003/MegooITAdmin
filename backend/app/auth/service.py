@@ -65,6 +65,8 @@ def auth_event(
     target: Target | None = None,
     result: Result = Result.SUCCESS,
     detail: dict | None = None,
+    change: dict | None = None,
+    context: dict[str, str] | None = None,
 ) -> Event:
     return Event(
         action=action,
@@ -72,6 +74,8 @@ def auth_event(
         target=target,
         result=result,
         result_detail=detail,
+        change=change,
+        context=context or {},
         source=source_of(request, auth_method="password", mfa=mfa),
     )
 
@@ -173,6 +177,17 @@ async def status_of(db: AsyncSession, token: str | None) -> tuple[Status, User |
     return ("mfa_required" if session.user.totp_secret is not None else "enrolment_required"), None
 
 
+async def reset_second_factor(db: AsyncSession, user: User) -> list[AuthSession]:
+    """Removes the account's authenticator and recovery codes and ends its sessions, so the next sign-in enrols.
+    Records nothing: the caller records who reset it."""
+    user.totp_secret = None
+    user.totp_pending_secret = None
+    user.totp_confirmed_at = None
+    user.totp_last_step = None
+    await db.execute(delete(RecoveryCode).where(RecoveryCode.user_id == user.id))
+    return await end_sessions(db, user.id)
+
+
 async def setup(db: AsyncSession, request: Request, body: "SetupIn") -> tuple[User, str] | Refusal:
     """Creates the Owner with the one-time setup code, and a pending session that goes on to enrolment."""
     # The row lock makes concurrent setups wait; the one that comes second finds the row gone and an owner.
@@ -247,6 +262,28 @@ async def login(db: AsyncSession, request: Request, body: "LoginIn") -> tuple[st
                 mfa=False,
                 result=Result.FAILURE,
                 detail={"reason": actions.UNKNOWN_ACCOUNT},
+            ),
+        )
+        return refusal
+
+    # No password opens a disabled or a not-yet-accepted account, so the attempt is not counted.
+    closed = None
+    if user.disabled_at is not None:
+        closed = actions.DISABLED
+    elif user.password_hash is None:
+        closed = actions.NOT_ACCEPTED
+    if closed is not None:
+        await passwords.verify_dummy(body.password)
+        await record(
+            db,
+            auth_event(
+                request,
+                actions.SIGN_IN_FAILED,
+                actor_of(user),
+                target=target_of(user),
+                mfa=False,
+                result=Result.FAILURE,
+                detail={"reason": closed},
             ),
         )
         return refusal

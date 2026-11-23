@@ -9,6 +9,7 @@ from app.auth.models import AuthSession, RecoveryCode, SetupCode
 from app.auth.passwords import verify_password
 from app.auth.recovery import CODE_PATTERN, hash_code
 from app.core.db import SessionLocal
+from app.users.models import UserInvite
 
 NEW_PASSWORD = "a brand new and long passphrase"
 
@@ -161,6 +162,33 @@ async def test_reset_password_refuses_a_short_password(clean_auth, clock, capsys
 async def test_reset_password_of_an_unknown_email_fails(clean_auth, clock, capsys):
     assert await cli.reset_password("nobody@example.com", NEW_PASSWORD) == 1
     assert capsys.readouterr() == ("", "No account has the email nobody@example.com.\n")
+
+
+async def test_reset_password_of_an_invited_account_deletes_its_invite(api, clock, capsys):
+    user, _ = await make_user(password=None, enrolled=False)
+    async with SessionLocal() as db:
+        db.add(UserInvite(user_id=user.id, token_hash=b"\x01" * 32, expires_at=clock.now + timedelta(days=7)))
+        await db.commit()
+
+    assert await cli.reset_password(EMAIL, NEW_PASSWORD) == 0
+
+    async with SessionLocal() as db:
+        assert (await db.scalars(select(UserInvite))).all() == []
+    response = await api.post("/api/auth/login", json={"email": EMAIL, "password": NEW_PASSWORD})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "enrolment_required"}
+
+
+async def test_reset_mfa_works_on_a_disabled_account_and_does_not_enable_it(clean_auth, clock, capsys):
+    await make_user(disabled=True, recovery_codes=["ABCD-EFGH-IJKL-MNOP"])
+
+    assert await cli.reset_mfa(EMAIL) == 0
+
+    user = await load_user()
+    assert (user.totp_secret, user.totp_confirmed_at) == (None, None)
+    assert await recovery_rows() == []
+    assert user.disabled_at is not None
+    assert len(await events("auth.mfa_reset")) == 1
 
 
 def test_main_runs_reset_mfa_with_the_email(monkeypatch):
