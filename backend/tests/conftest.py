@@ -11,12 +11,16 @@ import pytest
 RUN_TESTS = "megoocolab-runner services run test -- uv run pytest"
 
 
-def _docker_only(config: pytest.Config) -> bool:
-    return config.getoption("markexpr") == "docker"
+# The marker of a set without a test database, and the only file a run with that marker collects.
+ONLY = {"docker": "test_container.py", "stack": "test_stack.py"}
+
+
+def _own_file(config: pytest.Config) -> str | None:
+    return ONLY.get(config.getoption("markexpr"))
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    if _docker_only(config):
+    if _own_file(config):
         return
     url = os.environ.get("TEST_DATABASE_URL")
     if not url:
@@ -29,7 +33,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    # The image set has no test database, so a `-m docker` run collects only the container tests.
-    if _docker_only(config) and collection_path.is_file() and collection_path.name != "test_container.py":
+    # The image and stack sets have no test database, so a `-m docker` or `-m stack` run collects only its own file.
+    own_file = _own_file(config)
+    if own_file and collection_path.is_file() and collection_path.name != own_file:
         return True
     return None

@@ -51,6 +51,8 @@ Run these before any merge:
   tests: `megoocolab-runner services run image -- uv run pytest -m docker`.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`, then the image
   check: `megoocolab-runner services run web -- npm run test:image`.
+- **Stack** (`backend/`): `megoocolab-runner services run stack -- uv run pytest -m stack`. It starts the whole
+  Compose stack and checks it through Caddy.
 - **Security suites**: `make test-security`. It runs the secret-leak, approval-bypass and audit-coverage suites
   against the fake-server fixture.
 - **Release tools**: `make release-check`. It runs `python tools/release/versions.py check` and `plan`.
