@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AuthenticatorDialog } from "@/components/profile/authenticator-dialog";
 import { PasswordDialog } from "@/components/profile/password-dialog";
 import { RecoveryCodesDialog } from "@/components/profile/recovery-codes-dialog";
+import { SessionsCard } from "@/components/profile/sessions-card";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -118,6 +119,7 @@ export function ProfilePage() {
               </div>
             </CardContent>
           </Card>
+          <SessionsCard />
         </div>
       )}
       <PasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} onChanged={passwordChanged} />

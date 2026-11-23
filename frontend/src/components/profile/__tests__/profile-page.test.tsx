@@ -20,9 +20,10 @@ beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
 });
 
-function mockApi(password: () => Promise<unknown> = async () => ({ status: "ok" })) {
+function mockApi(password: () => Promise<unknown> = async () => ({ status: "ok" }), me: Me = ME) {
   vi.mocked(apiFetch).mockImplementation(async (path: string) => {
-    if (path === "/auth/me") return ME;
+    if (path === "/auth/me") return me;
+    if (path === "/auth/sessions") return [];
     if (path === "/auth/password") return password();
     throw new Error(`unexpected ${path}`);
   });
@@ -38,10 +39,11 @@ describe("ProfilePage", () => {
     expect(screen.getByText("Owner")).toBeInTheDocument();
     expect(screen.getByText(`Last changed ${formatTime(ME.password_changed_at)}`)).toBeInTheDocument();
     expect(apiFetch).toHaveBeenCalledWith("/auth/me");
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
   });
 
   it("shows no Owner badge for someone else", async () => {
-    vi.mocked(apiFetch).mockResolvedValue({ ...ME, user: { ...ME.user, is_owner: false } });
+    mockApi(undefined, { ...ME, user: { ...ME.user, is_owner: false } });
     render(<ProfilePage />);
 
     expect(await screen.findByText("Ada Owner")).toBeInTheDocument();
@@ -56,7 +58,7 @@ describe("ProfilePage", () => {
   });
 
   it("shows when the authenticator was added and how many recovery codes are left", async () => {
-    vi.mocked(apiFetch).mockResolvedValue({ ...ME, recovery_codes_left: 3 });
+    mockApi(undefined, { ...ME, recovery_codes_left: 3 });
     render(<ProfilePage />);
 
     expect(await screen.findByText("3 of 10 recovery codes left")).toBeInTheDocument();
@@ -81,6 +83,7 @@ describe("ProfilePage", () => {
   it("shows the notice and loads the profile again after the authenticator is replaced", async () => {
     vi.mocked(apiFetch).mockImplementation(async (path: string) => {
       if (path === "/auth/me") return ME;
+      if (path === "/auth/sessions") return [];
       if (path === "/auth/mfa/enrol") return ENROLMENT;
       if (path === "/auth/mfa/enrol/confirm") return { recovery_codes: null };
       throw new Error(`unexpected ${path}`);
