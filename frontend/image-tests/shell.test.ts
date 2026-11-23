@@ -35,6 +35,18 @@ describe("the frontend image", () => {
     expect(html.slice(html.indexOf("<head"), html.indexOf("<body"))).toContain("megoo-theme");
   });
 
+  it("serves the invite page without a session", async () => {
+    const { status, html } = await get("/invite", { redirect: "manual" });
+    expect(status).toBe(200);
+    expect(html).toContain("Checking the invite link");
+  });
+
+  it("sends a request for settings without a session to the sign-in page", async () => {
+    const settings = await fetch(new URL("/settings", BASE), { redirect: "manual" });
+    expect(settings.status).toBe(307);
+    expect(settings.headers.get("location")).toMatch(/\/login\?next=%2Fsettings$/);
+  });
+
   it("serves the dashboard with the wordmark and a link to every page", async () => {
     const { status, html } = await get("/", { headers: { cookie: SIGNED_IN } });
     expect(status).toBe(200);
