@@ -267,6 +267,36 @@ def test_caddy_accepts_the_caddyfile_and_finds_nothing_to_reformat():
     assert fmt.stdout == CADDYFILE.read_text()
 
 
+def test_an_invited_person_accepts_enrols_and_cannot_list_users(owner):
+    response = owner.post("/api/server-groups", json={"name": "staging"})
+    assert response.status_code == 200, response.text
+    group_id = response.json()["id"]
+    invite = {
+        "name": "Ada",
+        "email": "ada@stack.invalid",
+        "platform_role": None,
+        "grants": [{"group_id": group_id, "role": "admin", "connect_ssh": True}],
+    }
+    response = owner.post("/api/users", json=invite)
+    assert response.status_code == 200, response.text
+    token = response.json()["token"]
+    with httpx.Client(base_url=_env("STACK_URL"), timeout=10) as client:
+        response = client.post("/api/auth/invite/check", json={"token": token})
+        assert response.status_code == 200, response.text
+        assert response.json() == {"name": "Ada", "email": "ada@stack.invalid"}
+        response = client.post("/api/auth/invite/accept", json={"token": token, "password": "ada's own long password"})
+        assert response.status_code == 200, response.text
+        response = client.post("/api/auth/mfa/enrol", json={})
+        assert response.status_code == 200, response.text
+        code = pyotp.TOTP(response.json()["secret"]).now()
+        response = client.post("/api/auth/mfa/enrol/confirm", json={"code": code})
+        assert response.status_code == 200, response.text
+        assert client.get("/api/users").status_code == 403
+        response = client.get("/api/server-groups")
+        assert response.status_code == 200, response.text
+        assert [group["name"] for group in response.json()] == ["staging"]
+
+
 def test_after_sign_out_pages_redirect_to_login(owner):
     # Last in the file: it ends the session the `owner` fixture holds.
     response = owner.post("/api/auth/logout")
