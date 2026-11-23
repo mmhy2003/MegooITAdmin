@@ -210,7 +210,13 @@ export function UsersPage({ currentUserId }: { currentUserId: string }) {
           )}
         </CardContent>
       </Card>
-      <InviteDialog groups={groups} open={inviting} onOpenChange={setInviting} onCreated={invited} />
+      <InviteDialog
+        groups={groups}
+        open={inviting}
+        onOpenChange={setInviting}
+        onCreated={invited}
+        onStale={reloadGroups}
+      />
       <AccessDialog
         user={changing}
         groups={groups}

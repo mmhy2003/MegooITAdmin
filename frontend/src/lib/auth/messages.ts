@@ -17,6 +17,7 @@ const MESSAGES: Record<string, string> = {
   invalid_invite: "This invite link does not work. Ask the Owner for a new one.",
   already_accepted: "This person has accepted their invite already.",
   no_change: "Nothing has changed.",
+  unknown_group: "A server group was deleted meanwhile. The list has been reloaded.",
 };
 
 /** The text shown for an `ApiError` detail. */

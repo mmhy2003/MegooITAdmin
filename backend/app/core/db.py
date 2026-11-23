@@ -1,7 +1,8 @@
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool
@@ -32,6 +33,16 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def flush_unique(session: AsyncSession, constraint: str, detail: str) -> None:
+    """Flushes. A clash on the unique `constraint`, from a request that won the race past a check, answers 409."""
+    try:
+        await session.flush()
+    except IntegrityError as e:
+        if f'"{constraint}"' not in str(e.orig):
+            raise
+        raise HTTPException(409, detail) from e
 
 
 # scope="function": the commit and the audit guard run before the response is sent, so a failed commit

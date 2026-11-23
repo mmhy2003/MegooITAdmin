@@ -3,6 +3,7 @@ from uuid import uuid4
 from auth_helpers import add_grant, events, make_group, make_user, other_client, sign_in
 
 from app.auth.models import User
+from app.inventory import service as inventory_service
 
 PERSON = "pat@example.com"
 
@@ -90,6 +91,25 @@ async def test_names_clash_without_regard_to_case(api, clock):
     await make_group("Staging")
     production = await make_group("production")
 
+    created = await api.post("/api/server-groups", json={"name": "staging"})
+    renamed = await api.patch(f"/api/server-groups/{production.id}", json={"name": "STAGING"})
+
+    assert (created.status_code, created.json()) == (409, {"detail": "name_taken"})
+    assert (renamed.status_code, renamed.json()) == (409, {"detail": "name_taken"})
+    assert await events("server_group.created") == []
+    assert await events("server_group.changed") == []
+
+
+async def test_a_name_that_loses_the_race_gets_409(api, clock, monkeypatch):
+    await owner(api, clock)
+    await make_group("Staging")
+    production = await make_group("production")
+
+    # The other request inserts between the check and the write: only the unique index sees it.
+    async def nothing_taken(db, name, group_id=None):
+        return None
+
+    monkeypatch.setattr(inventory_service, "_check_name", nothing_taken)
     created = await api.post("/api/server-groups", json={"name": "staging"})
     renamed = await api.patch(f"/api/server-groups/{production.id}", json={"name": "STAGING"})
 

@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.access.permissions import Permission
 from app.core.db import SessionLocal
+from app.users import service as users_service
 from app.users.models import UserInvite
 
 INVITEE = "ada@example.com"
@@ -174,6 +175,21 @@ async def test_a_second_invite_for_the_same_email_gets_409(api, clock):
         response = await api.post("/api/users", json=invite_body(email=email))
         assert (response.status_code, response.json()) == (409, {"detail": "email_taken"})
     assert len(await invites()) == 1
+    assert len(await events("user.invited")) == 1
+
+
+async def test_an_invite_that_loses_the_race_for_an_email_gets_409(api, clock, monkeypatch):
+    await owner(api, clock)
+    assert (await api.post("/api/users", json=invite_body())).status_code == 200
+
+    # The other request inserts between the check and the insert: only the unique constraint sees it.
+    async def nothing_taken(db, email):
+        return None
+
+    monkeypatch.setattr(users_service, "_check_email", nothing_taken)
+    response = await api.post("/api/users", json=invite_body())
+
+    assert (response.status_code, response.json()) == (409, {"detail": "email_taken"})
     assert len(await events("user.invited")) == 1
 
 

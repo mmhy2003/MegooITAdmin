@@ -16,6 +16,7 @@ from app.auth import clock
 from app.auth.models import AuthSession, User
 from app.auth.service import actor_of, auth_event, lock_user, reset_second_factor, target_of
 from app.auth.sessions import end_sessions
+from app.core.db import flush_unique
 from app.inventory.models import ServerGroup
 from app.users import actions
 from app.users.invites import put_invite
@@ -77,7 +78,7 @@ async def _check_groups(db: AsyncSession, grants: list[GrantIn]) -> dict[UUID, S
     return groups
 
 
-def _grant_event(
+def grant_event(
     request: Request,
     owner: User,
     user: User,
@@ -100,10 +101,15 @@ def _grant_event(
     )
 
 
+async def _check_email(db: AsyncSession, email: str) -> None:
+    """An account with the email: 409."""
+    if await db.scalar(select(User.id).where(User.email == email)) is not None:
+        raise HTTPException(409, "email_taken")
+
+
 async def invite(db: AsyncSession, request: Request, owner: User, body: InviteIn) -> InviteLinkOut:
     """Creates the account without a password, its group roles and its invite. The token is returned only here."""
-    if await db.scalar(select(User.id).where(User.email == body.email)) is not None:
-        raise HTTPException(409, "email_taken")
+    await _check_email(db, body.email)
     groups = await _check_groups(db, body.grants)
     user = User(
         email=body.email,
@@ -113,7 +119,7 @@ async def invite(db: AsyncSession, request: Request, owner: User, body: InviteIn
         password_changed_at=clock.now(),
     )
     db.add(user)
-    await db.flush()
+    await flush_unique(db, "users_email_key", "email_taken")
     db.add_all(RoleGrant(user_id=user.id, server_group_id=g.group_id, **g.fields()) for g in body.grants)
     token, expires_at = await put_invite(db, user.id)
 
@@ -130,7 +136,7 @@ async def invite(db: AsyncSession, request: Request, owner: User, body: InviteIn
     )
     for g in sorted(body.grants, key=lambda g: groups[g.group_id].name.lower()):
         await record(
-            db, _grant_event(request, owner, user, actions.USER_GRANT_ADDED, groups[g.group_id], None, g.fields())
+            db, grant_event(request, owner, user, actions.USER_GRANT_ADDED, groups[g.group_id], None, g.fields())
         )
     return InviteLinkOut(user_id=user.id, token=token, expires_at=expires_at)
 
@@ -208,19 +214,19 @@ async def set_access(db: AsyncSession, request: Request, owner: User, user_id: U
         before = grant.fields()
         if group_id not in wanted:
             await db.delete(grant)
-            event = _grant_event(request, owner, user, actions.USER_GRANT_REMOVED, group, before, None)
+            event = grant_event(request, owner, user, actions.USER_GRANT_REMOVED, group, before, None)
             grant_events.append((group.name.lower(), event))
         elif (after := wanted[group_id].fields()) != before:
             for field, value in after.items():
                 setattr(grant, field, value)
             grant.updated_at = clock.now()
-            event = _grant_event(request, owner, user, actions.USER_GRANT_CHANGED, group, before, after)
+            event = grant_event(request, owner, user, actions.USER_GRANT_CHANGED, group, before, after)
             grant_events.append((group.name.lower(), event))
     for group_id, g in wanted.items():
         if group_id not in stored:
             db.add(RoleGrant(user_id=user.id, server_group_id=group_id, **g.fields()))
             group = groups[group_id]
-            event = _grant_event(request, owner, user, actions.USER_GRANT_ADDED, group, None, g.fields())
+            event = grant_event(request, owner, user, actions.USER_GRANT_ADDED, group, None, g.fields())
             grant_events.append((group.name.lower(), event))
 
     role_event = None

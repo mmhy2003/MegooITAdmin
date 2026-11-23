@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { accessOf, type AccessValue, sameAccess, type ServerGroup, type UserRow } from "@/lib/access";
+import { accessOf, type AccessValue, inGroups, sameAccess, type ServerGroup, type UserRow } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 
@@ -55,7 +55,7 @@ function AccessChange({
     try {
       await apiFetch<void>(`/users/${user.id}/access`, {
         method: "PUT",
-        body: { platform_role: access.platform_role, grants: access.grants },
+        body: { platform_role: access.platform_role, grants: inGroups(access.grants, groups) },
       });
       onSaved();
     } catch (e) {

@@ -95,6 +95,12 @@ export function accessOf(user: { platform_role: PlatformRole | null; grants: Gra
   };
 }
 
+/** The grants in groups that still exist: one of a group deleted meanwhile would get 422 at every save. */
+export function inGroups(grants: Grant[], groups: ServerGroup[]): Grant[] {
+  const ids = new Set(groups.map((g) => g.id));
+  return grants.filter((g) => ids.has(g.group_id));
+}
+
 /** The badges of a person's row: their platform role, their role in each group, or "No access". */
 export function badgesOf(user: { platform_role: PlatformRole | null; grants: GrantOut[] }): string[] {
   if (user.platform_role) return [ROLE_LABELS[user.platform_role]];

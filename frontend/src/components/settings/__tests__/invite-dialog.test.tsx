@@ -33,7 +33,7 @@ describe("InviteDialog", () => {
   it("posts the name, the email and the access, then hands the link over", async () => {
     vi.mocked(apiFetch).mockResolvedValue(LINK);
     const onCreated = vi.fn();
-    render(<InviteDialog groups={GROUPS} open onOpenChange={vi.fn()} onCreated={onCreated} />);
+    render(<InviteDialog groups={GROUPS} open onOpenChange={vi.fn()} onCreated={onCreated} onStale={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Invite a person" })).toBeInTheDocument();
 
     const user = await fillIn();
@@ -66,13 +66,38 @@ describe("InviteDialog", () => {
   it("says when the email is taken", async () => {
     vi.mocked(apiFetch).mockRejectedValue(new ApiError(409, "email_taken"));
     const onCreated = vi.fn();
-    render(<InviteDialog groups={GROUPS} open onOpenChange={vi.fn()} onCreated={onCreated} />);
+    render(<InviteDialog groups={GROUPS} open onOpenChange={vi.fn()} onCreated={onCreated} onStale={vi.fn()} />);
 
     const user = await fillIn();
     await user.click(screen.getByRole("button", { name: "Create invite link" }));
 
     expect(await screen.findByText("An account with this email exists already.")).toBeInTheDocument();
     expect(onCreated).not.toHaveBeenCalled();
+  });
+
+  it("leaves out the grant of a group deleted meanwhile once the groups are reloaded", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(422, "unknown_group")).mockResolvedValueOnce(LINK);
+    const onCreated = vi.fn();
+    const onStale = vi.fn();
+    const props = { open: true, onOpenChange: vi.fn(), onCreated, onStale };
+    const { rerender } = render(<InviteDialog groups={GROUPS} {...props} />);
+
+    const user = await fillIn();
+    await user.click(screen.getByRole("button", { name: "Create invite link" }));
+    expect(
+      await screen.findByText("A server group was deleted meanwhile. The list has been reloaded."),
+    ).toBeInTheDocument();
+    expect(onStale).toHaveBeenCalled();
+
+    // The page reloads the groups: staging is gone.
+    rerender(<InviteDialog groups={[]} {...props} />);
+    await user.click(screen.getByRole("button", { name: "Create invite link" }));
+
+    expect(apiFetch).toHaveBeenLastCalledWith("/users", {
+      method: "POST",
+      body: { name: "Ada Lovelace", email: "ada@example.com", platform_role: null, grants: [] },
+    });
+    expect(onCreated).toHaveBeenCalledWith(LINK, "Ada Lovelace");
   });
 });
 

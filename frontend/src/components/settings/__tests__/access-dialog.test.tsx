@@ -98,6 +98,32 @@ describe("AccessDialog", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it("leaves out the grant of a group deleted meanwhile once the groups are reloaded", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new ApiError(422, "unknown_group")).mockResolvedValueOnce(undefined);
+    const onSaved = vi.fn();
+    const onStale = vi.fn();
+    const props = { user: ADA, open: true, onOpenChange: vi.fn(), onSaved, onStale };
+    const { rerender } = render(<AccessDialog groups={GROUPS} {...props} />);
+    const user = userEvent.setup();
+
+    await giveOperatorOnProduction(user);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(
+      await screen.findByText("A server group was deleted meanwhile. The list has been reloaded."),
+    ).toBeInTheDocument();
+    expect(onStale).toHaveBeenCalled();
+
+    // The page reloads the groups: staging is gone.
+    rerender(<AccessDialog groups={GROUPS.filter((g) => g.id !== "g-staging")} {...props} />);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiFetch).toHaveBeenLastCalledWith("/users/u-ada/access", {
+      method: "PUT",
+      body: { platform_role: null, grants: [{ group_id: "g-production", role: "operator", ...switchesFor("operator") }] },
+    });
+    expect(onSaved).toHaveBeenCalled();
+  });
+
   it("says when the Owner tries to change their own account", async () => {
     vi.mocked(apiFetch).mockRejectedValue(new ApiError(409, "own_account"));
     const { user, onSaved, onStale } = renderDialog();

@@ -11,11 +11,12 @@ from app.access.permissions import Access
 from app.audit import Target, changes, record
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
+from app.core.db import flush_unique
 from app.inventory import actions
 from app.inventory.models import ServerGroup
 from app.inventory.schemas import ServerGroupIn, ServerGroupOut, ServerGroupPatch
 from app.users import actions as user_actions
-from app.users.service import _grant_event
+from app.users.service import grant_event
 
 
 def _out(group: ServerGroup, member_count: int | None) -> ServerGroupOut:
@@ -69,7 +70,7 @@ async def create_group(db: AsyncSession, request: Request, owner: User, body: Se
     await _check_name(db, body.name)
     group = ServerGroup(name=body.name, description=body.description)
     db.add(group)
-    await db.flush()
+    await flush_unique(db, "server_groups_name_key", "name_taken")
     await db.refresh(group)
     # record() last: it holds the audit chain lock until the commit.
     await record(
@@ -103,7 +104,7 @@ async def update_group(
     if after["name"] != before["name"]:
         await _check_name(db, after["name"], group.id)
     group.name, group.description = after["name"], after["description"]
-    await db.flush()
+    await flush_unique(db, "server_groups_name_key", "name_taken")
     await record(
         db,
         auth_event(
@@ -132,7 +133,7 @@ async def delete_group(db: AsyncSession, request: Request, owner: User, group_id
     )
     grants = (await db.execute(query)).all()
     events = [
-        _grant_event(request, owner, user, user_actions.USER_GRANT_REMOVED, group, grant.fields(), None)
+        grant_event(request, owner, user, user_actions.USER_GRANT_REMOVED, group, grant.fields(), None)
         for grant, user in grants
     ]
     deleted = auth_event(

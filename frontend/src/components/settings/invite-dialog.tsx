@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type { AccessValue, InviteLink, ServerGroup } from "@/lib/access";
+import { type AccessValue, inGroups, type InviteLink, type ServerGroup } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 
@@ -23,21 +23,22 @@ type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: (link: InviteLink, name: string) => void;
+  onStale: () => void;
 };
 
 /** Creates an account for a person, with their access, and an invite link for them. */
-export function InviteDialog({ groups, open, onOpenChange, onCreated }: Props) {
+export function InviteDialog({ groups, open, onOpenChange, onCreated, onStale }: Props) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
         {/* The form unmounts when the dialog closes, so the next invite starts empty. */}
-        <InviteForm groups={groups} onCreated={onCreated} />
+        <InviteForm groups={groups} onCreated={onCreated} onStale={onStale} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function InviteForm({ groups, onCreated }: Pick<Props, "groups" | "onCreated">) {
+function InviteForm({ groups, onCreated, onStale }: Pick<Props, "groups" | "onCreated" | "onStale">) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [access, setAccess] = useState<AccessValue>({ platform_role: null, grants: [] });
@@ -51,10 +52,12 @@ function InviteForm({ groups, onCreated }: Pick<Props, "groups" | "onCreated">) 
     try {
       const link = await apiFetch<InviteLink>("/users", {
         method: "POST",
-        body: { name, email, platform_role: access.platform_role, grants: access.grants },
+        body: { name, email, platform_role: access.platform_role, grants: inGroups(access.grants, groups) },
       });
       onCreated(link, name);
     } catch (e) {
+      // A 422 most likely names a group that was deleted meanwhile: the page fetches the groups again.
+      if (e instanceof ApiError && e.status === 422) onStale();
       setError(messageFor(e instanceof ApiError ? e.detail : "error"));
     }
     setBusy(false);
