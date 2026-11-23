@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 RUN_TESTS = "megoocolab-runner services run test -- uv run pytest"
+# The throwaway key of every test set. Never a real installation's key.
+TEST_AUTH_SECRET_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 
@@ -40,6 +42,7 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
     os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
     os.environ["DB_NULL_POOL"] = "true"
+    os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:

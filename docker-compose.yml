@@ -45,6 +45,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://megooitadmin_api:${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
       DATABASE_OWNER_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?AUTH_SECRET_KEY is not set. Run make up or see .env.example}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
+      SESSION_ABSOLUTE_MINUTES: ${SESSION_ABSOLUTE_MINUTES:-720}
+      API_DOCS: ${API_DOCS:-false}
     networks: [edge, core, servers]
     depends_on:
       db:

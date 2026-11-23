@@ -4,6 +4,9 @@
 # migrate at the same time.
 set -e
 
+# Stop before anything runs: the key encrypts the authenticator secrets, so a backend without it cannot check a code.
+: "${AUTH_SECRET_KEY:?AUTH_SECRET_KEY is not set: run make up, or see .env.example}"
+
 echo "Applying database migrations..."
 alembic upgrade head
 

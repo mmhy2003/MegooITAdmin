@@ -15,6 +15,8 @@ pytestmark = pytest.mark.docker
 TESTS = Path(__file__).resolve().parent
 VERSIONS = TESTS.parent / "migrations" / "versions"
 FAILING_REVISION = TESTS / "fixtures" / "9999_fails.py"
+# The throwaway key of every test set.
+TEST_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 
 
 def _env(name: str) -> str:
@@ -84,6 +86,7 @@ def test_it_refuses_to_serve_when_a_migration_fails():
         {
             "DATABASE_URL": _url("megooitadmin_api:megooitadminapi"),
             "DATABASE_OWNER_URL": _url("megooitadmin:megooitadmin"),
+            "AUTH_SECRET_KEY": TEST_KEY,
         },
         "-v", f"{FAILING_REVISION}:/app/migrations/versions/9999_fails.py:ro",
     )
@@ -98,10 +101,23 @@ def test_it_refuses_to_serve_when_a_migration_fails():
 
 def test_it_refuses_to_serve_as_any_other_role():
     owner = _url("megooitadmin:megooitadmin")
-    result = _run_once({"DATABASE_URL": owner, "DATABASE_OWNER_URL": owner})
+    result = _run_once({"DATABASE_URL": owner, "DATABASE_OWNER_URL": owner, "AUTH_SECRET_KEY": TEST_KEY})
     output = result.stdout + result.stderr
     assert result.returncode != 0, output
     assert "Applying database migrations..." in output
     assert "DATABASE_URL must connect as megooitadmin_api" in output
     assert "Uvicorn running" not in output
     assert "megooitadmin:megooitadmin@" not in output
+
+
+def test_it_refuses_to_serve_without_the_auth_secret_key():
+    result = _run_once(
+        {
+            "DATABASE_URL": _url("megooitadmin_api:megooitadminapi"),
+            "DATABASE_OWNER_URL": _url("megooitadmin:megooitadmin"),
+        }
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "AUTH_SECRET_KEY is not set" in output
+    assert "Uvicorn running" not in output
