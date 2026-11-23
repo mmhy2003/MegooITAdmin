@@ -6,6 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from app.access.permissions import PlatformRole
 from app.auth.passwords import PASSWORD_MAX, PASSWORD_MIN
 from app.auth.service import Status
 
@@ -16,7 +17,7 @@ class UserOut(BaseModel):
     id: UUID
     name: str
     email: str
-    is_owner: bool
+    platform_role: PlatformRole | None
 
 
 class SessionStatusOut(BaseModel):

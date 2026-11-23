@@ -105,10 +105,12 @@ async def empty_audit_log(database_at_head):
 async def clean_auth(empty_audit_log):
     from sqlalchemy import text
 
-    # The owner deletes every account (their sessions and recovery codes cascade) and the setup code.
+    # The owner deletes every account (their sessions, recovery codes, grants and invites cascade), every server
+    # group and the setup code.
     async with owner_session() as session:
         await session.execute(text("DELETE FROM auth_setup"))
         await session.execute(text("DELETE FROM users"))
+        await session.execute(text("DELETE FROM server_groups"))
         await session.commit()
 
 

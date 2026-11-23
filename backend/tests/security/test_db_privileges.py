@@ -20,6 +20,10 @@ API_GRANTS: dict[str, frozenset[str]] = {
     "auth_sessions": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "recovery_codes": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "auth_setup": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "roles": frozenset({"SELECT"}),
+    "server_groups": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "role_grants": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "user_invites": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
 }
 ROLE_OID = "(SELECT oid FROM pg_roles WHERE rolname = :role)"
 

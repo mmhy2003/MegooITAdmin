@@ -60,7 +60,7 @@ async def test_me_shows_the_user_and_the_second_factor(api, clock):
     response = await api.get("/api/auth/me")
     assert response.status_code == 200
     assert response.json() == {
-        "user": {"id": str(user.id), "name": user.name, "email": user.email, "is_owner": True},
+        "user": {"id": str(user.id), "name": user.name, "email": user.email, "platform_role": "owner"},
         "password_changed_at": created.isoformat().replace("+00:00", "Z"),
         "totp_confirmed_at": created.isoformat().replace("+00:00", "Z"),
         "recovery_codes_left": 2,
@@ -136,7 +136,7 @@ async def test_revoke_refuses_the_current_session(api, clock):
 
 async def test_revoke_answers_404_for_someone_elses_session(api, clock):
     _, secret = await make_user()
-    _, other_secret = await make_user(email="other@example.com", is_owner=False)
+    _, other_secret = await make_user(email="other@example.com", platform_role=None)
     await sign_in(api, clock, secret)
     async with other_client(api) as other:
         await sign_in(other, clock, other_secret, email="other@example.com")

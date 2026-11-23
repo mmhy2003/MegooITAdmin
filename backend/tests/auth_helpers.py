@@ -24,18 +24,21 @@ async def make_user(
     *,
     email: str = EMAIL,
     name: str = NAME,
-    password: str = PASSWORD,
+    password: str | None = PASSWORD,
     enrolled: bool = True,
-    is_owner: bool = True,
+    platform_role: str | None = "owner",
+    disabled: bool = False,
     recovery_codes: list[str] = (),
 ) -> tuple[User, str | None]:
-    """Inserts an account through the API role. Returns it and its plain TOTP secret (None when not enrolled)."""
+    """Inserts an account through the API role. Returns it and its plain TOTP secret (None when not enrolled).
+    `password=None` stores no hash, as for an invited account; `disabled` disables the account now."""
     async with SessionLocal() as session:
         user = User(
             email=email,
             name=name,
-            password_hash=await hash_password(password),
-            is_owner=is_owner,
+            password_hash=None if password is None else await hash_password(password),
+            platform_role=platform_role,
+            disabled_at=clock.now() if disabled else None,
             password_changed_at=clock.now(),
         )
         session.add(user)

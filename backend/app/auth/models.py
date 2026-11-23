@@ -9,7 +9,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -36,13 +35,18 @@ class User(Base):
         PrimaryKeyConstraint("id", name="users_pkey"),
         UniqueConstraint("email", name="users_email_key"),
         CheckConstraint("email = lower(email)", name="users_email_lower_check"),
+        ForeignKeyConstraint(["platform_role"], ["roles.key"], name="users_platform_role_fkey"),
+        CheckConstraint("platform_role IN ('owner', 'auditor')", name="users_platform_role_check"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
-    password_hash: Mapped[str] = mapped_column(Text)
-    is_owner: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # None for an invited account until its link is used.
+    password_hash: Mapped[str | None] = mapped_column(Text)
+    # owner or auditor: platform-wide. None: the person's rights are their roles per server group.
+    platform_role: Mapped[str | None] = mapped_column(Text)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     totp_secret: Mapped[bytes | None] = mapped_column(LargeBinary)
     totp_pending_secret: Mapped[bytes | None] = mapped_column(LargeBinary)
     totp_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

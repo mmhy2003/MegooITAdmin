@@ -217,7 +217,7 @@ async def setup(db: AsyncSession, request: Request, body: "SetupIn") -> tuple[Us
         email=body.email.strip().lower(),
         name=body.name.strip(),
         password_hash=await hash_password(body.password),
-        is_owner=True,
+        platform_role="owner",
         password_changed_at=clock.now(),
     )
     db.add(user)
