@@ -7,17 +7,8 @@ import { LockedNotice } from "@/components/auth/locked-notice";
 import { PasswordStep } from "@/components/auth/password-step";
 import { RecoveryCodes } from "@/components/auth/recovery-codes";
 import { RecoveryStep } from "@/components/auth/recovery-step";
-import type { AuthStatus } from "@/lib/auth/gate";
+import type { LoginStep } from "@/lib/auth/login-step";
 import { goTo } from "@/lib/auth/navigate";
-
-export type LoginStep = "password" | "code" | "recovery" | "locked" | "enrol" | "codes";
-
-/** The step a sign-in resumes at, from the session's status. */
-export function initialStep(status?: AuthStatus): LoginStep {
-  if (status === "mfa_required") return "code";
-  if (status === "enrolment_required") return "enrol";
-  return "password";
-}
 
 type Props = {
   initialStep: LoginStep;

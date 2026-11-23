@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
-import { initialStep, LoginFlow } from "@/components/auth/login-flow";
+import { LoginFlow } from "@/components/auth/login-flow";
 import { safeNext } from "@/lib/auth/gate";
+import { initialStep } from "@/lib/auth/login-step";
 import { getSession } from "@/lib/auth/server";
 
 export const metadata: Metadata = { title: "Sign in" };

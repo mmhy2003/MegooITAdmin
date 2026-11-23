@@ -1,9 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { initialStep, LoginFlow } from "@/components/auth/login-flow";
+import { LoginFlow } from "@/components/auth/login-flow";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { AuthStatus } from "@/lib/auth/gate";
+import { initialStep } from "@/lib/auth/login-step";
 import { goTo } from "@/lib/auth/navigate";
 
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
