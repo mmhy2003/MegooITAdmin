@@ -8,6 +8,7 @@ import re
 import subprocess
 from functools import cache
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pyotp
@@ -376,6 +377,18 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         assert (response.status_code, response.json()) == (401, {"detail": "invalid_credentials"})
 
 
+def _audit_of_server(server_id: str) -> list[tuple[str, str]]:
+    """(action, result) of each audit event of the server, oldest first, read as the database owner."""
+    UUID(server_id)  # only a UUID goes into the SQL
+    sql = f"SELECT action, result FROM audit_log WHERE target_type = 'server' AND target_id = '{server_id}' ORDER BY seq"
+    result = _compose(
+        "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_PASSWORD')}", "db",
+        "psql", "-h", "127.0.0.1", "-U", "megooitadmin", "-d", "megooitadmin", "-tA", "-F", "|", "-c", sql,
+    )
+    assert result.returncode == 0, result.stderr
+    return [tuple(line.split("|")) for line in result.stdout.splitlines() if line]
+
+
 def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(owner):
     public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
     assert public.returncode == 0, public.stderr
@@ -392,6 +405,9 @@ def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(o
     refused = owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()
     assert (refused["ok"], refused["reason"]) == (False, "host_key_changed")
     assert owner.get(f"/api/servers/{server_id}").json()["host_key_state"] == "changed"
+    events = _audit_of_server(server_id)
+    assert ("server.created", "success") in events
+    assert ("server.connection_tested", "success") in events
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):
