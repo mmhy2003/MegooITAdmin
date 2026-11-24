@@ -97,6 +97,8 @@ that file. CI does not replace the checks above: run them before you push.
 - The test set starts its own fake server. `make up STACK=dev` and `make up STACK=e2e` start one too and authorize
   that stack's key on it: register it as address `fake-server`, port 22. `make fake-server-swap STACK=dev` gives
   it new host keys. Never run `fake-server-swap` without `STACK=`.
+- The fake server is prepared by `backend/app/ssh/megoo-setup.sh`, like a real one. It has `megoo` plus the wrong
+  accounts `megoo-docker`, `megoo-root`, `megoo-nologs`, `megoo-nosudo` and `megoo-wide`.
 - You have no access to production. Don't try to reach it.
 
 ## Versioning and releases
