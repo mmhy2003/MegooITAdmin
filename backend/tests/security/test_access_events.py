@@ -109,6 +109,17 @@ async def ada_is_denied_users(walk: Walk) -> None:
     assert (await walk.call(walk.ada, "GET", "/api/users")).status_code == 403
 
 
+async def manage_servers(walk: Walk) -> None:
+    staging, production = walk.groups["staging"], walk.groups["production"]
+    body = {"name": "web-01", "address": "10.0.0.1", "group_id": staging, "os": "linux", "port": 22, "tags": ["nginx"]}
+    url = f"/api/servers/{(await walk.owner('POST', '/api/servers', body)).json()['id']}"
+    # Ada is an Operator on staging: Ada sees the server but may not change it.
+    assert (await walk.call(walk.ada, "PATCH", url, {"role": "web"})).status_code == 403
+    for change in ({"address": "10.0.0.2"}, {"tags": ["nginx", "eu-west"]}, {"group_id": production}):
+        await walk.owner("PATCH", url, change)
+    await walk.owner("DELETE", url, status=204)
+
+
 async def second_invite_renewed(walk: Walk) -> None:
     body = {"name": "Bo Brown", "email": "bo@example.com", "platform_role": "auditor", "grants": []}
     link = (await walk.owner("POST", "/api/users", body)).json()
@@ -138,6 +149,7 @@ async def test_one_walk_records_every_access_and_user_action_and_no_secret(api, 
         await ada_accepts_and_enrols(walk, token)
         await change_adas_access(walk)
         await ada_is_denied_users(walk)
+        await manage_servers(walk)
         await second_invite_renewed(walk)
         await owner_manages_ada(walk)
         await delete_staging(walk)
@@ -145,6 +157,7 @@ async def test_one_walk_records_every_access_and_user_action_and_no_secret(api, 
     expected = (
         user_actions.ALL_ACTIONS
         | inventory_actions.ALL_ACTIONS
+        | inventory_actions.SERVER_ACTIONS
         | {ACCESS_DENIED, auth_actions.MFA_RESET, auth_actions.SESSION_REVOKED}
     )
     assert expected - set(await actions()) == set()

@@ -9,7 +9,7 @@ const MESSAGES: Record<string, string> = {
   not_signed_in: "Your sign-in took too long. Start again.",
   unreachable: "The server is not answering. Try again in a moment.",
   invalid: "Check the fields and try again.",
-  forbidden: "Only the Owner can do this.",
+  forbidden: "You do not have the rights to do this.",
   email_taken: "An account with this email exists already.",
   name_taken: "A server group with this name exists already.",
   own_account: "You cannot change your own account here.",
@@ -18,6 +18,9 @@ const MESSAGES: Record<string, string> = {
   already_accepted: "This person has accepted their invite already.",
   no_change: "Nothing has changed.",
   unknown_group: "A server group was deleted meanwhile. The list has been reloaded.",
+  server_name_taken: "A server with this name exists already.",
+  group_has_servers: "This group still holds servers. Move or remove them first.",
+  not_found: "It does not exist, or you cannot see it.",
 };
 
 /** The text shown for an `ApiError` detail. */

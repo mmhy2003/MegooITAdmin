@@ -14,6 +14,8 @@ const PRODUCTION: ServerGroup = {
   description: "Live servers",
   created_at: "2026-11-01T00:00:00Z",
   member_count: 0,
+  server_count: 5,
+  can_manage: true,
 };
 const STAGING: ServerGroup = {
   id: "g-staging",
@@ -21,6 +23,8 @@ const STAGING: ServerGroup = {
   description: null,
   created_at: "2026-11-01T00:00:00Z",
   member_count: 2,
+  server_count: 0,
+  can_manage: true,
 };
 
 function person(id: string, name: string, groups: string[]): UserRow {
@@ -62,18 +66,20 @@ function listCalls() {
 }
 
 describe("GroupsPage", () => {
-  it("lists each group with its description and how many people hold a role in it", async () => {
+  it("lists each group with its description, how many people hold a role in it and how many servers it holds", async () => {
     mockApi();
     render(<GroupsPage />);
 
     expect(await screen.findByRole("heading", { name: "Server groups" })).toBeInTheDocument();
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers.slice(0, 4)).toEqual(["Name", "Description", "People", "Servers"]);
     const staging = within(await screen.findByRole("row", { name: /staging/ }));
-    expect(staging.getByText("2")).toBeInTheDocument();
+    expect(staging.getAllByRole("cell").map((c) => c.textContent).slice(2, 4)).toEqual(["2", "0"]);
     expect(staging.getByRole("button", { name: "Edit staging" })).toBeInTheDocument();
     expect(staging.getByRole("button", { name: "Delete staging" })).toBeInTheDocument();
     const production = within(screen.getByRole("row", { name: /production/ }));
     expect(production.getByText("Live servers")).toBeInTheDocument();
-    expect(production.getByText("0")).toBeInTheDocument();
+    expect(production.getAllByRole("cell").map((c) => c.textContent).slice(2, 4)).toEqual(["0", "5"]);
   });
 
   it("creates a group from New group and reloads", async () => {

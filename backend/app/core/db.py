@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException
@@ -35,14 +35,21 @@ async def get_session() -> AsyncIterator[AsyncSession]:
             raise
 
 
-async def flush_unique(session: AsyncSession, constraint: str, detail: str) -> None:
-    """Flushes. A clash on the unique `constraint`, from a request that won the race past a check, answers 409."""
+async def flush_refusing(session: AsyncSession, refusals: Mapping[str, tuple[int, str]]) -> None:
+    """Flushes. A violation of one of the named constraints, from a request that won the race past a check,
+    answers its (status, detail)."""
     try:
         await session.flush()
     except IntegrityError as e:
-        if f'"{constraint}"' not in str(e.orig):
-            raise
-        raise HTTPException(409, detail) from e
+        for constraint, (status, detail) in refusals.items():
+            if f'"{constraint}"' in str(e.orig):
+                raise HTTPException(status, detail) from e
+        raise
+
+
+async def flush_unique(session: AsyncSession, constraint: str, detail: str) -> None:
+    """Flushes. A clash on the unique `constraint`, from a request that won the race past a check, answers 409."""
+    await flush_refusing(session, {constraint: (409, detail)})
 
 
 # scope="function": the commit and the audit guard run before the response is sent, so a failed commit

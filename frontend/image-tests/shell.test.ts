@@ -4,6 +4,7 @@ import { NAV_ITEMS } from "../src/lib/navigation";
 const BASE = process.env.FRONTEND_URL;
 // The stub backend (tools/test-services/stub-backend.Caddyfile) answers "active" for this cookie only.
 const SIGNED_IN = "megoo_session=image-test-session";
+const SERVER_ID = "0b7c5d3e-9f1a-4c2b-8e6d-1a2b3c4d5e6f";
 if (!BASE) {
   throw new Error("FRONTEND_URL is not set. Run the image check from frontend/ with: megoocolab-runner services run web -- npm run test:image");
 }
@@ -68,6 +69,16 @@ describe("the frontend image", () => {
 
   it("serves the servers page with its title", async () => {
     const { status, html } = await get("/servers", { headers: { cookie: SIGNED_IN } });
+    expect(status).toBe(200);
+    expect(html).toContain("<title>Servers · MegooITAdmin</title>");
+  });
+
+  it("sends a server page without a session to sign-in, and serves it with its title", async () => {
+    const path = `/servers/${SERVER_ID}`;
+    const anonymous = await fetch(new URL(path, BASE), { redirect: "manual" });
+    expect(anonymous.status).toBe(307);
+    expect(anonymous.headers.get("location")).toMatch(new RegExp(`/login\\?next=%2Fservers%2F${SERVER_ID}$`));
+    const { status, html } = await get(path, { headers: { cookie: SIGNED_IN } });
     expect(status).toBe(200);
     expect(html).toContain("<title>Servers · MegooITAdmin</title>");
   });

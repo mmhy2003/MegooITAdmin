@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, FastAPI
 from routes import access_requirement, api_routes, undeclared_routes
 
-from app.access.deps import require_grant, require_group_visible, require_owner
+from app.access.deps import require_grant, require_group_admin, require_group_visible, require_owner
 from app.access.permissions import Permission
 from app.auth.deps import CurrentUser
 from app.main import create_app
@@ -16,6 +16,8 @@ ANY_SIGNED_IN: dict[str, str] = {
     "POST /api/auth/password": "a person changes their own password",
     "POST /api/auth/recovery-codes": "a person replaces their own recovery codes",
     "GET /api/server-groups": "the list filters itself by the person's access",
+    "GET /api/servers": "the list filters itself by the person's access",
+    "GET /api/server-tags": "the tags of the servers the person sees",
 }
 
 
@@ -23,7 +25,7 @@ def test_every_signed_in_route_declares_who_may_call_it():
     undeclared = undeclared_routes(create_app(), ANY_SIGNED_IN)
     assert undeclared == [], (
         f"{', '.join(undeclared)} say nothing about who may call them: add Depends(require_owner), "
-        "require_grant(...) or require_group_visible(...), or pin the route here with a reason"
+        "require_grant(...), require_group_visible(...) or require_group_admin(...), or pin the route here with a reason"
     )
 
 
@@ -50,6 +52,9 @@ def sample_app() -> FastAPI:
     @app.get("/v/{group_id}", dependencies=[Depends(require_group_visible())])
     async def visible() -> None: ...
 
+    @app.get("/a/{group_id}", dependencies=[Depends(require_group_admin())])
+    async def manage() -> None: ...
+
     router = APIRouter(prefix="/users")
 
     @router.get("")
@@ -73,5 +78,6 @@ def test_access_requirement_names_what_the_route_needs():
         "/admin": "owner",
         "/g/{group_id}": "view_logs",
         "/v/{group_id}": "group",
+        "/a/{group_id}": "admin",
         "/users": "owner",
     }

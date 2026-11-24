@@ -12,7 +12,7 @@ import type { ServerGroup, UserRow } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 
-/** The Server groups tab of Settings: every group, how many people hold a role in it, and the Owner's changes. */
+/** The Server groups tab of Settings: every group, how many people hold a role in it, how many servers it holds, and the Owner's changes. */
 export function GroupsPage() {
   const [groups, setGroups] = useState<ServerGroup[] | null>(null);
   const [users, setUsers] = useState<UserRow[]>([]);
@@ -76,6 +76,7 @@ export function GroupsPage() {
                     <TableHead>Name</TableHead>
                     <TableHead>Description</TableHead>
                     <TableHead>People</TableHead>
+                    <TableHead>Servers</TableHead>
                     <TableHead>
                       <span className="sr-only">Actions</span>
                     </TableHead>
@@ -87,6 +88,7 @@ export function GroupsPage() {
                       <TableCell className="font-medium">{group.name}</TableCell>
                       <TableCell className="text-muted-foreground">{group.description}</TableCell>
                       <TableCell>{group.member_count ?? 0}</TableCell>
+                      <TableCell>{group.server_count}</TableCell>
                       <TableCell className="text-right">
                         <Button
                           variant="ghost"

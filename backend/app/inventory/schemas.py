@@ -38,3 +38,7 @@ class ServerGroupOut(BaseModel):
     created_at: datetime
     # How many people hold a role in the group: only an Owner is told.
     member_count: int | None
+    # How many servers the group holds: everyone who sees the group is told.
+    server_count: int
+    # Whether the person changes the group's inventory: the Owner, or an Admin of the group.
+    can_manage: bool

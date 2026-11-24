@@ -1,4 +1,5 @@
-"""The route dependencies that say who may call a route: require_owner, require_grant and require_group_visible.
+"""The route dependencies that say who may call a route: require_owner, require_grant, require_group_visible and
+require_group_admin.
 
 Each refusal is recorded as access.denied in a transaction of its own, then raised, so the request's rollback
 keeps the event. Each guard carries an `access_requirement` attribute, read by tests/security/routes.py."""
@@ -120,3 +121,19 @@ def require_group_visible(*, group: GroupOf = group_from_path):
 
     group_guard.access_requirement = "group"
     return group_guard
+
+
+def require_group_admin(*, group: GroupOf = group_from_path):
+    """A dependency: the person must see the request's group (else 404) and manage it (else 403)."""
+
+    async def admin_guard(
+        request: Request, user: CurrentUser, access: CurrentAccess, group_id: Annotated[UUID, Depends(group)]
+    ) -> Access:
+        if not access.sees(group_id):
+            await deny(request, user, required="admin", status=404, detail=NOT_FOUND, group_id=group_id)
+        if not access.manages(group_id):
+            await deny(request, user, required="admin", status=403, detail=FORBIDDEN, group_id=group_id)
+        return access
+
+    admin_guard.access_requirement = "admin"
+    return admin_guard

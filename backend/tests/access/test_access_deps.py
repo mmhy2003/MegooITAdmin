@@ -6,7 +6,7 @@ from auth_helpers import add_grant, events, make_group, make_user, other_client,
 from fastapi import Depends
 from httpx import ASGITransport, AsyncClient
 
-from app.access.deps import require_grant, require_group_visible, require_owner
+from app.access.deps import require_grant, require_group_admin, require_group_visible, require_owner
 from app.access.permissions import Permission
 from app.audit import AuditChainBusy
 from app.main import create_app
@@ -16,7 +16,7 @@ CLIENT = ("127.0.0.1", 50000)
 
 @pytest.fixture
 async def probe_api(clean_auth, clock):
-    """The real app with three probe routes behind the access dependencies."""
+    """The real app with four probe routes behind the access dependencies."""
     app = create_app()
 
     @app.get("/api/probe/owner", dependencies=[Depends(require_owner)])
@@ -29,6 +29,10 @@ async def probe_api(clean_auth, clock):
 
     @app.get("/api/probe/{group_id}/visible", dependencies=[Depends(require_group_visible())])
     async def probe_visible(group_id: uuid.UUID) -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.get("/api/probe/{group_id}/admin", dependencies=[Depends(require_group_admin())])
+    async def probe_admin(group_id: uuid.UUID) -> dict[str, bool]:
         return {"ok": True}
 
     transport = ASGITransport(app=app, client=CLIENT)
@@ -157,3 +161,56 @@ async def test_a_changed_grant_applies_to_the_next_request_of_an_open_session(pr
 
         await set_switch(grant.id, "connect_ssh", True)
         assert (await admin.get(f"/api/probe/{staging.id}")).status_code == 200
+
+
+async def test_require_group_admin_lets_the_owner_and_the_groups_admin_through(probe_api, clock):
+    staging = await make_group("staging")
+    async with person(probe_api, clock, "owner@example.com", "owner") as (_, owner):
+        async with person(probe_api, clock, "admin@example.com") as (admin_user, admin):
+            await add_grant(admin_user.id, staging.id, "admin")
+            for client in (owner, admin):
+                response = await client.get(f"/api/probe/{staging.id}/admin")
+                assert (response.status_code, response.json()) == (200, {"ok": True})
+
+
+async def test_require_group_admin_answers_403_to_an_operator_and_an_auditor(probe_api, clock):
+    staging = await make_group("staging")
+    async with person(probe_api, clock, "operator@example.com") as (operator_user, operator):
+        await add_grant(operator_user.id, staging.id, "operator")
+        async with person(probe_api, clock, "auditor@example.com", "auditor") as (_, auditor):
+            for client in (operator, auditor):
+                response = await client.get(f"/api/probe/{staging.id}/admin")
+                assert (response.status_code, response.json()) == (403, {"detail": "forbidden"})
+
+
+async def test_require_group_admin_answers_404_for_a_group_the_person_does_not_see(probe_api, clock):
+    staging = await make_group("staging")
+    production = await make_group("production")
+    async with person(probe_api, clock, "admin@example.com") as (user, admin):
+        await add_grant(user.id, staging.id, "admin")
+        for group_id in (production.id, uuid.uuid4()):
+            response = await admin.get(f"/api/probe/{group_id}/admin")
+            assert (response.status_code, response.json()) == (404, {"detail": "not_found"})
+
+
+async def test_each_admin_refusal_leaves_one_access_denied_event(probe_api, clock):
+    staging = await make_group("staging")
+    production = await make_group("production")
+    async with person(probe_api, clock, "admin@example.com") as (user, admin):
+        await add_grant(user.id, staging.id, "admin")
+        await add_grant(user.id, production.id, "operator")
+        unseen = await make_group("development")
+
+        refusals = [(unseen.id, 404), (production.id, 403)]
+        for count, (group_id, status) in enumerate(refusals, start=1):
+            assert (await admin.get(f"/api/probe/{group_id}/admin")).status_code == status
+            recorded = await events("access.denied")
+            assert len(recorded) == count
+            event = recorded[-1]
+            assert event.actor_id == str(user.id)
+            assert event.result == "failure"
+            assert event.result_detail == {"required": "admin", "route": "GET /api/probe/{group_id}/admin"}
+            assert (event.target_type, event.target_id) == ("server_group", str(group_id))
+
+        assert (await admin.get(f"/api/probe/{staging.id}/admin")).status_code == 200
+        assert len(await events("access.denied")) == len(refusals)
