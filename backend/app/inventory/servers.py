@@ -204,3 +204,18 @@ async def update_server(
     if tags_changed is not None:
         await record(db, _event(request, user, actions.SERVER_TAGS_CHANGED, server, change=tags_changed))
     return _out(server, target.name, new_tags, access)
+
+
+async def delete_server(db: AsyncSession, request: Request, user: User, server_id: UUID) -> None:
+    """Deletes the server; its tags go with it in the database. The event keeps every field it had."""
+    server = await db.scalar(select(Server).where(Server.id == server_id).with_for_update())
+    if server is None:
+        raise HTTPException(404, "not_found")
+    group = await _group(db, server.server_group_id)
+    tags = (await _tags_of(db, [server.id])).get(server.id, [])
+    change = changes(_fields(server) | {"group": group.name, "tags": tags}, {})
+    event = _event(request, user, actions.SERVER_DELETED, server, change=change)
+    await db.delete(server)
+    await db.flush()
+    # record() last: it holds the audit chain lock until the commit.
+    await record(db, event)

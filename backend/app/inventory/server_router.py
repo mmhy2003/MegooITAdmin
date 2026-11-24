@@ -1,10 +1,10 @@
 """The routes under /api/servers and /api/server-tags: each person reads the servers of the groups they see and the
-tags on them; the Owner, and an Admin in their own groups, register them."""
+tags on them; the Owner, and an Admin in their own groups, register, edit and remove them."""
 
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.access.deps import CurrentAccess, require_group_admin, require_group_visible
 from app.audit import audited
@@ -75,3 +75,13 @@ async def update_server(
     access: CurrentAccess,
 ) -> ServerOut:
     return await servers.update_server(db, request, user, access, server_id, body)
+
+
+@router.delete(
+    "/servers/{server_id}",
+    status_code=204,
+    dependencies=[Depends(require_group_admin(group=group_of_server)), audited(actions.SERVER_DELETED)],
+)
+async def delete_server(server_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> Response:
+    await servers.delete_server(db, request, user, server_id)
+    return Response(status_code=204)
