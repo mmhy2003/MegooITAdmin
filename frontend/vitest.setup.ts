@@ -9,8 +9,13 @@ vi.mock("next/link", () => ({
   default: ({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) =>
     createElement("a", { href, ...rest, onClick: (e: MouseEvent<HTMLAnchorElement>) => { onClick?.(e); e.preventDefault(); } }),
 }));
-// Tests set the route with vi.mocked(usePathname).mockReturnValue(...).
-vi.mock("next/navigation", () => ({ usePathname: vi.fn(() => "/"), notFound: vi.fn() }));
+// Tests set the route with vi.mocked(usePathname).mockReturnValue(...), and the query with useSearchParams.
+vi.mock("next/navigation", () => ({
+  usePathname: vi.fn(() => "/"),
+  notFound: vi.fn(),
+  useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() })),
+  useSearchParams: vi.fn(() => new URLSearchParams()),
+}));
 
 // Files marked `// @vitest-environment node` have no DOM: the DOM set-up below skips them.
 const hasDom = typeof window !== "undefined";
