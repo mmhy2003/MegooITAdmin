@@ -42,8 +42,9 @@ The version lives in these files, and a release sets the same version in all of 
 
 If the product changed since its last tag, it must carry a new, higher version. The product is `backend`,
 `workers`, `gateway`, `executor`, `frontend`, `caddy`, `docker-compose.yml`, `.env.example`, `Makefile` and
-`VERSION`. A change anywhere else (`docs/`, `tools/`, `.github/`, `AGENTS.md`, `README.md`, `megoocolab.toml`)
-needs none. `python tools/release/versions.py guard` runs this rule alone, and `plan` includes it. The release
+`VERSION`. A change anywhere else (`docs/`, `tools/`, `.github/`, `AGENTS.md`, `README.md`, `megoocolab.toml`,
+`docker-compose.build.yml`) needs none: `docker-compose.build.yml` only builds the dev and e2e stacks and the stack
+check. `python tools/release/versions.py guard` runs this rule alone, and `plan` includes it. The release
 tooling (`tools/release/versions.py` and the Release workflow) refuses anything else. The reason: servers that
 follow `latest` would otherwise get a lower version, or a changed product under a version number they already run.
 
@@ -112,13 +113,44 @@ compare with. The files already hold `0.1.0`, so step 4 changes nothing and the 
 
 ## What the workflow does (.github/workflows/release.yml)
 
-It runs on every push to `main`. Its jobs, in order:
+It runs on every push to `main`, and two pushes close together wait for each other. Its jobs, in order:
 
-- **plan** reads the version and fails if it did not go up since the last tag, or if the release note
-  `docs/releases/vX.Y.Z.md` is not in git. A version that already has its tag, with no change to the product,
-  releases nothing: `plan` prints `release=false` and the other jobs are skipped.
-- **tests** reuses the CI workflow, so a release runs the same checks as every merge.
-- **app** is a start-up smoke test: it brings the stack up with Docker Compose and calls `curl /api/health`.
-- **images** builds every service image natively for amd64 and for arm64.
-- **publish** pushes the multi-arch images to GHCR as `:X.Y.Z` and `:latest`, and creates the release with
-  `gh release create vX.Y.Z` and the release note as its text. That also creates the tag.
+- **plan** runs `python tools/release/versions.py plan` and outputs `release` and `version`. It fails if the
+  version files disagree, the product changed without a higher version, or the release note
+  `docs/releases/vX.Y.Z.md` is not in git. With no new version (the merge back, a documentation fix) it prints
+  `release=false`: only `plan` runs, and the run is green.
+- **tests** reuses the CI workflow (`ci.yml`), so a release runs the same checks as every merge.
+- **app** runs beside `tests` and does what an admin does on a new server. It builds both images on the machine
+  under the names a server pulls, tagged `:smoke`, runs `make up` with `MEGOOITADMIN_VERSION=smoke` on
+  `127.0.0.1:8080`, calls `curl /api/health` and checks that the backend's `APP_VERSION` is the new version. It
+  always removes the stack, and publishes nothing.
+- **images** waits for `tests` and `app`, then runs four native builds: the backend and the frontend, amd64 on
+  `ubuntu-24.04` and arm64 on `ubuntu-24.04-arm`. Each build is pushed to GHCR by digest, without a tag.
+- **publish** joins each image's two digests and tags it `:X.Y.Z` and `:latest`, then runs
+  `gh release create vX.Y.Z --latest` with the release note as its text. That also creates the tag.
+
+Rights: the default is `contents: read`; `images` adds `packages: write`, and `publish` has `contents: write` and
+`packages: write`. There is no layer cache and no QEMU: under QEMU an arm64 frontend build crashed. The workflow
+never runs `git tag` or `git push`, and never edits or deletes a release.
+
+## When a run fails
+
+- **`plan` fails:** nothing is built. The message names the file to fix.
+- **`tests`, `app` or `images` fails:** nothing is public: no tag, no release and no image tag, only untagged
+  builds in GHCR at most. For a passing fault, run the failed jobs again. For a real defect, fix it through a work
+  branch into `develop`, merge `develop` into `main` again and push. The version stays the same, because no tag
+  exists yet.
+- **`publish` fails after the image tags and before the release:** run it again. Joining the digests repeats
+  safely, and the release step skips a release that exists. If a new commit is needed instead, the image tag
+  `X.Y.Z` moves to the new build: an image tag of a release that was never announced, not the git tag.
+- **Once the release exists,** `plan` says `release=false` for its version, so no later run publishes it again. A
+  mistake is fixed with a patch release. The git tag is never moved or deleted.
+- **arm64:** if a dependency has no arm64 wheel the arm64 build fails, and if the repository has no arm64 runner
+  the job waits until its timeout. Report either to the owner. Never drop arm64.
+
+## Once, after the first release
+
+- GitHub creates the two GHCR packages (`megooitadmin-backend` and `megooitadmin-frontend`) private. Make both
+  public, or run `docker login ghcr.io` on every server; otherwise `make up` ends with "denied".
+- The owner's own instance: `make up` now pulls `latest`, so before `v0.1.0` exists it fails. A running stack
+  keeps running.

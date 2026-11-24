@@ -6,7 +6,9 @@ You need Docker with Compose v2 and GNU Make. On Windows, run `make` from Git Ba
 
     make up
 
-This builds and starts Caddy, the frontend, the backend and the database, and returns once the app answers.
+This creates `.env`, pulls the images of the latest release (`ghcr.io/mmhy2003/megooitadmin-backend` and
+`-frontend`, for amd64 and arm64) and starts Caddy, the frontend, the backend and the database, and returns once
+the app answers. It pulls only images that are missing.
 The app is then at `http://<this host>/`, and `curl http://localhost/api/health` gives `{"status":"ok"}`.
 `make down` stops it and keeps the data; `make` lists every target.
 
@@ -33,8 +35,21 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 - **TLS.** Caddy serves plain HTTP. Put a TLS proxy in front of it on a private address: Caddy trusts the
   `X-Forwarded-*` headers only from private addresses.
 - **A second copy.** `make up STACK=dev` starts the project `megooitadmin-dev` on `127.0.0.1:8080`, beside the
-  real one, with throwaway values. Pass the same `STACK=dev` to `down`, `logs`, `migrate` and `shell-backend`.
+  real one, with throwaway values. It builds the images from this checkout (`docker-compose.build.yml`) under the
+  local names `megooitadmin-backend:dev` and `megooitadmin-frontend:dev`. Pass the same `STACK=dev` to `down`,
+  `logs`, `migrate` and `shell-backend`. `make upgrade` refuses a `STACK=`: run `make up STACK=dev` again instead.
 - **API docs.** `/api/docs` is served only with `API_DOCS=true` in `.env`, and the dev stack sets it.
+
+### Upgrade
+
+    git pull
+    make upgrade
+
+- Run `git pull` first, so the Compose file and the images belong to the same release.
+- `make upgrade` pulls every image of the stack, Caddy and the database included, and restarts what changed.
+- To stay on a release, set `MEGOOITADMIN_VERSION=0.1.0` in `.env`. `make upgrade` then pulls that version until
+  the line changes.
+- Each release note's "Upgrading" says what else the release needs.
 
 ### Lost access
 
