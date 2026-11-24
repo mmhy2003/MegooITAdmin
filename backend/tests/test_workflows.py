@@ -114,3 +114,145 @@ def test_ci_never_runs_the_release_only_checks(ci):
             assert "versions.py plan" not in line
             assert "versions.py guard" not in line
             assert "release-check" not in line
+
+
+RELEASE_NEEDS = {"plan": set(), "tests": {"plan"}, "app": {"plan"}, "images": {"plan", "tests", "app"}, "publish": {"plan", "images"}}
+RELEASING = "needs.plan.outputs.release == 'true'"
+FORBIDDEN = ["git tag", "git push", "gh release delete", "gh release edit", "--force", "--clobber"]
+GHCR = "ghcr.io/mmhy2003/megooitadmin-"
+
+
+@pytest.fixture
+def release() -> dict:
+    return workflow("release.yml")
+
+
+def needs(job: dict) -> set[str]:
+    value = job.get("needs", [])
+    return {value} if isinstance(value, str) else set(value)
+
+
+def all_steps(wf: dict) -> list[tuple[str, dict]]:
+    return [(name, step) for name, job in wf["jobs"].items() for step in job.get("steps", [])]
+
+
+def steps_using(job: dict, action: str) -> list[dict]:
+    return [step for step in job["steps"] if step.get("uses", "").startswith(f"{action}@")]
+
+
+def test_release_runs_only_on_pushes_to_main(release):
+    assert release[True] == {"push": {"branches": ["main"]}}
+
+
+def test_only_images_and_publish_get_more_than_read(release):
+    assert release["permissions"] == {"contents": "read"}
+    granted = {name: job["permissions"] for name, job in release["jobs"].items() if "permissions" in job}
+    assert granted == {"images": {"contents": "read", "packages": "write"}, "publish": {"contents": "write", "packages": "write"}}
+
+
+def test_releases_queue_and_are_never_cancelled(release):
+    assert release["concurrency"] == {"group": "release", "cancel-in-progress": False}
+
+
+def test_release_has_the_five_jobs_in_order(release):
+    assert {name: needs(job) for name, job in release["jobs"].items()} == RELEASE_NEEDS
+
+
+def test_every_job_but_plan_runs_only_for_a_new_version(release):
+    for name, job in release["jobs"].items():
+        if name == "plan":
+            assert "if" not in job
+        else:
+            assert job["if"] == RELEASING, name
+
+
+def test_plan_reads_the_tags_and_writes_its_outputs(release):
+    plan = release["jobs"]["plan"]
+    assert plan["steps"][0]["with"]["fetch-depth"] == 0
+    step = next(step for step in plan["steps"] if step.get("id") == "plan")
+    assert step["run"] == 'python tools/release/versions.py plan >> "$GITHUB_OUTPUT"'
+    assert plan["outputs"] == {"release": "${{ steps.plan.outputs.release }}", "version": "${{ steps.plan.outputs.version }}"}
+
+
+def test_tests_runs_the_whole_ci_workflow(release):
+    assert release["jobs"]["tests"]["uses"] == "./.github/workflows/ci.yml"
+
+
+def test_app_starts_the_smoke_images_with_make_up_and_always_removes_them(release):
+    app = release["jobs"]["app"]
+    assert app["env"]["MEGOOITADMIN_VERSION"] == "smoke"
+    assert app["env"]["MEGOOITADMIN_HTTP_PORT"] == "127.0.0.1:8080"
+    builds = steps_using(app, "docker/build-push-action")
+    assert {(b["with"]["context"], b["with"]["tags"]) for b in builds} == {
+        (name, "${{ env.REGISTRY }}/megooitadmin-" + name + ":smoke") for name in ("backend", "frontend")
+    }
+    assert all(b["with"]["load"] is True and "push" not in b["with"] for b in builds)
+    script = "\n".join(runs(app))
+    assert "make up" in script and "STACK=" not in script
+    assert script.index("make up") < script.index("curl -fsS http://127.0.0.1:8080/api/health")
+    assert 'printenv APP_VERSION)" = "$VERSION"' in script
+    assert any(s.get("if") == "failure()" and "docker compose logs" in s.get("run", "") for s in app["steps"])
+    assert (app["steps"][-1]["if"], app["steps"][-1]["run"]) == ("always()", "docker compose down --volumes")
+
+
+def test_images_builds_each_platform_natively_and_pushes_by_digest(release):
+    images = release["jobs"]["images"]
+    platforms = images["strategy"]["matrix"]["platform"]
+    assert {p["arch"]: p["runner"] for p in platforms} == {"amd64": "ubuntu-24.04", "arm64": "ubuntu-24.04-arm"}
+    assert images["runs-on"] == "${{ matrix.platform.runner }}"
+    (build,) = steps_using(images, "docker/build-push-action")
+    w = build["with"]
+    assert w["platforms"] == "linux/${{ matrix.platform.arch }}"
+    assert w["build-args"] == "APP_VERSION=${{ env.VERSION }}"
+    assert w["labels"].startswith("org.opencontainers.image.source=")
+    assert "push-by-digest=true" in w["outputs"] and "push=true" in w["outputs"]
+    assert "tags" not in w
+    assert steps_using(images, "actions/upload-artifact")
+
+
+def test_no_qemu_and_no_layer_cache(release):
+    for name, step in all_steps(release):
+        assert not step.get("uses", "").startswith("docker/setup-qemu-action@"), name
+        assert not {"cache-from", "cache-to"} & set(step.get("with", {})), name
+
+
+def test_publish_tags_both_platforms_then_creates_the_latest_release(release):
+    publish = release["jobs"]["publish"]
+    script = "\n".join(runs(publish))
+    assert '-t "$name:$VERSION" -t "$name:latest"' in script
+    last = publish["steps"][-1]["run"]
+    for part in ['gh release view "v$VERSION" > /dev/null 2>&1 ||', 'gh release create "v$VERSION"', '--target "$GITHUB_SHA"',
+                 '--title "MegooITAdmin $VERSION"', '--notes-file "docs/releases/v$VERSION.md"', "--latest"]:
+        assert part in last
+    assert script.index("imagetools create") < script.index("gh release create")
+
+
+def test_no_step_moves_a_tag_or_changes_a_release(release):
+    for name, step in all_steps(release):
+        for word in FORBIDDEN:
+            assert word not in step.get("run", ""), (name, word)
+
+
+def test_no_script_pastes_an_expression(release):
+    # The version reaches the scripts only as $VERSION: an expression in a script's text could inject code.
+    for name, step in all_steps(release):
+        assert "${{" not in step.get("run", ""), name
+
+
+def test_the_workflow_publishes_exactly_the_images_compose_pulls(release):
+    pulled = {name for name, s in yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"].items() if s.get("image", "").startswith(GHCR)}
+    built = set(yaml.safe_load((ROOT / "docker-compose.build.yml").read_text())["services"])
+    matrix = set(release["jobs"]["images"]["strategy"]["matrix"]["image"])
+    published = set(release["jobs"]["publish"]["env"]["IMAGES"].split())
+    assert pulled == built == matrix == published == {"backend", "frontend"}
+
+
+def test_every_job_has_a_timeout_and_every_checkout_keeps_no_credentials(release):
+    for name, job in release["jobs"].items():
+        if "uses" in job:  # a called workflow takes no timeout: ci.yml gives each of its jobs one
+            continue
+        assert 0 < job["timeout-minutes"] <= 60, name
+    checkouts = [(name, s) for name, s in all_steps(release) if s.get("uses", "").startswith("actions/checkout@")]
+    assert len(checkouts) == 4  # plan, app, images, publish
+    for name, step in checkouts:
+        assert step["with"]["persist-credentials"] is False, name

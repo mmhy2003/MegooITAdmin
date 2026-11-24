@@ -1,0 +1,182 @@
+# A push to main releases MegooITAdmin when VERSION has no tag yet: every check, a start of the stack from the new
+# images, the images on GHCR as :X.Y.Z and :latest, then the release vX.Y.Z with its note from docs/releases/.
+# A push with no new version runs plan only. Nothing is public before publish. docs/releasing.md has the routine.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io/mmhy2003
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the tags: plan compares VERSION with the last one
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: backend/.python-version
+      # fails when the version files disagree, the product changed without a higher version, or the note is not in git
+      - id: plan
+        run: python tools/release/versions.py plan >> "$GITHUB_OUTPUT"
+
+  tests:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  # What an admin does on a new server, from images built here under the names a server pulls. It runs beside tests
+  # and publishes nothing: images, which pushes, waits for both.
+  app:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      MEGOOITADMIN_VERSION: smoke
+      MEGOOITADMIN_HTTP_PORT: 127.0.0.1:8080
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the backend for this machine
+        uses: docker/build-push-action@v7
+        with:
+          context: backend
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/megooitadmin-backend:smoke
+          build-args: APP_VERSION=${{ env.VERSION }}
+      - name: Build the frontend for this machine
+        uses: docker/build-push-action@v7
+        with:
+          context: frontend
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.REGISTRY }}/megooitadmin-frontend:smoke
+      # make up without STACK= acts on the real instance (AGENTS.md, "Safety"). This GitHub machine is new and has none.
+      - name: Start the stack as an admin does
+        run: |
+          make up
+          curl -fsS http://127.0.0.1:8080/api/health
+          test "$(docker compose exec -T backend printenv APP_VERSION)" = "$VERSION"
+      - name: Stack logs (on failure)
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Remove the stack
+        if: always()
+        run: docker compose down --volumes
+
+  # One job per image and platform, each on a machine of its own architecture: under QEMU, MegooColab's arm64
+  # frontend build crashed. Each build is pushed by digest, without a tag; publish tags them together.
+  images:
+    needs: [plan, tests, app]
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        image: [backend, frontend]
+        platform:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.image }}
+          platforms: linux/${{ matrix.platform.arch }}
+          # the frontend declares no APP_VERSION: Docker warns and ignores it
+          build-args: APP_VERSION=${{ env.VERSION }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          outputs: type=image,name=${{ env.REGISTRY }}/megooitadmin-${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Keep the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.platform.arch }}
+        run: |
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/$IMAGE-$ARCH"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.image }}-${{ matrix.platform.arch }}
+          path: digests/
+          retention-days: 1
+
+  publish:
+    needs: [plan, images]
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: write
+      packages: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      IMAGES: backend frontend # the images matrix; a test keeps both lists and docker-compose.yml equal
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag both platforms as one image
+        run: |
+          for image in $IMAGES; do
+            name="$REGISTRY/megooitadmin-$image"
+            docker buildx imagetools create -t "$name:$VERSION" -t "$name:latest" \
+              "$name@$(cat "digests/$image-amd64")" "$name@$(cat "digests/$image-arm64")"
+            docker buildx imagetools inspect "$name:$VERSION"
+          done
+      - name: Create the release, which creates the tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # a second run of a failed job finds the release already made
+          gh release view "v$VERSION" > /dev/null 2>&1 || gh release create "v$VERSION" --target "$GITHUB_SHA" \
+            --title "MegooITAdmin $VERSION" --notes-file "docs/releases/v$VERSION.md" --latest
