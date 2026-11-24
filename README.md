@@ -64,4 +64,15 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   group sees it, and so do the Owner and Auditors. Nobody else does.
 - Tags are free labels typed on the server. They filter the list and never decide access.
 - A group that still holds servers cannot be deleted: move or remove its servers first.
-- The host key is fetched and pinned at the first SSH connection, which comes with SSH connect.
+- Prepare the account `megoo` on each Linux server: not root, and not in the `docker` group. MegooITAdmin never
+  signs in as root, and refuses root as the login account.
+- The platform's public key, for `megoo`'s `authorized_keys`, is on each server's Platform access card, and
+  `make ssh-public-key` prints it.
+- The Owner, or an Admin of the server's group, pins the server's host key after comparing its fingerprint with
+  the one on the server: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+- People with Connect SSH in the group test the connection from the server page.
+- A changed host key blocks the server until an Admin accepts the new key, with a reason, or keeps the pinned one.
+  Every step is in the audit log.
+- Back up the `ssh_key` Docker volume: it holds the platform's private key, and a lost key means a new one has to
+  go on every server.
+- Windows servers connect from Phase 2.
