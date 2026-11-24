@@ -11,21 +11,23 @@ from app.access.permissions import Access
 from app.audit import Target, changes, record
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
-from app.core.db import flush_unique
+from app.core.db import flush_refusing, flush_unique
 from app.inventory import actions
-from app.inventory.models import ServerGroup
+from app.inventory.models import Server, ServerGroup
 from app.inventory.schemas import ServerGroupIn, ServerGroupOut, ServerGroupPatch
 from app.users import actions as user_actions
 from app.users.service import grant_event
 
 
-def _out(group: ServerGroup, member_count: int | None) -> ServerGroupOut:
+def _out(group: ServerGroup, member_count: int | None, server_count: int, can_manage: bool) -> ServerGroupOut:
     return ServerGroupOut(
         id=group.id,
         name=group.name,
         description=group.description,
         created_at=group.created_at,
         member_count=member_count,
+        server_count=server_count,
+        can_manage=can_manage,
     )
 
 
@@ -42,19 +44,34 @@ async def _member_count(db: AsyncSession, group_id: UUID) -> int:
     return await db.scalar(select(func.count()).select_from(RoleGrant).where(RoleGrant.server_group_id == group_id))
 
 
+async def _server_count(db: AsyncSession, group_id: UUID) -> int:
+    return await db.scalar(select(func.count()).select_from(Server).where(Server.server_group_id == group_id))
+
+
 async def list_groups(db: AsyncSession, access: Access) -> list[ServerGroupOut]:
-    """The groups the person sees, by name. Only an Owner is told how many people hold a role in each."""
+    """The groups the person sees, by name, with how many servers each holds and whether the person manages it.
+    Only an Owner is told how many people hold a role in each."""
     query = select(ServerGroup).order_by(func.lower(ServerGroup.name), ServerGroup.id)
     visible = access.visible_group_ids()
     if visible is not None:
         query = query.where(ServerGroup.id.in_(visible))
     groups = (await db.scalars(query)).all()
-    if not access.is_owner:
-        return [_out(group, None) for group in groups]
-    counts = dict(
-        (await db.execute(select(RoleGrant.server_group_id, func.count()).group_by(RoleGrant.server_group_id))).all()
+    servers = dict(
+        (await db.execute(select(Server.server_group_id, func.count()).group_by(Server.server_group_id))).all()
     )
-    return [_out(group, counts.get(group.id, 0)) for group in groups]
+    members: dict[UUID, int] | None = None
+    if access.is_owner:
+        counted = select(RoleGrant.server_group_id, func.count()).group_by(RoleGrant.server_group_id)
+        members = dict((await db.execute(counted)).all())
+    return [
+        _out(
+            group,
+            None if members is None else members.get(group.id, 0),
+            servers.get(group.id, 0),
+            access.manages(group.id),
+        )
+        for group in groups
+    ]
 
 
 async def _check_name(db: AsyncSession, name: str, group_id: UUID | None = None) -> None:
@@ -84,7 +101,7 @@ async def create_group(db: AsyncSession, request: Request, owner: User, body: Se
             change=changes({}, _fields(group)),
         ),
     )
-    return _out(group, 0)
+    return _out(group, 0, 0, True)
 
 
 async def update_group(
@@ -117,14 +134,17 @@ async def update_group(
             change=change,
         ),
     )
-    return _out(group, await _member_count(db, group.id))
+    return _out(group, await _member_count(db, group.id), await _server_count(db, group.id), True)
 
 
 async def delete_group(db: AsyncSession, request: Request, owner: User, group_id: UUID) -> None:
-    """Deletes the group and the roles in it: one grant_removed per person, by name, then the deletion."""
+    """Deletes the group and the roles in it: one grant_removed per person, by name, then the deletion.
+    A group that holds a server: 409."""
     group = await db.scalar(select(ServerGroup).where(ServerGroup.id == group_id).with_for_update())
     if group is None:
         raise HTTPException(404, "not_found")
+    if await _server_count(db, group.id) > 0:
+        raise HTTPException(409, "group_has_servers")
     query = (
         select(RoleGrant, User)
         .join(User, User.id == RoleGrant.user_id)
@@ -147,6 +167,7 @@ async def delete_group(db: AsyncSession, request: Request, owner: User, group_id
     for grant, _ in grants:
         await db.delete(grant)
     await db.delete(group)
-    await db.flush()
+    # A server registered into the group meanwhile: only the foreign key sees it.
+    await flush_refusing(db, {"servers_server_group_id_fkey": (409, "group_has_servers")})
     for event in [*events, deleted]:
         await record(db, event)

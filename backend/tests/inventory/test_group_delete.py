@@ -1,13 +1,13 @@
 from uuid import uuid4
 
-from auth_helpers import actions, add_grant, events, make_group, make_user, sign_in
+from auth_helpers import actions, add_grant, events, make_group, make_server, make_user, sign_in
 from sqlalchemy import func, select
 
 from app.access.models import RoleGrant
 from app.access.permissions import GRANT_FIELDS, Permission
 from app.auth.models import User
 from app.core.db import SessionLocal
-from app.inventory.models import ServerGroup
+from app.inventory.models import Server, ServerGroup
 
 GROUP_EVENTS = ("user.grant_removed", "server_group.deleted")
 
@@ -77,6 +77,23 @@ async def test_deleting_an_empty_group_records_only_the_deletion(api, clock):
     assert response.status_code == 204, response.text
     assert not await group_exists(staging.id)
     assert await group_events() == ["server_group.deleted"]
+
+
+async def test_a_group_that_holds_a_server_cannot_be_deleted(api, clock):
+    await owner(api, clock)
+    staging = await make_group("staging")
+    pat, _ = await make_user(email="pat@example.com", name="Pat Person", platform_role=None)
+    await add_grant(pat.id, staging.id, "admin")
+    server = await make_server(staging.id, "web-01")
+
+    response = await api.delete(f"/api/server-groups/{staging.id}")
+
+    assert (response.status_code, response.json()) == (409, {"detail": "group_has_servers"})
+    assert await group_exists(staging.id)
+    assert await role_grant_count() == 1
+    async with SessionLocal() as session:
+        assert await session.get(Server, server.id) is not None
+    assert await group_events() == []
 
 
 async def test_only_an_owner_deletes(api, clock):

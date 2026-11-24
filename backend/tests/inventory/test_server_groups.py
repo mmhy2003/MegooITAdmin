@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from auth_helpers import add_grant, events, make_group, make_user, other_client, sign_in
+from auth_helpers import add_grant, events, make_group, make_server, make_user, other_client, sign_in, signed_in
 
 from app.auth.models import User
 from app.inventory import service as inventory_service
@@ -71,6 +71,44 @@ async def test_the_owner_sees_how_many_people_hold_a_role_and_others_do_not(api,
     assert [g["member_count"] for g in as_pat] == [None]
 
 
+async def test_each_group_says_how_many_servers_it_holds(api, clock):
+    staging = await make_group("staging")
+    production = await make_group("production")
+    await make_group("dev")
+    await make_server(staging.id, "web-01")
+    await make_server(staging.id, "db-02")
+    await make_server(production.id, "app-03")
+    async with (
+        signed_in(api, clock, "owner@example.com", "owner") as (_, owner_client),
+        signed_in(api, clock, "ada@example.com") as (ada, admin_client),
+    ):
+        await add_grant(ada.id, staging.id, "admin")
+        as_owner = (await owner_client.get("/api/server-groups")).json()
+        as_admin = (await admin_client.get("/api/server-groups")).json()
+
+    assert {g["name"]: g["server_count"] for g in as_owner} == {"dev": 0, "production": 1, "staging": 2}
+    assert {g["name"]: g["server_count"] for g in as_admin} == {"staging": 2}
+
+
+async def test_can_manage_is_true_for_the_owner_and_a_groups_admin_only(api, clock):
+    staging = await make_group("staging")
+    production = await make_group("production")
+    async with (
+        signed_in(api, clock, "owner@example.com", "owner") as (_, owner_client),
+        signed_in(api, clock, "ada@example.com") as (ada, admin_client),
+        signed_in(api, clock, "aud@example.com", "auditor") as (_, auditor_client),
+    ):
+        await add_grant(ada.id, staging.id, "admin")
+        await add_grant(ada.id, production.id, "operator")
+        as_owner = (await owner_client.get("/api/server-groups")).json()
+        as_admin = (await admin_client.get("/api/server-groups")).json()
+        as_auditor = (await auditor_client.get("/api/server-groups")).json()
+
+    assert {g["name"]: g["can_manage"] for g in as_owner} == {"production": True, "staging": True}
+    assert {g["name"]: g["can_manage"] for g in as_admin} == {"production": False, "staging": True}
+    assert {g["name"]: g["can_manage"] for g in as_auditor} == {"production": False, "staging": False}
+
+
 async def test_the_owner_creates_a_group_and_it_is_recorded(api, clock):
     the_owner = await owner(api, clock)
 
@@ -79,6 +117,7 @@ async def test_the_owner_creates_a_group_and_it_is_recorded(api, clock):
     assert response.status_code == 200, response.text
     body = response.json()
     assert (body["name"], body["description"], body["member_count"]) == ("staging", None, 0)
+    assert (body["server_count"], body["can_manage"]) == (0, True)
     assert names(await api.get("/api/server-groups")) == ["staging"]
     (created,) = await events("server_group.created")
     assert (created.actor_id, created.result, created.mfa) == (str(the_owner.id), "success", True)
@@ -139,6 +178,7 @@ async def test_the_owner_edits_a_group(api, clock):
     assert described.status_code == 200, described.text
     assert renamed.status_code == 200, renamed.text
     assert (renamed.json()["name"], renamed.json()["description"]) == ("Staging", "New words")
+    assert (renamed.json()["server_count"], renamed.json()["can_manage"]) == (0, True)
     first, second = await events("server_group.changed")
     assert (first.actor_id, first.target_type, first.target_id, first.target_name) == (
         str(the_owner.id),
