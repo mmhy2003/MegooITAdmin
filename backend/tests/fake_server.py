@@ -15,6 +15,9 @@ from conftest import RUN_TESTS
 from app.ssh import keys
 
 SETUP = "/usr/local/lib/megoo-setup.sh"
+CTL = "/usr/local/sbin/megoo-ctl"
+# Where the stub docker and systemctl log each call, one line per call: the name, then each argument in brackets.
+LOG = "/var/log/fake-tools.log"
 ACCOUNTS = ("megoo", "megoo-nologs", "megoo-nosudo", "megoo-wide", "megoo-docker", "megoo-root")
 
 
@@ -44,6 +47,21 @@ class FakeServer:
     def setup(self, *args: str) -> subprocess.CompletedProcess[str]:
         """Runs megoo-setup.sh with these arguments, as root."""
         return self.exec("sh", SETUP, *args)
+
+    def ctl(self, *args: str, user: str = "megoo") -> subprocess.CompletedProcess[str]:
+        """Runs megoo-ctl with these arguments through sudo, as this account."""
+        return self.exec("sudo", "-n", CTL, *args, user=user)
+
+    def clear_tool_log(self) -> None:
+        """Empties the log of the stub docker and systemctl."""
+        result = self.exec("truncate", "-s", "0", LOG)
+        assert result.returncode == 0, result.stderr
+
+    def tool_log(self) -> list[str]:
+        """The calls the stub docker and systemctl received since the log was last cleared."""
+        result = self.exec("cat", LOG)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.splitlines()
 
     def host_key(self) -> str:
         """The Ed25519 host key sshd serves, as "ssh-ed25519 AAAA…" without a comment."""

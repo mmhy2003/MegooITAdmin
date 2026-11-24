@@ -54,7 +54,7 @@ Run these before any merge:
 - **Stack** (`backend/`): `megoocolab-runner services run stack -- uv run pytest -m stack`. It starts the whole
   Compose stack, built from this checkout through `docker-compose.build.yml`, and checks it through Caddy. `make test` runs the backend, frontend and stack checks in one go.
 - **Security suites**: `make test-security`. It runs the audit-coverage, audit-tamper, database-privilege,
-  auth-coverage, auth-events, permission-coverage, access-events and host-key-pinning suites. The secret-leak and approval-bypass
+  auth-coverage, auth-events, permission-coverage, access-events, host-key-pinning and server-setup suites. The secret-leak and approval-bypass
   suites join it with Phases 3 and 4.
 - **Release tools** (repository root): `uv run --project backend pytest tools/release`, then
   `python tools/release/versions.py check`. `make release-check` runs `check` and `plan` and belongs to a release
