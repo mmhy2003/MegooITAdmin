@@ -51,7 +51,15 @@ export type UserRow = {
   invite_expires_at: string | null;
   grants: GrantOut[];
 };
-export type ServerGroup = { id: string; name: string; description: string | null; created_at: string; member_count: number | null };
+export type ServerGroup = {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  member_count: number | null;
+  server_count: number;
+  can_manage: boolean;
+};
 export type InviteLink = { user_id: string; token: string; expires_at: string };
 
 /** The usual switches of `role` on, the rest off. */

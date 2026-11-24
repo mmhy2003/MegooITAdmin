@@ -6,8 +6,8 @@ import { AccessForm } from "@/components/settings/access-form";
 import { type AccessValue, PERMISSION_LABELS, PERMISSIONS, type ServerGroup } from "@/lib/access";
 
 const GROUPS: ServerGroup[] = [
-  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 0 },
-  { id: "g-production", name: "production", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 0 },
+  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 0, server_count: 0, can_manage: true },
+  { id: "g-production", name: "production", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 0, server_count: 0, can_manage: true },
 ];
 
 const NOBODY: AccessValue = { platform_role: null, grants: [] };

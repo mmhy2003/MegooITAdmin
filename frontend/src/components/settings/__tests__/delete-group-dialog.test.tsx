@@ -14,6 +14,8 @@ const STAGING: ServerGroup = {
   description: null,
   created_at: "2026-11-01T00:00:00Z",
   member_count: 2,
+  server_count: 0,
+  can_manage: true,
 };
 
 beforeEach(() => {
@@ -76,7 +78,7 @@ describe("DeleteGroupDialog", () => {
 
     await user.click(screen.getByRole("button", { name: "Delete group" }));
 
-    expect(await screen.findByText("Only the Owner can do this.")).toBeInTheDocument();
+    expect(await screen.findByText("You do not have the rights to do this.")).toBeInTheDocument();
     expect(onDeleted).not.toHaveBeenCalled();
   });
 

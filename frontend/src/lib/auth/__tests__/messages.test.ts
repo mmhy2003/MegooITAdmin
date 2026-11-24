@@ -5,7 +5,10 @@ describe("messageFor", () => {
   it.each([
     ["invalid_credentials", "The email or the password is wrong."],
     ["unreachable", "The server is not answering. Try again in a moment."],
-    ["forbidden", "Only the Owner can do this."],
+    ["forbidden", "You do not have the rights to do this."],
+    ["server_name_taken", "A server with this name exists already."],
+    ["group_has_servers", "This group still holds servers. Move or remove them first."],
+    ["not_found", "It does not exist, or you cannot see it."],
     ["email_taken", "An account with this email exists already."],
     ["name_taken", "A server group with this name exists already."],
     ["own_account", "You cannot change your own account here."],

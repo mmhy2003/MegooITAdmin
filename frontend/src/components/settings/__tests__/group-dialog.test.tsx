@@ -14,6 +14,8 @@ const STAGING: ServerGroup = {
   description: "Pre-release servers",
   created_at: "2026-11-01T00:00:00Z",
   member_count: 2,
+  server_count: 0,
+  can_manage: true,
 };
 
 beforeEach(() => {

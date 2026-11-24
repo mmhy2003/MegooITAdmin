@@ -11,7 +11,7 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 vi.mock("@/lib/auth/navigate");
 
 const GROUPS: ServerGroup[] = [
-  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 0 },
+  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 0, server_count: 0, can_manage: true },
 ];
 
 const LINK: InviteLink = { user_id: "u9", token: "tok-123", expires_at: "2026-12-01T10:00:00Z" };

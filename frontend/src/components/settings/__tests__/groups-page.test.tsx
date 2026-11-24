@@ -14,6 +14,8 @@ const PRODUCTION: ServerGroup = {
   description: "Live servers",
   created_at: "2026-11-01T00:00:00Z",
   member_count: 0,
+  server_count: 0,
+  can_manage: true,
 };
 const STAGING: ServerGroup = {
   id: "g-staging",
@@ -21,6 +23,8 @@ const STAGING: ServerGroup = {
   description: null,
   created_at: "2026-11-01T00:00:00Z",
   member_count: 2,
+  server_count: 0,
+  can_manage: true,
 };
 
 function person(id: string, name: string, groups: string[]): UserRow {

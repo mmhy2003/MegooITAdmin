@@ -10,8 +10,8 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 vi.mock("@/lib/auth/navigate");
 
 const GROUPS: ServerGroup[] = [
-  { id: "g-production", name: "production", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 1 },
-  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 1 },
+  { id: "g-production", name: "production", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 1, server_count: 0, can_manage: true },
+  { id: "g-staging", name: "staging", description: null, created_at: "2026-11-01T00:00:00Z", member_count: 1, server_count: 0, can_manage: true },
 ];
 
 const OWNER: UserRow = {
