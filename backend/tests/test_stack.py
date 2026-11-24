@@ -304,6 +304,17 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         assert client.get("/api/users").status_code == 403
         assert client.get("/settings").status_code == 200
 
+        server_ids = {}
+        for name in ("staging", "production"):
+            server = {"name": f"stack-{name}-01", "address": "10.0.0.1", "group_id": groups[name], "os": "linux", "port": 22}
+            response = owner.post("/api/servers", json=server)
+            assert response.status_code == 200, response.text
+            server_ids[name] = response.json()["id"]
+        response = client.get("/api/servers")
+        assert response.status_code == 200, response.text
+        assert [server["name"] for server in response.json()] == ["stack-staging-01"]
+        assert client.get(f"/api/servers/{server_ids['production']}").status_code == 404
+
         response = owner.post(f"/api/users/{ada_id}/disable")
         assert response.status_code == 204, response.text
         assert client.get("/api/auth/me").status_code == 401
