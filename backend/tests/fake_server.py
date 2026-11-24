@@ -1,7 +1,8 @@
 """The fake sshd of the test set (tools/fake-server): real OpenSSH in a container, never a real server.
 
-It has three accounts, all signing in with this run's platform key: megoo (the platform's account), megoo-docker (in
-the docker group) and megoo-root (uid 0).
+megoo-setup.sh prepares megoo (the platform's account) and megoo-nologs (not in adm), megoo-nosudo (without its sudo
+rule) and megoo-wide (allowed everything by sudo). megoo-docker (in the docker group) and megoo-root (uid 0) are made
+by the image. All six sign in with this run's platform key.
 """
 
 import os
@@ -14,6 +15,7 @@ from conftest import RUN_TESTS
 from app.ssh import keys
 
 SETUP = "/usr/local/lib/megoo-setup.sh"
+ACCOUNTS = ("megoo", "megoo-nologs", "megoo-nosudo", "megoo-wide", "megoo-docker", "megoo-root")
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,12 @@ class FakeServer:
             capture_output=True,
             timeout=60,
         )
+
+    def authorize(self, addresses: str | None = None) -> None:
+        """Prepares the accounts with this run's platform key, accepted from these addresses (default: loopback and the
+        private ranges)."""
+        result = self.exec("authorize-key", *([addresses] if addresses else []), input=keys.public_key() + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
 
     def setup(self, *args: str) -> subprocess.CompletedProcess[str]:
         """Runs megoo-setup.sh with these arguments, as root."""
@@ -56,7 +64,7 @@ class FakeServer:
 
 
 def start() -> FakeServer:
-    """Finds the fake server of this run's test set and authorizes this run's platform key on it."""
+    """Finds the fake server of this run's test set and prepares its accounts with this run's platform key."""
     port = os.environ.get("SSH_PORT")
     project = os.environ.get("MEGOO_SERVICES_PROJECT")
     for name, value in (("SSH_PORT", port), ("MEGOO_SERVICES_PROJECT", project)):
@@ -83,6 +91,5 @@ def start() -> FakeServer:
         )
     server = FakeServer(host="127.0.0.1", port=int(port), container=container)
     keys.ensure_key()
-    authorized = server.exec("authorize-key", input=keys.public_key() + "\n")
-    assert authorized.returncode == 0, authorized.stderr
+    server.authorize()
     return server

@@ -38,6 +38,11 @@ async def test_the_two_wrong_accounts(fake_server):
         _, groups = await account_of(conn)
     assert "docker" in groups
 
+    for user in ("megoo-nologs", "megoo-nosudo", "megoo-wide"):
+        async with connect(fake_server.host, fake_server.port, user, fake_server.host_key()) as conn:
+            uid, _ = await account_of(conn)
+        assert uid != 0, user
+
 
 async def test_another_pinned_key_raises_host_key_changed_before_sign_in(fake_server):
     pinned = openssh_line(asyncssh.generate_private_key("ssh-ed25519"))
@@ -58,6 +63,20 @@ async def test_a_key_the_server_does_not_know_raises_key_refused(fake_server, mo
     with pytest.raises(KeyRefused):
         async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()):
             pass
+
+
+async def test_a_key_limited_to_another_address_is_refused(fake_server):
+    fake_server.authorize("192.0.2.1")
+    try:
+        with pytest.raises(KeyRefused):
+            async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()):
+                pass
+    finally:
+        fake_server.authorize()
+
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        uid, _ = await account_of(conn)
+    assert uid != 0
 
 
 async def test_a_closed_port_raises_unreachable(fake_server):
