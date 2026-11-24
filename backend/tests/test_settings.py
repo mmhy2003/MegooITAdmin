@@ -83,3 +83,16 @@ def test_ssh_key_file_has_its_default(monkeypatch):
     monkeypatch.delenv("SSH_KEY_FILE", raising=False)
     settings = Settings(database_url=URL)
     assert settings.ssh_key_file == "/var/lib/megooitadmin/ssh/id_ed25519"
+
+
+def test_valkey_url_is_optional(monkeypatch):
+    monkeypatch.delenv("VALKEY_URL", raising=False)
+    assert Settings(database_url=URL).valkey_url is None
+
+
+def test_the_valkey_client_without_valkey_url_names_the_variable(monkeypatch):
+    from app.core.valkey import valkey_client
+
+    monkeypatch.delenv("VALKEY_URL", raising=False)
+    with pytest.raises(RuntimeError, match="VALKEY_URL"):
+        valkey_client(Settings(database_url=URL))

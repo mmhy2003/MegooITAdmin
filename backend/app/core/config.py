@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     database_url: str
     # The owner's URL, for Alembic and the entrypoint's password step only. The server never gets it.
     database_owner_url: str | None = None
+    # Valkey, for live metric fan-out. Optional: nothing at start-up needs it, and the image check runs without one.
+    valkey_url: str | None = None
     app_version: str = "dev"
     # The tests set it, so connections are not shared between event loops.
     db_null_pool: bool = False

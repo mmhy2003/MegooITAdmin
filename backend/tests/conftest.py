@@ -1,7 +1,8 @@
 """Points the app at the test database before any app module is imported.
 
 `megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL, the URL
-the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with.
+the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with. The set also starts
+Valkey and sets TEST_VALKEY_URL, passed on as VALKEY_URL.
 """
 
 import os
@@ -26,10 +27,15 @@ def _own_file(config: pytest.Config) -> str | None:
     return ONLY.get(config.getoption("markexpr"))
 
 
-def _test_url(name: str) -> str:
-    url = os.environ.get(name)
-    if not url:
+def _required(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
         pytest.exit(f"{name} is not set. Run the suite as: {RUN_TESTS}", returncode=2)
+    return value
+
+
+def _test_url(name: str) -> str:
+    url = _required(name)
     database = url.rsplit("/", 1)[-1].split("?", 1)[0]
     if not database.endswith("_test"):
         pytest.exit(
@@ -43,6 +49,7 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
     os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
+    os.environ["VALKEY_URL"] = _required("TEST_VALKEY_URL")
     os.environ["DB_NULL_POOL"] = "true"
     os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
     # Each run makes its own platform key in a fresh directory, never the image's path.
