@@ -400,7 +400,9 @@ def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(o
     fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
     assert fetched["ok"], fetched
     assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
-    assert owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()["ok"] is True
+    result = owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()
+    assert result["ok"] is True, result
+    assert [c["status"] for c in result["checks"]] == ["passed"] * 7, result
     assert _compose_with_fake_server("exec", "-T", "fake-server", "swap-host-key").returncode == 0
     refused = owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()
     assert (refused["ok"], refused["reason"]) == (False, "host_key_changed")
@@ -408,6 +410,13 @@ def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(o
     events = _audit_of_server(server_id)
     assert ("server.created", "success") in events
     assert ("server.connection_tested", "success") in events
+
+
+def test_the_setup_script_downloads_through_caddy(owner):
+    response = owner.get("/api/ssh/setup-script")
+    assert response.status_code == 200, response.text
+    assert response.text.startswith("#!/bin/sh")
+    assert "megoo-setup.sh" in response.headers["content-disposition"]
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):
