@@ -109,6 +109,13 @@ async def pin_host_key(
     return await connection.pin_host_key(db, request, user, access, server_id, body)
 
 
+@router.post("/servers/{server_id}/host-key/keep", dependencies=[admin, audited(actions.SERVER_HOST_KEY_KEPT)])
+async def keep_host_key(
+    server_id: UUID, request: Request, db: DbSession, user: CurrentUser, access: CurrentAccess
+) -> ServerOut:
+    return await connection.keep_host_key(db, request, user, access, server_id)
+
+
 @router.post(
     "/servers/{server_id}/connection-test",
     dependencies=[

@@ -124,11 +124,16 @@ async def fetch_host_key(db: AsyncSession, request: Request, user: User, server_
 async def pin_host_key(
     db: AsyncSession, request: Request, user: User, access: Access, server_id: UUID, body: HostKeyPin
 ) -> ServerOut:
-    """Pins the candidate the backend fetched, when it is the key whose fingerprint the admin compared."""
+    """Pins the candidate the backend fetched, when it is the key whose fingerprint the admin compared. On a server
+    flagged for a changed key, it accepts the key the server presented, with the admin's reason, and unblocks it."""
     server = await _load(db, server_id, lock=True)
     _ssh_server(server)
-    if server.host_key is not None:
+    before = server.host_key
+    changed = server.host_key_changed_at is not None
+    if before is not None and not changed:
         raise HTTPException(409, "host_key_pinned")
+    if changed and body.reason is None:
+        raise HTTPException(422, "reason_required")
     offered = server.host_key_offered
     if offered is None or hostkeys.fingerprint(offered) != body.fingerprint:
         raise HTTPException(409, "stale_host_key")
@@ -139,17 +144,46 @@ async def pin_host_key(
     await db.refresh(server)
 
     actor, source = _who(request, user)
-    change = {"host_key_fingerprint": {"before": None, "after": body.fingerprint}}
-    event = _event(
-        server,
-        actions.SERVER_HOST_KEY_PINNED,
-        actor=actor,
-        source=source,
-        change=change,
-        detail={"type": hostkeys.key_type(offered)},
-    )
+    detail = {"type": hostkeys.key_type(offered)}
+    if before is None:
+        change = {"host_key_fingerprint": {"before": None, "after": body.fingerprint}}
+        event = _event(
+            server, actions.SERVER_HOST_KEY_PINNED, actor=actor, source=source, change=change, detail=detail
+        )
+    else:
+        change = {"host_key_fingerprint": {"before": hostkeys.fingerprint(before), "after": body.fingerprint}}
+        event = _event(
+            server,
+            actions.SERVER_HOST_KEY_REPLACED,
+            actor=actor,
+            source=source,
+            change=change,
+            detail=detail,
+            reason=body.reason,
+        )
     # record() last: it holds the audit chain lock until the commit.
     await record(db, event)
+    return await servers.get_server(db, access, server_id)
+
+
+async def keep_host_key(db: AsyncSession, request: Request, user: User, access: Access, server_id: UUID) -> ServerOut:
+    """Turns down the key a flagged server presented: removes the block and the candidate, keeps the pinned key. A
+    server that still presents the other key is flagged again by its next connection."""
+    server = await _load(db, server_id, lock=True)
+    _ssh_server(server)
+    if server.host_key_changed_at is None:
+        raise HTTPException(409, "host_key_not_changed")
+    presented = server.host_key_offered
+    server.host_key_offered = server.host_key_offered_at = server.host_key_changed_at = None
+    await db.flush()
+
+    actor, source = _who(request, user)
+    detail = {
+        "pinned_fingerprint": hostkeys.fingerprint(server.host_key),
+        "presented_fingerprint": None if presented is None else hostkeys.fingerprint(presented),
+    }
+    # record() last: it holds the audit chain lock until the commit.
+    await record(db, _event(server, actions.SERVER_HOST_KEY_KEPT, actor=actor, source=source, detail=detail))
     return await servers.get_server(db, access, server_id)
 
 
