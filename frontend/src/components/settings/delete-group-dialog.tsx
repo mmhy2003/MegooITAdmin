@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -25,15 +26,42 @@ type Props = {
   onDeleted: () => void;
 };
 
-/** Names the people who lose their role in a server group, then deletes it. */
+/** Names the people who lose their role in a server group, then deletes it; refuses while the group holds servers. */
 export function DeleteGroupDialog({ group, people, open, onOpenChange, onDeleted }: Props) {
   return (
     <Dialog open={open && group !== null} onOpenChange={onOpenChange}>
       <DialogContent>
         {/* Keyed by the group, and unmounted when closed, so an earlier refusal does not linger. */}
-        {group && <DeleteConfirm key={group.id} group={group} people={people} onDeleted={onDeleted} />}
+        {group &&
+          (group.server_count > 0 ? (
+            <HoldsServers group={group} />
+          ) : (
+            <DeleteConfirm key={group.id} group={group} people={people} onDeleted={onDeleted} />
+          ))}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function HoldsServers({ group }: { group: ServerGroup }) {
+  const servers = group.server_count === 1 ? "server" : "servers";
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{group.name} still holds servers</DialogTitle>
+        <DialogDescription>
+          Move or remove its {group.server_count} {servers} first. A group that holds servers cannot be deleted.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" asChild>
+          <Link href={`/servers?group=${group.id}`}>Show its servers</Link>
+        </Button>
+        <DialogClose asChild>
+          <Button>Close</Button>
+        </DialogClose>
+      </DialogFooter>
+    </>
   );
 }
 

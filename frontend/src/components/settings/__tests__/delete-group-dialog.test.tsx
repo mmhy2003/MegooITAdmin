@@ -82,6 +82,42 @@ describe("DeleteGroupDialog", () => {
     expect(onDeleted).not.toHaveBeenCalled();
   });
 
+  it("shows the refusal of a group that holds servers", async () => {
+    vi.mocked(apiFetch).mockRejectedValue(new ApiError(409, "group_has_servers"));
+    const { user, onDeleted } = renderDialog();
+
+    await user.click(screen.getByRole("button", { name: "Delete group" }));
+
+    expect(await screen.findByText("This group still holds servers. Move or remove them first.")).toBeInTheDocument();
+    expect(onDeleted).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a group that holds servers, and links to them", async () => {
+    const { user, onOpenChange } = renderDialog({ group: { ...STAGING, server_count: 3 } });
+
+    expect(screen.getByRole("heading", { name: "staging still holds servers" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Move or remove its 3 servers first. A group that holds servers cannot be deleted."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Show its servers" })).toHaveAttribute("href", "/servers?group=g-staging");
+    expect(screen.queryByRole("button", { name: "Delete group" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/lose their role/)).not.toBeInTheDocument();
+
+    // The corner X is named Close too; this is the footer's visible one.
+    const close = screen.getAllByRole("button", { name: "Close" }).find((b) => b.textContent === "Close");
+    await user.click(close!);
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("says server when the group holds one", () => {
+    renderDialog({ group: { ...STAGING, server_count: 1 } });
+    expect(
+      screen.getByText("Move or remove its 1 server first. A group that holds servers cannot be deleted."),
+    ).toBeInTheDocument();
+  });
+
   it("is closed without a group", () => {
     renderDialog({ group: null, open: false });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

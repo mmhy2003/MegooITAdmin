@@ -34,6 +34,9 @@ describe("GroupDialog", () => {
     const { user, onSaved } = renderDialog();
 
     expect(screen.getByRole("heading", { name: "New server group" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
+      "People get roles per server group, and its servers live in it.",
+    );
     expect(screen.getByRole("textbox", { name: "Name" })).toHaveAccessibleDescription("1 to 64 characters.");
     await user.type(screen.getByRole("textbox", { name: "Name" }), "production");
     await user.type(screen.getByRole("textbox", { name: "Description" }), "Live servers");

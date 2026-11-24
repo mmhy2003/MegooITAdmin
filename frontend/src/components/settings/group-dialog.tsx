@@ -66,7 +66,7 @@ function GroupForm({ group, onSaved }: { group: ServerGroup | null; onSaved: () 
     <>
       <DialogHeader>
         <DialogTitle>{group ? `Edit ${group.name}` : "New server group"}</DialogTitle>
-        <DialogDescription>People get roles per server group, and later its servers live in it.</DialogDescription>
+        <DialogDescription>People get roles per server group, and its servers live in it.</DialogDescription>
       </DialogHeader>
       <form onSubmit={submit} className="grid gap-4">
         {error && <Alert variant="destructive">{error}</Alert>}
