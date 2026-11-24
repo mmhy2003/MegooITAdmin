@@ -1,10 +1,12 @@
 from uuid import uuid4
 
+import asyncssh
 from auth_helpers import add_grant, events, make_group, make_server, signed_in
 from conftest import owner_session
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.inventory.models import Server, ServerTag
+from app.ssh import hostkeys
 
 OWNER = "owner@example.com"
 ADMIN = "ada@example.com"
@@ -56,6 +58,23 @@ async def test_a_server_without_role_or_tags_records_no_role(api, clock):
     (deleted,) = await events("server.deleted")
     assert "role" not in deleted.change
     assert deleted.change["tags"] == {"before": [], "after": None}
+
+
+async def test_removal_records_the_pinned_fingerprint(api, clock):
+    staging = await make_group("staging")
+    server = await make_server(staging.id, "db-01")
+    key = hostkeys.openssh_line(asyncssh.generate_private_key("ssh-ed25519"))
+    async with owner_session() as session:
+        await session.execute(
+            update(Server).where(Server.id == server.id).values(host_key=key, host_key_pinned_at=func.now())
+        )
+        await session.commit()
+    async with signed_in(api, clock, OWNER, "owner") as (_, owner):
+        response = await owner.delete(f"/api/servers/{server.id}")
+
+    assert response.status_code == 204, response.text
+    (deleted,) = await events("server.deleted")
+    assert deleted.change["host_key_fingerprint"] == {"before": hostkeys.fingerprint(key), "after": None}
 
 
 async def test_an_operator_cannot_remove_and_a_stranger_does_not_see_it(api, clock):

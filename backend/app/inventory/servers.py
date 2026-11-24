@@ -9,14 +9,15 @@ from fastapi import HTTPException, Request
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.access.permissions import Access
+from app.access.permissions import Access, Permission
 from app.audit import Event, Target, changes, record
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
 from app.core.db import flush_refusing
 from app.inventory import actions
 from app.inventory.models import Server, ServerGroup, ServerTag
-from app.inventory.server_schemas import ServerIn, ServerOut, ServerPatch
+from app.inventory.server_schemas import HostKeyOffer, HostKeyState, ServerIn, ServerOut, ServerPatch
+from app.ssh import hostkeys
 
 FIELDS = ("name", "address", "port", "os", "role", "connection_settings")
 
@@ -61,7 +62,24 @@ async def _tags_of(db: AsyncSession, server_ids: Iterable[UUID]) -> dict[UUID, l
     return tags
 
 
+def host_key_state(server: Server) -> HostKeyState:
+    if server.os != "linux":
+        return "none"
+    if server.host_key is None:
+        return "not_pinned"
+    return "changed" if server.host_key_changed_at is not None else "pinned"
+
+
 def _out(server: Server, group_name: str, tags: list[str], access: Access) -> ServerOut:
+    state = host_key_state(server)
+    offered = None
+    if state == "changed" and server.host_key_offered is not None:
+        offered = HostKeyOffer(
+            fingerprint=hostkeys.fingerprint(server.host_key_offered),
+            type=hostkeys.key_type(server.host_key_offered),
+            at=server.host_key_offered_at,
+        )
+    pinned = server.host_key is not None
     return ServerOut(
         id=server.id,
         name=server.name,
@@ -74,9 +92,16 @@ def _out(server: Server, group_name: str, tags: list[str], access: Access) -> Se
         group_name=group_name,
         connection_settings=server.connection_settings,
         host_key=server.host_key,
+        host_key_state=state,
+        host_key_fingerprint=hostkeys.fingerprint(server.host_key) if pinned else None,
+        host_key_type=hostkeys.key_type(server.host_key) if pinned else None,
+        host_key_pinned_at=server.host_key_pinned_at,
+        host_key_changed_at=server.host_key_changed_at,
+        host_key_offered=offered,
         created_at=server.created_at,
         updated_at=server.updated_at,
         can_manage=access.manages(server.server_group_id),
+        can_connect=server.os == "linux" and access.allows(Permission.CONNECT_SSH, server.server_group_id),
     )
 
 
@@ -184,6 +209,10 @@ async def update_server(
     if after["name"] != before["name"]:
         await _check_name(db, after["name"], server.id)
 
+    # An unconfirmed candidate belongs to the old address; a pinned key is never touched by an edit.
+    moved_address = (after["address"], after["port"]) != (before["address"], before["port"])
+    if moved_address and server.host_key is None:
+        server.host_key_offered = server.host_key_offered_at = None
     for field, value in after.items():
         setattr(server, field, value)
     server.server_group_id = target.id
@@ -207,13 +236,15 @@ async def update_server(
 
 
 async def delete_server(db: AsyncSession, request: Request, user: User, server_id: UUID) -> None:
-    """Deletes the server; its tags go with it in the database. The event keeps every field it had."""
+    """Deletes the server; its tags go with it in the database. The event keeps every field it had and the
+    fingerprint of its pinned host key."""
     server = await db.scalar(select(Server).where(Server.id == server_id).with_for_update())
     if server is None:
         raise HTTPException(404, "not_found")
     group = await _group(db, server.server_group_id)
     tags = (await _tags_of(db, [server.id])).get(server.id, [])
-    change = changes(_fields(server) | {"group": group.name, "tags": tags}, {})
+    fingerprint = hostkeys.fingerprint(server.host_key) if server.host_key is not None else None
+    change = changes(_fields(server) | {"group": group.name, "tags": tags, "host_key_fingerprint": fingerprint}, {})
     event = _event(request, user, actions.SERVER_DELETED, server, change=change)
     await db.delete(server)
     await db.flush()

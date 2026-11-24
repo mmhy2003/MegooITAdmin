@@ -17,6 +17,7 @@ HOSTNAME_PATTERN = rf"^{HOST_LABEL}(\.{HOST_LABEL})*\.?$"
 MAX_TAGS = 20
 DEFAULT_USERNAME = "megoo"
 Os = Literal["linux", "windows"]
+HostKeyState = Literal["none", "not_pinned", "pinned", "changed"]
 
 
 def clean_address(value: str) -> str:
@@ -57,6 +58,13 @@ class ConnectionSettings(BaseModel):
 
     username: Username = DEFAULT_USERNAME
 
+    @field_validator("username")
+    @classmethod
+    def _not_root(cls, value: str) -> str:
+        if value == "root":
+            raise ValueError("the login account may not be root")
+        return value
+
 
 class ServerIn(BaseModel):
     name: ServerName
@@ -94,6 +102,12 @@ class ServerPatch(BaseModel):
         return value
 
 
+class HostKeyOffer(BaseModel):
+    fingerprint: str
+    type: str
+    at: datetime
+
+
 class ServerOut(BaseModel):
     id: UUID
     name: str
@@ -106,7 +120,16 @@ class ServerOut(BaseModel):
     group_name: str
     connection_settings: ConnectionSettings
     host_key: str | None
+    host_key_state: HostKeyState
+    host_key_fingerprint: str | None
+    host_key_type: str | None
+    host_key_pinned_at: datetime | None
+    host_key_changed_at: datetime | None
+    # Only in the state "changed", and only when the presented key could be read.
+    host_key_offered: HostKeyOffer | None
     created_at: datetime
     updated_at: datetime
     # Whether the person may edit, move and remove it.
     can_manage: bool
+    # Whether the person may test the connection: a Linux server and Connect SSH in its group.
+    can_connect: bool

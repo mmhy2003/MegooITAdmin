@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.inventory.server_schemas import ServerIn, ServerPatch
+from app.inventory.server_schemas import ConnectionSettings, ServerIn, ServerPatch
 
 GROUP = uuid4()
 
@@ -131,6 +131,16 @@ def test_a_username_is_kept():
 def test_a_bad_username_fails(username):
     with pytest.raises(ValidationError):
         server(connection_settings={"username": username})
+
+
+@pytest.mark.parametrize("username", ["root", " root "])
+def test_root_as_the_login_account_fails(username):
+    with pytest.raises(ValidationError):
+        ConnectionSettings(username=username)
+
+
+def test_a_name_that_only_starts_with_root_passes():
+    assert ConnectionSettings(username="rooty").username == "rooty"
 
 
 def test_an_unknown_connection_setting_fails():

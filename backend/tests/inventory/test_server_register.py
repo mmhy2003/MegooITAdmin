@@ -24,9 +24,16 @@ SERVER_KEYS = {
     "group_name",
     "connection_settings",
     "host_key",
+    "host_key_state",
+    "host_key_fingerprint",
+    "host_key_type",
+    "host_key_pinned_at",
+    "host_key_changed_at",
+    "host_key_offered",
     "created_at",
     "updated_at",
     "can_manage",
+    "can_connect",
 }
 
 
@@ -62,7 +69,11 @@ async def test_an_admin_registers_a_server_into_their_group(api, clock):
     assert server["tags"] == ["eu-west", "web"]
     assert server["connection_settings"] == {"username": "megoo"}
     assert server["host_key"] is None
+    assert server["host_key_state"] == "not_pinned"
+    for field in ("fingerprint", "type", "pinned_at", "changed_at", "offered"):
+        assert server[f"host_key_{field}"] is None
     assert server["can_manage"] is True
+    assert server["can_connect"] is True
     assert server["created_at"] and server["updated_at"]
 
     (created,) = await events("server.created")
@@ -178,6 +189,48 @@ async def test_a_bad_field_answers_422(api, clock, field):
     assert await server_count() == 0
 
 
+async def test_root_as_the_login_account_answers_422(api, clock):
+    staging = await make_group("staging")
+    server = await make_server(staging.id, "db-02")
+    root = {"connection_settings": {"username": "root"}}
+    async with signed_in(api, clock, OWNER, "owner") as (_, owner):
+        registered = await owner.post("/api/servers", json=body(staging.id, **root))
+        edited = await owner.patch(f"/api/servers/{server.id}", json=root)
+
+    assert registered.status_code == 422, registered.text
+    assert edited.status_code == 422, edited.text
+    assert await server_count() == 1
+    assert await events("server.created") == []
+    assert await events("server.changed") == []
+
+
+async def test_a_windows_server_has_no_host_key_state(api, clock):
+    staging = await make_group("staging")
+    async with signed_in(api, clock, OWNER, "owner") as (_, owner):
+        response = await owner.post("/api/servers", json=body(staging.id, os="windows", port=3389))
+
+    assert response.status_code == 200, response.text
+    assert (response.json()["host_key_state"], response.json()["can_connect"]) == ("none", False)
+
+
+async def test_can_connect_follows_connect_ssh(api, clock):
+    staging = await make_group("staging")
+    server = await make_server(staging.id, "db-01")
+    async with (
+        signed_in(api, clock, OWNER, "owner") as (_, owner),
+        signed_in(api, clock, ADMIN) as (ada, operator),
+        signed_in(api, clock, AUDITOR, "auditor") as (_, auditor),
+    ):
+        await add_grant(ada.id, staging.id, "operator", connect_ssh=False)
+        seen = {}
+        for name, client in (("owner", owner), ("operator", operator), ("auditor", auditor)):
+            response = await client.get(f"/api/servers/{server.id}")
+            assert response.status_code == 200, response.text
+            seen[name] = response.json()["can_connect"]
+
+    assert seen == {"owner": True, "operator": False, "auditor": False}
+
+
 async def test_the_owner_registering_into_a_group_that_does_not_exist_gets_422_unknown_group(api, clock):
     async with signed_in(api, clock, OWNER, "owner") as (_, owner):
         response = await owner.post("/api/servers", json=body(uuid4()))
@@ -209,7 +262,7 @@ async def test_the_tasks_sentence(api, clock):
             for server in (on_staging, on_production):
                 response = await client.get(f"/api/servers/{server['id']}")
                 assert response.status_code == 200, response.text
-                assert response.json() == server | {"can_manage": can_manage}
+                assert response.json() == server | {"can_manage": can_manage, "can_connect": can_manage}
 
         missing = await owner.get(f"/api/servers/{uuid4()}")
         assert (missing.status_code, missing.json()) == (404, {"detail": "not_found"})
