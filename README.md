@@ -55,3 +55,13 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 - An account is disabled, never deleted: its sessions end and it can be enabled again. Every change to a person,
   a role or a switch is recorded in the audit log with before and after.
 - `make reset-password` and `make reset-mfa` still work for every account.
+
+### Servers
+
+- The Owner, and an Admin in their own groups, register, edit, move and remove servers on the Servers page.
+  Moving a server to another group needs Admin on both groups.
+- A server lives in exactly one server group, and the group decides who sees it: everyone with a role in the
+  group sees it, and so do the Owner and Auditors. Nobody else does.
+- Tags are free labels typed on the server. They filter the list and never decide access.
+- A group that still holds servers cannot be deleted: move or remove its servers first.
+- The host key is fetched and pinned at the first SSH connection, which comes with SSH connect.
