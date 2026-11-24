@@ -1,7 +1,7 @@
 """The routes under /api/servers and /api/server-tags: each person reads the servers of the groups they see and the
 tags on them; the Owner, and an Admin in their own groups, register, edit and remove them, and fetch and pin their SSH
 host keys; anyone with Connect SSH in a server's group tests its connection. GET /api/ssh/public-key gives every
-signed-in person the platform's public SSH key."""
+signed-in person the platform's public SSH key, and GET /api/ssh/setup-script the setup script."""
 
 from typing import Annotated
 from uuid import UUID
@@ -23,7 +23,7 @@ from app.inventory.deps import (
     target_group_of_server,
 )
 from app.inventory.server_schemas import ServerIn, ServerOut, ServerPatch
-from app.ssh import keys
+from app.ssh import keys, setup
 
 router = APIRouter()
 
@@ -130,3 +130,12 @@ async def test_connection(server_id: UUID, request: Request, db: DbSession, user
 @router.get("/ssh/public-key")
 async def read_public_key(user: CurrentUser) -> PublicKeyOut:
     return PublicKeyOut(public_key=keys.public_key())
+
+
+@router.get("/ssh/setup-script")
+async def read_setup_script(user: CurrentUser) -> Response:
+    return Response(
+        setup.script_text(),
+        media_type="text/x-shellscript",
+        headers={"Content-Disposition": 'attachment; filename="megoo-setup.sh"'},
+    )
