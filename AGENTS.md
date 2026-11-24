@@ -52,7 +52,7 @@ Run these before any merge:
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`, then the image
   check: `megoocolab-runner services run web -- npm run test:image`.
 - **Stack** (`backend/`): `megoocolab-runner services run stack -- uv run pytest -m stack`. It starts the whole
-  Compose stack and checks it through Caddy. `make test` runs the backend, frontend and stack checks in one go.
+  Compose stack, built from this checkout through `docker-compose.build.yml`, and checks it through Caddy. `make test` runs the backend, frontend and stack checks in one go.
 - **Security suites**: `make test-security`. It runs the audit-coverage, audit-tamper, database-privilege,
   auth-coverage, auth-events, permission-coverage, access-events and host-key-pinning suites. The secret-leak and approval-bypass
   suites join it with Phases 3 and 4.
@@ -90,6 +90,8 @@ that file. CI does not replace the checks above: run them before you push.
   the same `STACK=` to `down`, `logs`, `migrate` and `shell-backend`. Never run one of these targets without
   `STACK=`: it then acts on the owner's real instance. Never stop, remove or change any other container. A
   `megooitadmin` project and its `megooitadmin-*` containers are the owner's real instance.
+- Never run `make upgrade`: it pulls new images and restarts the owner's real instance. It refuses `STACK=`; a dev
+  or e2e stack takes `make up STACK=…` again.
 - Never read files that hold credentials or secrets (`.env` files, tokens, keys).
 - Never connect to a managed server. Use the fake-server fixture (containers with sshd) instead.
 - The test set starts its own fake server. `make up STACK=dev` and `make up STACK=e2e` start one too and authorize

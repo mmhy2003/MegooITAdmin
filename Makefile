@@ -6,7 +6,7 @@
 # with the throwaway values of tools/stacks/<STACK>.env. Those never read .env.
 
 .DEFAULT_GOAL := help
-.PHONY: help .env up down logs migrate shell-backend migration test test-security release-check setup-code reset-mfa reset-password ssh-public-key fake-server-swap
+.PHONY: help .env up upgrade down logs migrate shell-backend migration test test-security release-check setup-code reset-mfa reset-password ssh-public-key fake-server-swap
 
 RUNNER := megoocolab-runner
 VERSIONS := backend/migrations/versions
@@ -14,10 +14,14 @@ VERSIONS := backend/migrations/versions
 ifeq ($(STACK),)
 COMPOSE := docker compose
 ENV_FILE := .env
+# The real instance runs the published images: up pulls only what is missing, upgrade pulls the newest.
+UP := up -d --wait --wait-timeout 300
 else ifeq ($(filter-out dev e2e,$(STACK))$(word 2,$(STACK)),)
-# The dev and e2e stacks also run the fake server (tools/fake-server), on the servers network.
-COMPOSE := docker compose -p megooitadmin-$(STACK) --env-file tools/stacks/$(STACK).env -f docker-compose.yml -f tools/fake-server/docker-compose.stack.yml
+# The dev and e2e stacks build the images from this checkout (docker-compose.build.yml) and also run the fake
+# server (tools/fake-server), on the servers network.
+COMPOSE := docker compose -p megooitadmin-$(STACK) --env-file tools/stacks/$(STACK).env -f docker-compose.yml -f docker-compose.build.yml -f tools/fake-server/docker-compose.stack.yml
 ENV_FILE :=
+UP := up -d --build --wait --wait-timeout 300
 else
 $(error STACK must be dev or e2e)
 endif
@@ -25,7 +29,8 @@ endif
 help:
 	@echo "Usage: make <target> [STACK=dev|STACK=e2e]"
 	@echo ""
-	@echo "  up                     Build and start the stack, and wait until it is healthy (creates or completes .env first)"
+	@echo "  up                     Start the stack and wait until it is healthy (creates or completes .env first). The real instance pulls missing images; STACK=dev|e2e builds from this checkout"
+	@echo "  upgrade                Pull the newest images of the release in .env and restart (git pull first; real instance only)"
 	@echo "  down                   Stop the stack. The database volume stays"
 	@echo "  logs                   Follow the logs of the stack"
 	@echo "  migrate                Apply the migrations in the running backend"
@@ -40,7 +45,7 @@ help:
 	@echo "  test-security          Run the security suites"
 	@echo "  release-check          Check the versions and the release plan"
 	@echo ""
-	@echo "Without STACK, up, down, logs, migrate, shell-backend, setup-code, reset-mfa, reset-password and ssh-public-key act on the real instance."
+	@echo "Without STACK, up, upgrade, down, logs, migrate, shell-backend, setup-code, reset-mfa, reset-password and ssh-public-key act on the real instance."
 
 # Only the real instance reads .env. A missing file is created with both passwords and AUTH_SECRET_KEY. A file
 # without POSTGRES_API_PASSWORD or AUTH_SECRET_KEY gets the missing line appended. No line is ever changed or removed.
@@ -75,10 +80,19 @@ help:
 	fi
 
 up: $(ENV_FILE)
-	$(COMPOSE) up -d --build --wait --wait-timeout 300
+	$(COMPOSE) $(UP)
 ifneq ($(STACK),)
 	$(COMPOSE) exec -T backend python -m app.ssh.cli public-key | $(COMPOSE) exec -T fake-server authorize-key
 endif
+
+# Pulls every image of the stack (MEGOOITADMIN_VERSION in .env, latest by default) and restarts what changed.
+# Run git pull first, so the Compose file belongs to the same release.
+upgrade: $(ENV_FILE)
+ifneq ($(STACK),)
+	@echo "make upgrade acts on the real instance only: the dev and e2e stacks build from the checkout, use make up STACK=$(STACK)" >&2; exit 1
+endif
+	$(COMPOSE) pull
+	$(COMPOSE) $(UP)
 
 # Never with -v: the database volume holds the data.
 down:

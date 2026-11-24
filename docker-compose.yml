@@ -1,5 +1,6 @@
 # MegooITAdmin's stack. Start and stop it with the Makefile (make up, make down; see README.md).
 # Only caddy publishes a port: an upstream TLS proxy sends plain HTTP to it.
+# A server pulls the release images; docker-compose.build.yml builds them from the checkout for the dev and e2e stacks.
 name: megooitadmin
 
 x-healthcheck-timing: &healthcheck-timing
@@ -31,7 +32,7 @@ services:
       <<: *healthcheck-timing
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/mmhy2003/megooitadmin-frontend:${MEGOOITADMIN_VERSION:-latest}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
@@ -42,7 +43,7 @@ services:
       <<: *healthcheck-timing
 
   backend:
-    build: ./backend
+    image: ghcr.io/mmhy2003/megooitadmin-backend:${MEGOOITADMIN_VERSION:-latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://megooitadmin_api:${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin

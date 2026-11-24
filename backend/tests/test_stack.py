@@ -1,5 +1,5 @@
 """Checks of the whole Compose stack, through Caddy. They start nothing themselves: the stack service set has
-built docker-compose.yml from this checkout and waited until every service was healthy."""
+built the stack from this checkout through docker-compose.build.yml and waited until every service was healthy."""
 
 import base64
 import json
@@ -8,17 +8,21 @@ import re
 import subprocess
 from functools import cache
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pyotp
 import pytest
+import yaml
 
 pytestmark = pytest.mark.stack
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "docker-compose.yml"
+BUILD_FILE = ROOT / "docker-compose.build.yml"
 FAKE_SERVER_FILE = ROOT / "tools" / "fake-server" / "docker-compose.stack.yml"
 CADDYFILE = ROOT / "caddy" / "Caddyfile"
+GHCR = "ghcr.io/mmhy2003/megooitadmin-"
 RUN = "megoocolab-runner services run stack -- uv run pytest -m stack"
 NETWORKS = {
     "caddy": {"edge"},
@@ -36,14 +40,14 @@ def _env(name: str) -> str:
 
 
 def _compose(*args: str) -> subprocess.CompletedProcess[str]:
-    command = ["docker", "compose", "-p", _env("MEGOO_SERVICES_PROJECT"), "-f", str(COMPOSE_FILE), *args]
+    command = ["docker", "compose", "-p", _env("MEGOO_SERVICES_PROJECT"), "-f", str(COMPOSE_FILE), "-f", str(BUILD_FILE), *args]
     return subprocess.run(command, capture_output=True, text=True, timeout=120)
 
 
 def _compose_with_fake_server(*args: str, input: str | None = None) -> subprocess.CompletedProcess[str]:
     # The stack set also runs the fake server, which only docker-compose.stack.yml declares.
     project = _env("MEGOO_SERVICES_PROJECT")
-    command = ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), "-f", str(FAKE_SERVER_FILE), *args]
+    command = ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), "-f", str(BUILD_FILE), "-f", str(FAKE_SERVER_FILE), *args]
     return subprocess.run(command, input=input, capture_output=True, text=True, timeout=120)
 
 
@@ -183,6 +187,36 @@ def test_only_the_backend_mounts_the_ssh_key_volume():
 
 def test_docker_compose_yml_holds_no_fake_server():
     assert "fake-server" not in _declared()["services"]
+
+
+def _written(path: Path) -> dict:
+    return yaml.safe_load(path.read_text())["services"]
+
+
+def test_docker_compose_yml_pulls_the_two_release_images_and_builds_nothing():
+    services = _written(COMPOSE_FILE)
+    for name in ("backend", "frontend"):
+        assert services[name]["image"] == f"{GHCR}{name}:${{MEGOOITADMIN_VERSION:-latest}}"
+    assert {name for name, service in services.items() if "build" in service} == set()
+
+
+def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
+    services = _written(BUILD_FILE)
+    assert set(services) == {"backend", "frontend"}
+    for name, service in services.items():
+        assert service["build"] == f"./{name}"
+        assert service["image"] == f"megooitadmin-{name}:${{MEGOOITADMIN_VERSION:-dev}}"
+        assert "/" not in service["image"].split(":")[0]  # no registry
+
+
+def test_the_stack_runs_the_images_it_built_under_its_own_tag():
+    project = _env("MEGOO_SERVICES_PROJECT")
+    for name in ("backend", "frontend"):
+        container = _compose("ps", "-q", name).stdout.strip()
+        inspected = subprocess.run(
+            ["docker", "inspect", "--format", "{{.Config.Image}}", container], capture_output=True, text=True, timeout=30
+        )
+        assert inspected.stdout.strip() == f"megooitadmin-{name}:{project}"
 
 
 def test_the_backend_waits_for_a_healthy_database():
@@ -343,6 +377,18 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         assert (response.status_code, response.json()) == (401, {"detail": "invalid_credentials"})
 
 
+def _audit_of_server(server_id: str) -> list[tuple[str, str]]:
+    """(action, result) of each audit event of the server, oldest first, read as the database owner."""
+    UUID(server_id)  # only a UUID goes into the SQL
+    sql = f"SELECT action, result FROM audit_log WHERE target_type = 'server' AND target_id = '{server_id}' ORDER BY seq"
+    result = _compose(
+        "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_PASSWORD')}", "db",
+        "psql", "-h", "127.0.0.1", "-U", "megooitadmin", "-d", "megooitadmin", "-tA", "-F", "|", "-c", sql,
+    )
+    assert result.returncode == 0, result.stderr
+    return [tuple(line.split("|")) for line in result.stdout.splitlines() if line]
+
+
 def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(owner):
     public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
     assert public.returncode == 0, public.stderr
@@ -359,6 +405,9 @@ def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(o
     refused = owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()
     assert (refused["ok"], refused["reason"]) == (False, "host_key_changed")
     assert owner.get(f"/api/servers/{server_id}").json()["host_key_state"] == "changed"
+    events = _audit_of_server(server_id)
+    assert ("server.created", "success") in events
+    assert ("server.connection_tested", "success") in events
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):

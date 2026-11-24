@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 
 MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
-UP = "up -d --build --wait --wait-timeout 300"
-TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password", "ssh-public-key", "fake-server-swap"]
-STACK_FILES = "-f docker-compose.yml -f tools/fake-server/docker-compose.stack.yml"
+UP = "up -d --wait --wait-timeout 300"
+UP_BUILD = "up -d --build --wait --wait-timeout 300"
+TARGETS = ["up", "upgrade", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password", "ssh-public-key", "fake-server-swap"]
+STACK_FILES = "-f docker-compose.yml -f docker-compose.build.yml -f tools/fake-server/docker-compose.stack.yml"
 
 
 @pytest.fixture
@@ -47,6 +48,7 @@ def test_up_creates_env_then_starts_the_real_instance_and_waits(workdir):
     assert result.returncode == 0, result.stderr
     assert f"docker compose {UP}" in result.stdout.splitlines()
     assert result.stdout.index("/dev/urandom") < result.stdout.index(f"docker compose {UP}")
+    assert "--build" not in result.stdout
     assert not (workdir / ".env").exists()
 
 
@@ -54,8 +56,33 @@ def test_up_creates_env_then_starts_the_real_instance_and_waits(workdir):
 def test_up_with_a_stack_uses_its_own_project_and_env_file_and_never_env(workdir, stack):
     result = make(workdir, "-n", "up", f"STACK={stack}")
     assert result.returncode == 0, result.stderr
-    assert f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {STACK_FILES} {UP}" in result.stdout.splitlines()
+    assert f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {STACK_FILES} {UP_BUILD}" in result.stdout.splitlines()
     assert "/dev/urandom" not in result.stdout
+    assert not (workdir / ".env").exists()
+
+
+def test_upgrade_completes_env_then_pulls_then_restarts_the_real_instance(workdir):
+    result = make(workdir, "-n", "upgrade")
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert "docker compose pull" in lines
+    assert f"docker compose {UP}" in lines
+    out = result.stdout
+    assert out.index("/dev/urandom") < out.index("docker compose pull") < out.index(f"docker compose {UP}")
+    assert not (workdir / ".env").exists()
+
+
+@pytest.mark.parametrize("stack", ["dev", "e2e"])
+def test_upgrade_with_a_stack_stops_and_runs_nothing(workdir, stack):
+    bin_dir = workdir / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text('#!/bin/sh\ntouch "$(dirname "$0")/ran"\n')
+    docker.chmod(0o755)
+    result = make(workdir, "upgrade", f"STACK={stack}", path=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert result.returncode != 0
+    assert "make upgrade acts on the real instance only" in result.stderr
+    assert not (bin_dir / "ran").exists()
     assert not (workdir / ".env").exists()
 
 
@@ -79,10 +106,10 @@ def test_up_with_a_stack_authorizes_its_key_in_the_fake_server(workdir, stack):
     compose = f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {STACK_FILES}"
     pipe = f"{compose} exec -T backend python -m app.ssh.cli public-key | {compose} exec -T fake-server authorize-key"
     assert pipe in result.stdout.splitlines()
-    assert result.stdout.index(UP) < result.stdout.index(pipe)
+    assert result.stdout.index(UP_BUILD) < result.stdout.index(pipe)
 
 
-@pytest.mark.parametrize("target", ["up", "down"])
+@pytest.mark.parametrize("target", ["up", "upgrade", "down"])
 def test_the_real_instance_never_gets_a_fake_server(workdir, target):
     result = make(workdir, "-n", target)
     assert result.returncode == 0, result.stderr

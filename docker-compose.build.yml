@@ -1,0 +1,9 @@
+# Builds the images from this checkout, for make up STACK=dev|e2e and the stack check. Local names: a build
+# never replaces a pulled release image.
+services:
+  frontend:
+    image: megooitadmin-frontend:${MEGOOITADMIN_VERSION:-dev}
+    build: ./frontend
+  backend:
+    image: megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}
+    build: ./backend
