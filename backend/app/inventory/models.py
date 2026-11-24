@@ -43,6 +43,8 @@ class Server(Base):
         ForeignKeyConstraint(["server_group_id"], ["server_groups.id"], name="servers_server_group_id_fkey"),
         CheckConstraint("port BETWEEN 1 AND 65535", name="servers_port_check"),
         CheckConstraint("os IN ('linux', 'windows')", name="servers_os_check"),
+        CheckConstraint("(host_key IS NULL) = (host_key_pinned_at IS NULL)", name="servers_host_key_pinned_check"),
+        CheckConstraint("host_key_changed_at IS NULL OR host_key IS NOT NULL", name="servers_host_key_changed_check"),
         # Names are unique across all groups, without regard to case.
         Index("servers_name_key", text("lower(name)"), unique=True),
         Index("servers_server_group_id_idx", "server_group_id"),
@@ -55,8 +57,14 @@ class Server(Base):
     port: Mapped[int] = mapped_column(Integer)
     os: Mapped[str] = mapped_column(Text)
     role: Mapped[str | None] = mapped_column(Text)
-    # Pinned by MITA-11 at the first connection.
+    # The pinned host key as an OpenSSH line ("ssh-ed25519 AAAA…"), set only by a pin.
     host_key: Mapped[str | None] = mapped_column(Text)
+    host_key_pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The candidate: the key last fetched for pinning, or the key presented at a blocked connection.
+    host_key_offered: Mapped[str | None] = mapped_column(Text)
+    host_key_offered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when a connection met another key: the server is blocked until it is reviewed.
+    host_key_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     connection_settings: Mapped[dict] = mapped_column(JSONB, server_default=text("""'{"username": "megoo"}'::jsonb"""))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

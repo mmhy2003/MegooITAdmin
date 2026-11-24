@@ -231,5 +231,44 @@ def test_the_database_refuses_an_uppercase_tag_and_a_port_of_0():
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0006'")
 
 
+HOST_KEY_COLUMNS = ["host_key_changed_at", "host_key_offered", "host_key_offered_at", "host_key_pinned_at"]
+
+
+def _host_key_columns() -> list[str]:
+    return [
+        row[0]
+        for row in _fetch(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_name = 'servers' AND column_name LIKE 'host_key_%' ORDER BY column_name"
+        )
+    ]
+
+
+def test_0007_goes_down_and_up_again():
+    command.downgrade(_config(), "0006")
+    try:
+        assert _host_key_columns() == []
+    finally:
+        upgrade_to_head()
+    assert _host_key_columns() == HOST_KEY_COLUMNS
+
+
+def test_the_database_refuses_a_pin_without_its_time_and_a_block_without_a_pin():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0007')")
+    try:
+        _execute(
+            "INSERT INTO servers (id, server_group_id, name, address, port, os)"
+            " SELECT gen_random_uuid(), id, 'probe-0007', '10.0.0.7', 22, 'linux' FROM server_groups"
+            " WHERE name = 'Migration probe group 0007'"
+        )
+        with pytest.raises(IntegrityError, match="servers_host_key_pinned_check"):
+            _execute("UPDATE servers SET host_key = 'ssh-ed25519 AAAA' WHERE name = 'probe-0007'")
+        with pytest.raises(IntegrityError, match="servers_host_key_changed_check"):
+            _execute("UPDATE servers SET host_key_changed_at = now() WHERE name = 'probe-0007'")
+    finally:
+        _execute("DELETE FROM servers WHERE name = 'probe-0007'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0007'")
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())
