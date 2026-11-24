@@ -64,6 +64,10 @@ A check applies once its part is in the repository. While a part is missing (a d
 `.gitkeep`, a Makefile target that doesn't exist yet or says its part is not in the repository yet), skip its
 check and say which checks you skipped and why. Never report a skipped check as passed.
 
+CI (`.github/workflows/ci.yml`) runs all of these checks on every pull request into `develop` and on every push to
+it, and the Release workflow reuses it. It installs the `megoocolab-runner` version set in `MEGOO_RUNNER_VERSION` in
+that file. CI does not replace the checks above: run them before you push.
+
 ## Migrations
 
 - Alembic revisions are numbered, not hashed: `0001_initial.py`, `0002_add_users.py`.
