@@ -13,10 +13,15 @@ Reason = Literal[
     "key_refused",
     "account_is_root",
     "account_in_docker_group",
+    "account_not_in_log_groups",
+    "sudo_checker_missing",
+    "sudo_too_wide",
     "account_check_failed",
     "ssh_error",
 ]
-CheckName = Literal["host_key", "platform_key", "not_root", "not_in_docker_group"]
+CheckName = Literal[
+    "host_key", "platform_key", "not_root", "not_in_docker_group", "in_log_groups", "sudo_checker", "sudo_limited"
+]
 CheckStatus = Literal["passed", "failed", "not_run"]
 
 
@@ -28,7 +33,7 @@ class Check(BaseModel):
 class ConnectionTestResult(BaseModel):
     ok: bool
     reason: Reason | None
-    # Always the four, in CheckName order.
+    # Always the seven, in CheckName order.
     checks: list[Check]
 
 

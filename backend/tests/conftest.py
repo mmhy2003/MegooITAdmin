@@ -120,7 +120,7 @@ async def clean_auth(empty_audit_log):
 
 @pytest.fixture(scope="session")
 def fake_server():
-    """The fake sshd of the test set, with this run's platform key authorized for its three accounts."""
+    """The fake sshd of the test set, prepared by megoo-setup.sh, with this run's platform key."""
     from fake_server import start
 
     return start()

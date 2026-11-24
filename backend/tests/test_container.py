@@ -160,6 +160,11 @@ def test_public_key_prints_an_ed25519_line():
     assert re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+ megooitadmin", line), line
 
 
+def test_the_image_holds_the_setup_script():
+    code = "from app.ssh import setup; print(setup.ctl_version(), setup.script_text().splitlines()[0])"
+    assert _exec("python", "-c", code) == "1 #!/bin/sh"
+
+
 def test_it_refuses_to_start_with_a_key_readable_by_others(tmp_path):
     key = tmp_path / "id_ed25519"
     key.write_text("not a key")

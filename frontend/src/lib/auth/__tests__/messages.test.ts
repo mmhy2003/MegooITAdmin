@@ -40,6 +40,9 @@ describe("reasonText", () => {
     "key_refused",
     "account_is_root",
     "account_in_docker_group",
+    "account_not_in_log_groups",
+    "sudo_checker_missing",
+    "sudo_too_wide",
     "account_check_failed",
     "ssh_error",
   ];

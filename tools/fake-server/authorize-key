@@ -1,13 +1,29 @@
 #!/bin/sh
-# Reads one public key line on stdin and makes it the only authorized key of megoo, megoo-docker and megoo-root.
+# Reads one public key line on stdin and prepares the fake server with it, as megoo-setup.sh prepares a real server:
+# megoo, and megoo-nologs (then taken out of adm), megoo-nosudo (then without its sudo rule) and megoo-wide (then
+# allowed everything). megoo-docker and megoo-root get the plain key. $1: the addresses the key is accepted from; the
+# default is loopback and the private ranges, which covers pytest on the host and the Compose networks.
 set -e
-head -n 1 > /tmp/authorized.pub
+from=${1:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1,fc00::/7}
+key=$(head -n 1)
+printf '%s\n' "$key" > /tmp/authorized.pub
 ssh-keygen -l -f /tmp/authorized.pub > /dev/null || { echo "Not a public key." >&2; exit 1; }
-for user in megoo megoo-docker megoo-root; do
+# The script refuses a server where megoo-wide may do more, so its extra rule goes first and comes back after.
+rm -f /etc/sudoers.d/megoo-wide-all
+for user in megoo megoo-nologs megoo-nosudo megoo-wide; do
+  out=$(sh /usr/local/lib/megoo-setup.sh --user "$user" --from "$from" --key "$key") || { printf '%s\n' "$out" >&2; exit 1; }
+done
+gpasswd -d megoo-nologs adm > /dev/null
+rm -f /etc/sudoers.d/megoo-ctl-megoo-nosudo
+printf 'megoo-wide ALL=(ALL) NOPASSWD: ALL\n' > /tmp/megoo-wide-all
+visudo -cf /tmp/megoo-wide-all > /dev/null
+install -m 0440 -o root -g root /tmp/megoo-wide-all /etc/sudoers.d/megoo-wide-all
+rm -f /tmp/megoo-wide-all
+for user in megoo-docker megoo-root; do
   home=$(getent passwd "$user" | cut -d: -f6)
   group=$(id -gn "$user")
   install -d -m 0700 -o "$user" -g "$group" "$home/.ssh"
   install -m 0600 -o "$user" -g "$group" /tmp/authorized.pub "$home/.ssh/authorized_keys"
 done
 rm -f /tmp/authorized.pub
-echo "Authorized the key for megoo, megoo-docker and megoo-root."
+echo "Prepared megoo and the wrong accounts with the key, accepted from $from."

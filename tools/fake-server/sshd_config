@@ -2,5 +2,5 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 PermitRootLogin prohibit-password
-AllowUsers megoo megoo-docker megoo-root
+AllowUsers megoo megoo-nologs megoo-nosudo megoo-wide megoo-docker megoo-root
 LogLevel INFO

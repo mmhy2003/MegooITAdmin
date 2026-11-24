@@ -211,7 +211,15 @@ describe("fingerprintCommand", () => {
 });
 
 describe("CHECK_LABELS", () => {
-  it("names the four checks", () => {
-    expect(Object.keys(CHECK_LABELS).sort()).toEqual(["host_key", "not_in_docker_group", "not_root", "platform_key"]);
+  it("names the seven checks", () => {
+    expect(Object.keys(CHECK_LABELS).sort()).toEqual([
+      "host_key",
+      "in_log_groups",
+      "not_in_docker_group",
+      "not_root",
+      "platform_key",
+      "sudo_checker",
+      "sudo_limited",
+    ]);
   });
 });

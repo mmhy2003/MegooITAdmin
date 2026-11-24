@@ -79,13 +79,18 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   group sees it, and so do the Owner and Auditors. Nobody else does.
 - Tags are free labels typed on the server. They filter the list and never decide access.
 - A group that still holds servers cannot be deleted: move or remove its servers first.
-- Prepare the account `megoo` on each Linux server: not root, and not in the `docker` group. MegooITAdmin never
-  signs in as root, and refuses root as the login account.
-- The platform's public key, for `megoo`'s `authorized_keys`, is on each server's Platform access card, and
+- Prepare each Linux server with the setup script (Platform access card → Download, or
+  `backend/app/ssh/megoo-setup.sh`): it creates `megoo` in `systemd-journal` and `adm`, never in `docker`, allows
+  it only `megoo-ctl` with sudo, and accepts the platform's key only from the platform's address. See
+  [docs/server-setup.md](docs/server-setup.md). MegooITAdmin never signs in as root, and refuses root as the login
+  account.
+- The platform's public key is on each server's Platform access card, in the command to run, and
   `make ssh-public-key` prints it.
 - The Owner, or an Admin of the server's group, pins the server's host key after comparing its fingerprint with
   the one on the server: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
-- People with Connect SSH in the group test the connection from the server page.
+- People with Connect SSH in the group test the connection from the server page. The test checks seven things:
+  the host key, the platform's key, not root, not in `docker`, the log groups, `megoo-ctl` through sudo, and that
+  sudo allows nothing else.
 - A changed host key blocks the server until an Admin accepts the new key, with a reason, or keeps the pinned one.
   Every step is in the audit log.
 - Back up the `ssh_key` Docker volume: it holds the platform's private key, and a lost key means a new one has to

@@ -1,7 +1,8 @@
 """The fake sshd of the test set (tools/fake-server): real OpenSSH in a container, never a real server.
 
-It has three accounts, all signing in with this run's platform key: megoo (the platform's account), megoo-docker (in
-the docker group) and megoo-root (uid 0).
+megoo-setup.sh prepares megoo (the platform's account) and megoo-nologs (not in adm), megoo-nosudo (without its sudo
+rule) and megoo-wide (allowed everything by sudo). megoo-docker (in the docker group) and megoo-root (uid 0) are made
+by the image. All six sign in with this run's platform key.
 """
 
 import os
@@ -13,6 +14,12 @@ from conftest import RUN_TESTS
 
 from app.ssh import keys
 
+SETUP = "/usr/local/lib/megoo-setup.sh"
+CTL = "/usr/local/sbin/megoo-ctl"
+# Where the stub docker and systemctl log each call, one line per call: the name, then each argument in brackets.
+LOG = "/var/log/fake-tools.log"
+ACCOUNTS = ("megoo", "megoo-nologs", "megoo-nosudo", "megoo-wide", "megoo-docker", "megoo-root")
+
 
 @dataclass(frozen=True)
 class FakeServer:
@@ -20,15 +27,41 @@ class FakeServer:
     port: int
     container: str
 
-    def exec(self, *args: str, input: str | None = None) -> subprocess.CompletedProcess[str]:
-        """Runs a command in the container, as root."""
+    def exec(self, *args: str, input: str | None = None, user: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Runs a command in the container, as root unless a user is given."""
+        as_user = ["-u", user] if user else []
         return subprocess.run(
-            ["docker", "exec", "-i", self.container, *args],
+            ["docker", "exec", "-i", *as_user, self.container, *args],
             input=input,
             text=True,
             capture_output=True,
             timeout=60,
         )
+
+    def authorize(self, addresses: str | None = None) -> None:
+        """Prepares the accounts with this run's platform key, accepted from these addresses (default: loopback and the
+        private ranges)."""
+        result = self.exec("authorize-key", *([addresses] if addresses else []), input=keys.public_key() + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def setup(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Runs megoo-setup.sh with these arguments, as root."""
+        return self.exec("sh", SETUP, *args)
+
+    def ctl(self, *args: str, user: str = "megoo") -> subprocess.CompletedProcess[str]:
+        """Runs megoo-ctl with these arguments through sudo, as this account."""
+        return self.exec("sudo", "-n", CTL, *args, user=user)
+
+    def clear_tool_log(self) -> None:
+        """Empties the log of the stub docker and systemctl."""
+        result = self.exec("truncate", "-s", "0", LOG)
+        assert result.returncode == 0, result.stderr
+
+    def tool_log(self) -> list[str]:
+        """The calls the stub docker and systemctl received since the log was last cleared."""
+        result = self.exec("cat", LOG)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.splitlines()
 
     def host_key(self) -> str:
         """The Ed25519 host key sshd serves, as "ssh-ed25519 AAAA…" without a comment."""
@@ -49,7 +82,7 @@ class FakeServer:
 
 
 def start() -> FakeServer:
-    """Finds the fake server of this run's test set and authorizes this run's platform key on it."""
+    """Finds the fake server of this run's test set and prepares its accounts with this run's platform key."""
     port = os.environ.get("SSH_PORT")
     project = os.environ.get("MEGOO_SERVICES_PROJECT")
     for name, value in (("SSH_PORT", port), ("MEGOO_SERVICES_PROJECT", project)):
@@ -76,6 +109,5 @@ def start() -> FakeServer:
         )
     server = FakeServer(host="127.0.0.1", port=int(port), container=container)
     keys.ensure_key()
-    authorized = server.exec("authorize-key", input=keys.public_key() + "\n")
-    assert authorized.returncode == 0, authorized.stderr
+    server.authorize()
     return server
