@@ -4,6 +4,9 @@ export const DEFAULT_PORT: Record<ServerOs, number> = { linux: 22, windows: 3389
 export const DEFAULT_USERNAME = "megoo";
 export const MAX_TAGS = 20;
 export type ConnectionSettings = { username: string };
+export type HostKeyState = "none" | "not_pinned" | "pinned" | "changed";
+/** The key a server presented when it no longer matched the pinned one. */
+export type HostKeyOffer = { fingerprint: string; type: string; at: string };
 export type Server = {
   id: string;
   name: string;
@@ -19,6 +22,42 @@ export type Server = {
   created_at: string;
   updated_at: string;
   can_manage: boolean;
+  host_key_state: HostKeyState;
+  host_key_fingerprint: string | null;
+  host_key_type: string | null;
+  host_key_pinned_at: string | null;
+  host_key_changed_at: string | null;
+  host_key_offered: HostKeyOffer | null;
+  can_connect: boolean;
+};
+export type ConnectionReason =
+  | "unreachable"
+  | "host_key_changed"
+  | "key_refused"
+  | "account_is_root"
+  | "account_in_docker_group"
+  | "account_check_failed"
+  | "ssh_error";
+export type CheckName = "host_key" | "platform_key" | "not_root" | "not_in_docker_group";
+export type CheckStatus = "passed" | "failed" | "not_run";
+export type ConnectionCheck = { name: CheckName; status: CheckStatus };
+export type ConnectionTestResult = { ok: boolean; reason: ConnectionReason | null; checks: ConnectionCheck[] };
+export type HostKeyFetchResult = {
+  ok: boolean;
+  reason: ConnectionReason | null;
+  fingerprint: string | null;
+  type: string | null;
+};
+export const CHECK_LABELS: Record<CheckName, string> = {
+  host_key: "The host key matches the pinned key",
+  platform_key: "The server accepts the platform's key",
+  not_root: "The account is not root",
+  not_in_docker_group: "The account is not in the docker group",
+};
+export const CHECK_STATUS_LABELS: Record<CheckStatus, string> = {
+  passed: "Passed",
+  failed: "Failed",
+  not_run: "Not checked",
 };
 /** What the dialog edits; port is a number, role "" when none. */
 export type ServerDraft = {
@@ -43,6 +82,14 @@ export type ServerBody = {
   connection_settings: ConnectionSettings;
 };
 export type ServerFilters = { group: string | null; tags: string[] };
+
+/** The command that prints the key's fingerprint on the server: ed25519, ecdsa or rsa. */
+export function fingerprintCommand(type: string | null): string {
+  let kind = "ed25519";
+  if (type?.startsWith("ecdsa-")) kind = "ecdsa";
+  else if (type === "ssh-rsa" || type?.startsWith("rsa-")) kind = "rsa";
+  return `ssh-keygen -lf /etc/ssh/ssh_host_${kind}_key.pub`;
+}
 
 const TAG = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 

@@ -38,6 +38,13 @@ const WEB: Server = {
   created_at: "2026-11-01T00:00:00Z",
   updated_at: "2026-11-01T00:00:00Z",
   can_manage: true,
+  host_key_state: "not_pinned",
+  host_key_fingerprint: null,
+  host_key_type: null,
+  host_key_pinned_at: null,
+  host_key_changed_at: null,
+  host_key_offered: null,
+  can_connect: true,
 };
 
 beforeEach(() => {
