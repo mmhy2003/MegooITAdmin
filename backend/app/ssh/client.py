@@ -1,8 +1,10 @@
 """The only module that opens SSH connections: a host key fetch for pinning, and a sign-in that trusts the pinned
-host key and nothing else."""
+host key and nothing else, and what the signed-in account may do with sudo."""
 
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import asyncssh
 
@@ -21,6 +23,10 @@ HOST_KEY_ALGS = [
     "rsa-sha2-512",
     "rsa-sha2-256",
 ]
+CTL = "/usr/local/sbin/megoo-ctl"
+_SUDO_HEADER = re.compile(r"^User \S+ may run the following commands on ")
+_RUNAS = re.compile(r"^\([^)]*\)\s*")
+_TAGS = re.compile(r"^(?:[A-Z_]+:\s*)+")
 
 
 # A signed-in connection, the type other modules name so that only this one uses asyncssh's connection API.
@@ -128,3 +134,42 @@ async def account_of(conn: asyncssh.SSHClientConnection) -> tuple[int, list[str]
         return int(uid), groups.split()
     except (asyncssh.Error, TimeoutError, ValueError) as error:
         raise AccountCheckFailed() from error
+
+
+@dataclass(frozen=True)
+class Setup:
+    """What the setup script left on the server, as the signed-in account sees it."""
+
+    version: int | None  # megoo-ctl's version through sudo; None when it did not answer
+    limited: bool | None  # True: sudo allows only megoo-ctl; False: it allows more; None: the list could not be read
+
+
+def sudo_commands(text: str) -> list[str] | None:
+    """The commands of `sudo -l` (LC_ALL=C), or None when the text is not that list."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if _SUDO_HEADER.match(line)), None)
+    if start is None:
+        return None
+    commands: list[str] = []
+    for line in lines[start + 1 :]:
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            break
+        entry = _TAGS.sub("", _RUNAS.sub("", line.strip()))
+        commands += [command.strip() for command in entry.split(",") if command.strip()]
+    return commands
+
+
+async def setup_of(conn: asyncssh.SSHClientConnection) -> Setup:
+    """megoo-ctl's version and whether sudo allows the account only megoo-ctl. Only an integer and a yes/no leave
+    this function: what the server printed never reaches a response or an event."""
+    try:
+        version = await conn.run(f"sudo -n {CTL} version", timeout=COMMAND_TIMEOUT)
+        listed = await conn.run("LC_ALL=C sudo -n -l", timeout=COMMAND_TIMEOUT)
+    except (asyncssh.Error, TimeoutError) as error:
+        raise AccountCheckFailed() from error
+    found = re.fullmatch(r"megoo-ctl (\d{1,6})", str(version.stdout).strip()) if version.exit_status == 0 else None
+    commands = sudo_commands(str(listed.stdout)) if listed.exit_status == 0 else None
+    limited = None if not commands else all(command == CTL for command in commands)
+    return Setup(version=int(found.group(1)) if found else None, limited=limited)

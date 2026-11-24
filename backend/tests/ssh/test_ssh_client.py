@@ -3,9 +3,28 @@ import socket
 import asyncssh
 import pytest
 
-from app.ssh.client import HostKeyChanged, KeyRefused, Unreachable, account_of, connect, fetch_host_key
+from app.ssh.client import (
+    CTL,
+    HostKeyChanged,
+    KeyRefused,
+    Setup,
+    Unreachable,
+    account_of,
+    connect,
+    fetch_host_key,
+    setup_of,
+    sudo_commands,
+)
 from app.ssh.hostkeys import openssh_line
 from app.ssh.keys import KeyFileError
+
+
+SUDO_LIST = """Matching Defaults entries for megoo on fake:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\\:/usr/local/bin
+
+User megoo may run the following commands on fake:
+    (root) NOPASSWD: /usr/local/sbin/megoo-ctl
+"""
 
 
 def closed_port() -> int:
@@ -98,3 +117,39 @@ async def test_a_missing_key_file_is_not_reported_as_unreachable(fake_server, mo
     with pytest.raises(KeyFileError):
         async with connect("127.0.0.1", closed_port(), "megoo", fake_server.host_key()):
             pass
+
+
+def test_sudo_commands_of_the_megoo_account():
+    assert sudo_commands(SUDO_LIST) == ["/usr/local/sbin/megoo-ctl"]
+
+
+def test_sudo_commands_of_a_wide_account():
+    assert sudo_commands(SUDO_LIST + "    (ALL) NOPASSWD: ALL\n") == [CTL, "ALL"]
+
+
+def test_sudo_commands_of_a_root_like_account():
+    text = "User megoo may run the following commands on fake:\n    (ALL : ALL) ALL\n"
+    assert sudo_commands(text) == ["ALL"]
+
+
+def test_sudo_commands_of_another_language_is_none():
+    text = "Benutzer megoo darf die folgenden Befehle ausführen:\n    (root) NOPASSWD: /usr/local/sbin/megoo-ctl\n"
+    assert sudo_commands(text) is None
+
+
+def test_sudo_commands_of_a_header_alone_is_empty():
+    assert sudo_commands("User megoo may run the following commands on fake:\n") == []
+
+
+@pytest.mark.parametrize(
+    ("user", "expected"),
+    [
+        ("megoo", Setup(version=1, limited=True)),
+        ("megoo-nologs", Setup(version=1, limited=True)),
+        ("megoo-nosudo", Setup(version=None, limited=None)),
+        ("megoo-wide", Setup(version=1, limited=False)),
+    ],
+)
+async def test_setup_of_each_prepared_account(fake_server, user, expected):
+    async with connect(fake_server.host, fake_server.port, user, fake_server.host_key()) as conn:
+        assert await setup_of(conn) == expected
