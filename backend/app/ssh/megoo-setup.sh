@@ -38,7 +38,7 @@ done
 
 # 1. Everything is checked before anything changes.
 [ "$(id -u)" = 0 ] || stop "Run it as root: sudo sh megoo-setup.sh …"
-for tool in sudo visudo useradd usermod gpasswd getent ssh-keygen stat cmp mktemp; do
+for tool in sudo visudo useradd usermod gpasswd getent ssh-keygen stat cmp mktemp runuser; do
   command -v "$tool" > /dev/null 2>&1 || stop "$tool is missing: install it first."
 done
 getent group systemd-journal > /dev/null || stop "The group systemd-journal is missing: the server needs systemd."
@@ -51,6 +51,13 @@ esac
 [ ${#user} -le 32 ] || stop "Not an account name: $user (32 characters at most)."
 if getent passwd "$user" > /dev/null && [ "$(id -u "$user")" = 0 ]; then
   stop "$user has uid 0: use an account that is not root."
+fi
+# The account owns its home, so it could point .ssh or authorized_keys at a root file to have root change it.
+if getent passwd "$user" > /dev/null; then
+  for path in .ssh .ssh/authorized_keys; do
+    path="$(getent passwd "$user" | cut -d: -f6)/$path"
+    [ ! -L "$path" ] || stop "$path is a symbolic link: remove it, then run the script again."
+  done
 fi
 if [ -z "$check" ]; then
   [ -n "$from" ] || stop "--from is required: the platform's address, for example --from 203.0.113.10."
@@ -208,19 +215,22 @@ if [ -z "$check" ]; then
     exit 1
   fi
   write_file "/etc/sudoers.d/megoo-ctl-$user" root root 440 "$tmp"
-  # 6. The key, accepted only from the platform's addresses.
+  # 6. The key, accepted only from the platform's addresses. The account owns .ssh, so everything in it is done as
+  # the account (runuser): a symlink it puts there cannot make root change another file. chown -h never follows one.
   home=$(getent passwd "$user" | cut -d: -f6)
   group=$(id -gn "$user")
-  [ -d "$home/.ssh" ] || install -d -m 0700 -o "$user" -g "$group" "$home/.ssh"
-  chown "$user:$group" "$home/.ssh"
-  chmod 0700 "$home/.ssh"
+  [ -d "$home/.ssh" ] || runuser -u "$user" -- mkdir -m 0700 "$home/.ssh"
+  chown -h "$user:$group" "$home/.ssh"
+  runuser -u "$user" -- chmod 0700 "$home/.ssh"
   # The temporary file is made only when the key file differs, so a run that changes nothing leaves .ssh untouched.
   authorized=$home/.ssh/authorized_keys
-  if ! { [ -f "$authorized" ] && printf 'from="%s" %s\n' "$from" "$key" | cmp -s - "$authorized" \
+  if ! { [ -f "$authorized" ] && [ ! -L "$authorized" ] \
+    && printf 'from="%s" %s\n' "$from" "$key" | cmp -s - "$authorized" \
     && [ "$(stat -c '%U:%G %a' "$authorized")" = "$user:$group 600" ]; }; then
-    tmp=$(mktemp "$home/.ssh/.authorized_keys.XXXXXX")
-    printf 'from="%s" %s\n' "$from" "$key" > "$tmp"
-    write_file "$authorized" "$user" "$group" 600 "$tmp"
+    printf 'from="%s" %s\n' "$from" "$key" | runuser -u "$user" -g "$group" -- sh -c \
+      'umask 077; tmp=$(mktemp "$1/.authorized_keys.XXXXXX") && cat > "$tmp" && mv -f "$tmp" "$1/authorized_keys"' \
+      sh "$home/.ssh"
+    say "Wrote $authorized."
   fi
   [ -n "$changed" ] || echo "Nothing to change."
 fi
@@ -254,7 +264,8 @@ else
 fi
 home=$(getent passwd "$user" | cut -d: -f6)
 keys=$home/.ssh/authorized_keys
-if [ -f "$keys" ] && [ "$(stat -c '%U %a' "$keys")" = "$user 600" ] && [ "$(stat -c '%U %a' "$home/.ssh")" = "$user 700" ] \
+if [ -f "$keys" ] && [ ! -L "$keys" ] && [ ! -L "$home/.ssh" ] \
+  && [ "$(stat -c '%U %a' "$keys")" = "$user 600" ] && [ "$(stat -c '%U %a' "$home/.ssh")" = "$user 700" ] \
   && [ "$(grep -cv -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$keys")" = 1 ] && grep -q '^from="[^"]*" ' "$keys"; then
   ok "$keys holds one key, $(ssh-keygen -l -f "$keys" | cut -d' ' -f2), accepted from $(sed -n 's/^from="\([^"]*\)" .*/\1/p' "$keys")."
 else

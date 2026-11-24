@@ -113,6 +113,7 @@ def test_it_leaves_docker(fake_server, scratch, key):
         ("--key", 'ssh-ed25519 AAAA" x'),
         ("--from", '1.2.3.4" command="id'),
         ("--from", "1.2.3.4 5.6.7.8"),
+        ("--from", "<platform-address>"),
         ("--from", None),
         ("--user", "root"),
         ("--user", "Bad;name"),
@@ -159,3 +160,33 @@ def test_check_of_a_missing_account_fails(fake_server, scratch):
 
     assert result.returncode == 1
     assert f"[FAIL] The account {scratch} does not exist." in result.stdout
+
+
+@pytest.fixture
+def victim(fake_server):
+    """A root-owned directory holding a root-owned file, which the account must never get through a symlink."""
+    path = f"/var/tmp/victim-{uuid4().hex[:8]}"
+    made = fake_server.exec("sh", "-c", f"install -d -m 0755 {path} && install -m 0644 /dev/null {path}/file")
+    assert made.returncode == 0, made.stderr
+    yield path
+    fake_server.exec("rm", "-rf", path)
+
+
+@pytest.mark.parametrize(
+    ("link", "target"),
+    [(".ssh", ""), (".ssh/authorized_keys", "/file")],
+)
+def test_a_symlink_in_the_accounts_ssh_directory_is_refused(fake_server, scratch, key, victim, link, target):
+    assert prepare(fake_server, scratch, key).returncode == 0
+    home = f"/home/{scratch}"
+    swapped = fake_server.exec("sh", "-c", f"rm -rf {home}/{link} && ln -s {victim}{target} {home}/{link}", user=scratch)
+    assert swapped.returncode == 0, swapped.stderr
+
+    result = prepare(fake_server, scratch, key)
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "is a symbolic link" in result.stderr
+    assert "Nothing was changed." in result.stderr
+    assert owner_and_mode(fake_server, victim) == "root 755"
+    assert owner_and_mode(fake_server, f"{victim}/file") == "root 644"
+    assert fake_server.exec("cat", f"{victim}/file").stdout == ""

@@ -31,13 +31,15 @@ A run takes these steps. Each is safe to repeat: a second run changes nothing an
 5. It writes `/etc/sudoers.d/megoo-ctl-<user>` (root, mode 440) with `<user> ALL=(root) NOPASSWD:
    /usr/local/sbin/megoo-ctl`. The rule is checked with `visudo -c` first, and a rule that fails is never installed.
 6. It writes the account's `~/.ssh/authorized_keys` (mode 600, directory 700) with one line,
-   `from="<addresses>" <key>`. The file holds only the platform's key: other keys in it are replaced.
+   `from="<addresses>" <key>`. The file holds only the platform's key: other keys in it are replaced. The account owns
+   `~/.ssh`, so the script writes there as the account (`runuser`), and refuses to run when `~/.ssh` or
+   `authorized_keys` is a symbolic link: otherwise the account could have root change another file.
 7. It checks all of the above and prints one line per check.
 
 `--check` runs only step 7 and changes nothing.
 
 The exit code is 0 when the server is ready (`The server is ready.`), 1 when a check failed, and 2 when the script
-refused before changing anything (not root, a tool missing, a wrong argument).
+refused before changing anything (not root, a tool missing, a wrong argument, a symbolic link in `~/.ssh`).
 
 Supported: Linux with systemd, sudo and OpenSSH, such as Debian, Ubuntu and the RHEL family.
 

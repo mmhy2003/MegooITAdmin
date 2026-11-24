@@ -74,7 +74,7 @@ export const CONNECTION_REASONS: Record<ConnectionReason, { title: string; advic
   },
   account_check_failed: {
     title: "The account could not be checked.",
-    advice: "The id command did not answer in time. Try again.",
+    advice: "The id command did not answer in time, or what sudo allows the account (sudo -l) could not be read. Try again.",
   },
   ssh_error: {
     title: "The SSH connection failed.",

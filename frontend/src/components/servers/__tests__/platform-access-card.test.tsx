@@ -8,7 +8,7 @@ vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api"
 vi.mock("@/lib/auth/navigate");
 
 const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGx0ZXN0a2V5Zm9ydGhlcGxhdGZvcm1hY2Nlc3NjYXJk megooitadmin";
-const COMMAND = `sudo sh megoo-setup.sh --from <platform-address> --key '${KEY}'`;
+const COMMAND = `sudo sh megoo-setup.sh --from '<platform-address>' --key '${KEY}'`;
 
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();

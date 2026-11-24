@@ -14,7 +14,7 @@ function shellQuote(value: string): string {
 
 /** The command that prepares a server for the platform's key; --user only when the account is not megoo. */
 export function setupCommand(key: string, username: string): string {
-  const command = `sudo sh megoo-setup.sh --from <platform-address> --key ${shellQuote(key)}`;
+  const command = `sudo sh megoo-setup.sh --from '<platform-address>' --key ${shellQuote(key)}`;
   return username === "megoo" ? command : `${command} --user ${shellQuote(username)}`;
 }
 
