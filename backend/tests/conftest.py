@@ -5,6 +5,7 @@ the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic m
 """
 
 import os
+import tempfile
 from datetime import UTC, datetime, timedelta
 from functools import cache
 from pathlib import Path
@@ -44,6 +45,8 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
     os.environ["DB_NULL_POOL"] = "true"
     os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
+    # Each run makes its own platform key in a fresh directory, never the image's path.
+    os.environ["SSH_KEY_FILE"] = str(Path(tempfile.mkdtemp(prefix="megooitadmin-ssh-")) / "id_ed25519")
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
@@ -113,6 +116,14 @@ async def clean_auth(empty_audit_log):
         await session.execute(text("DELETE FROM servers"))
         await session.execute(text("DELETE FROM server_groups"))
         await session.commit()
+
+
+@pytest.fixture(scope="session")
+def fake_server():
+    """The fake sshd of the test set, with this run's platform key authorized for its three accounts."""
+    from fake_server import start
+
+    return start()
 
 
 class FakeClock:

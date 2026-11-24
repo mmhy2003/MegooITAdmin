@@ -41,6 +41,13 @@ function server(id: string, name: string, g: ServerGroup, extra: Partial<Server>
     created_at: "2026-11-01T00:00:00Z",
     updated_at: "2026-11-01T00:00:00Z",
     can_manage: g.can_manage,
+    host_key_state: "not_pinned",
+    host_key_fingerprint: null,
+    host_key_type: null,
+    host_key_pinned_at: null,
+    host_key_changed_at: null,
+    host_key_offered: null,
+    can_connect: true,
     ...extra,
   };
 }
@@ -102,6 +109,27 @@ describe("ServersPage", () => {
       "production",
       "Windows",
     ]);
+  });
+
+  it("flags the servers whose host key changed or is not pinned", async () => {
+    mockApi({
+      servers: [
+        server("s-1", "changed-01", STAGING, { host_key_state: "changed" }),
+        server("s-2", "unpinned-01", STAGING, { host_key_state: "not_pinned" }),
+        server("s-3", "pinned-01", STAGING, { host_key_state: "pinned" }),
+        server("s-4", "win-01", STAGING, { os: "windows", port: 3389, host_key_state: "none" }),
+      ],
+    });
+    render(<ServersPage />);
+
+    const nameCell = async (name: string) =>
+      within(within(await screen.findByRole("row", { name: new RegExp(`^${name}`) })).getAllByRole("cell")[0]);
+    expect((await nameCell("changed-01")).getByText("Host key changed")).toBeInTheDocument();
+    expect((await nameCell("changed-01")).queryByText("Host key not pinned")).not.toBeInTheDocument();
+    expect((await nameCell("unpinned-01")).getByText("Host key not pinned")).toBeInTheDocument();
+    expect((await nameCell("unpinned-01")).queryByText("Host key changed")).not.toBeInTheDocument();
+    expect((await nameCell("pinned-01")).queryByText(/Host key/)).not.toBeInTheDocument();
+    expect((await nameCell("win-01")).queryByText(/Host key/)).not.toBeInTheDocument();
   });
 
   it("offers the row menu only on the servers the person manages", async () => {

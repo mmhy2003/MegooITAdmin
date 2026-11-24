@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     session_absolute_minutes: int = 720
     # /api/docs and /api/openapi.json are served only when this is on.
     api_docs: bool = False
+    # The platform's SSH private key: one Ed25519 key, made by the entrypoint at the first start (Phase 3 moves it
+    # into the vault).
+    ssh_key_file: str = "/var/lib/megooitadmin/ssh/id_ed25519"
 
     @field_validator("auth_secret_key")
     @classmethod

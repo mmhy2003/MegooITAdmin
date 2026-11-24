@@ -1,3 +1,4 @@
 *.sh text eol=lf
 Caddyfile text eol=lf
 Makefile text eol=lf
+tools/fake-server/* text eol=lf

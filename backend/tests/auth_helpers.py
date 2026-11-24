@@ -166,3 +166,12 @@ async def make_server(
         session.add_all(ServerTag(server_id=server.id, tag=tag) for tag in tags)
         await session.commit()
         return server
+
+
+async def pin_host_key(client: AsyncClient, server_id) -> dict:
+    """Fetches the server's key and pins it with the fingerprint fetched. Returns the server."""
+    fetched = await client.post(f"/api/servers/{server_id}/host-key/fetch")
+    assert fetched.status_code == 200 and fetched.json()["ok"], fetched.text
+    pinned = await client.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched.json()["fingerprint"]})
+    assert pinned.status_code == 200, pinned.text
+    return pinned.json()

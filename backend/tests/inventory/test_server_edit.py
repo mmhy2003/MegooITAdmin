@@ -1,11 +1,14 @@
 from uuid import uuid4
 
 import pytest
+import asyncssh
 from auth_helpers import add_grant, events, make_group, make_server, signed_in
-from sqlalchemy import select
+from conftest import owner_session
+from sqlalchemy import func, select, update
 
 from app.core.db import SessionLocal
 from app.inventory.models import Server
+from app.ssh import hostkeys
 
 OWNER = "owner@example.com"
 ADMIN = "ada@example.com"
@@ -51,6 +54,36 @@ async def test_changing_fields_records_server_changed(api, clock):
         "address": {"before": "10.0.0.1", "after": "10.0.0.2"},
         "port": {"before": 22, "after": 2222},
     }
+
+
+async def test_an_address_edit_keeps_the_pin_and_drops_an_unpinned_candidate(api, clock):
+    staging = await make_group("staging")
+    candidate = await make_server(staging.id, "db-01")
+    pinned = await make_server(staging.id, "db-02")
+    key = hostkeys.openssh_line(asyncssh.generate_private_key("ssh-ed25519"))
+    async with owner_session() as session:
+        await session.execute(
+            update(Server)
+            .where(Server.id == candidate.id)
+            .values(host_key_offered=key, host_key_offered_at=func.now())
+        )
+        await session.execute(
+            update(Server).where(Server.id == pinned.id).values(host_key=key, host_key_pinned_at=func.now())
+        )
+        await session.commit()
+
+    async with signed_in(api, clock, OWNER, "owner") as (_, owner):
+        first = await owner.patch(f"/api/servers/{candidate.id}", json={"address": "10.0.0.2"})
+        second = await owner.patch(f"/api/servers/{pinned.id}", json={"address": "10.0.0.3"})
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    async with owner_session() as session:
+        dropped = await session.scalar(select(Server).where(Server.id == candidate.id))
+    assert (dropped.host_key_offered, dropped.host_key_offered_at) == (None, None)
+    assert second.json()["host_key_state"] == "pinned"
+    assert second.json()["host_key_fingerprint"] == hostkeys.fingerprint(key)
+    assert (await stored(pinned.id)).host_key == key
 
 
 async def test_changing_tags_records_server_tags_changed(api, clock):

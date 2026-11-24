@@ -77,3 +77,9 @@ def test_the_key_is_not_in_the_repr():
     settings = Settings(database_url=URL, auth_secret_key=TEST_KEY)
     assert TEST_KEY not in repr(settings)
     assert "auth_secret_key" not in repr(settings)
+
+
+def test_ssh_key_file_has_its_default(monkeypatch):
+    monkeypatch.delenv("SSH_KEY_FILE", raising=False)
+    settings = Settings(database_url=URL)
+    assert settings.ssh_key_file == "/var/lib/megooitadmin/ssh/id_ed25519"

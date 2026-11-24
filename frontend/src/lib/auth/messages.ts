@@ -1,3 +1,5 @@
+import type { ConnectionReason } from "@/lib/servers";
+
 const MESSAGES: Record<string, string> = {
   invalid_credentials: "The email or the password is wrong.",
   wrong_code: "That code is not right. Check the clock of your phone and try again.",
@@ -21,9 +23,53 @@ const MESSAGES: Record<string, string> = {
   server_name_taken: "A server with this name exists already.",
   group_has_servers: "This group still holds servers. Move or remove them first.",
   not_found: "It does not exist, or you cannot see it.",
+  host_key_pinned: "A host key is pinned already. The page has been reloaded.",
+  stale_host_key:
+    "The server's key is no longer the one you compared. It has been fetched again: compare the new fingerprint.",
+  host_key_not_changed: "This server's host key has not changed. The page has been reloaded.",
+  host_key_not_pinned: "Pin the server's host key before testing the connection.",
+  host_key_changed: "The server's host key has changed. Review it before connecting.",
+  not_an_ssh_server: "Only Linux servers connect over SSH.",
+  reason_required: "Say why you accept the new key.",
 };
 
 /** The text shown for an `ApiError` detail. */
 export function messageFor(detail: string): string {
   return Object.hasOwn(MESSAGES, detail) ? MESSAGES[detail] : "Something went wrong. Try again.";
+}
+
+export const CONNECTION_REASONS: Record<ConnectionReason, { title: string; advice: string }> = {
+  unreachable: {
+    title: "The server did not answer.",
+    advice: "Check the address and the port, and that the server accepts SSH connections from MegooITAdmin.",
+  },
+  host_key_changed: {
+    title: "The server presented another host key.",
+    advice: "The connection stopped before signing in. Review the host key on this page.",
+  },
+  key_refused: {
+    title: "The server refused the platform's key.",
+    advice: "Add the platform's public key to the authorized_keys of the login account (see Platform access).",
+  },
+  account_is_root: {
+    title: "The login account is root.",
+    advice: "Use the megoo account: MegooITAdmin never signs in as root.",
+  },
+  account_in_docker_group: {
+    title: "The login account is in the docker group.",
+    advice: "Remove it from the docker group: that group is as strong as root.",
+  },
+  account_check_failed: {
+    title: "The account could not be checked.",
+    advice: "The id command did not answer in time. Try again.",
+  },
+  ssh_error: {
+    title: "The SSH connection failed.",
+    advice: "The server may offer only old algorithms, such as ssh-rsa with SHA-1, which are not supported.",
+  },
+};
+
+/** The title and advice shown for a failed connection or key fetch. */
+export function reasonText(reason: ConnectionReason): { title: string; advice: string } {
+  return CONNECTION_REASONS[reason];
 }

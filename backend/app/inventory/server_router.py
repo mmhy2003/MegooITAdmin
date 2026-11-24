@@ -1,16 +1,20 @@
 """The routes under /api/servers and /api/server-tags: each person reads the servers of the groups they see and the
-tags on them; the Owner, and an Admin in their own groups, register, edit and remove them."""
+tags on them; the Owner, and an Admin in their own groups, register, edit and remove them, and fetch and pin their SSH
+host keys; anyone with Connect SSH in a server's group tests its connection. GET /api/ssh/public-key gives every
+signed-in person the platform's public SSH key."""
 
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from app.access.deps import CurrentAccess, require_group_admin, require_group_visible
+from app.access.deps import CurrentAccess, require_grant, require_group_admin, require_group_visible
+from app.access.permissions import Permission
 from app.audit import audited
 from app.auth.deps import CurrentUser
 from app.core.db import DbSession
-from app.inventory import actions, servers
+from app.inventory import actions, connection, servers
+from app.inventory.connection_schemas import ConnectionTestResult, HostKeyFetchResult, HostKeyPin, PublicKeyOut
 from app.inventory.deps import (
     group_of_new_server,
     group_of_server,
@@ -19,8 +23,11 @@ from app.inventory.deps import (
     target_group_of_server,
 )
 from app.inventory.server_schemas import ServerIn, ServerOut, ServerPatch
+from app.ssh import keys
 
 router = APIRouter()
+
+admin = Depends(require_group_admin(group=group_of_server))
 
 
 @router.get("/servers")
@@ -85,3 +92,41 @@ async def update_server(
 async def delete_server(server_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> Response:
     await servers.delete_server(db, request, user, server_id)
     return Response(status_code=204)
+
+
+@router.post("/servers/{server_id}/host-key/fetch", dependencies=[admin, audited(actions.SERVER_HOST_KEY_FETCHED)])
+async def fetch_host_key(server_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> HostKeyFetchResult:
+    return await connection.fetch_host_key(db, request, user, server_id)
+
+
+@router.put(
+    "/servers/{server_id}/host-key",
+    dependencies=[admin, audited(actions.SERVER_HOST_KEY_PINNED, actions.SERVER_HOST_KEY_REPLACED)],
+)
+async def pin_host_key(
+    server_id: UUID, body: HostKeyPin, request: Request, db: DbSession, user: CurrentUser, access: CurrentAccess
+) -> ServerOut:
+    return await connection.pin_host_key(db, request, user, access, server_id, body)
+
+
+@router.post("/servers/{server_id}/host-key/keep", dependencies=[admin, audited(actions.SERVER_HOST_KEY_KEPT)])
+async def keep_host_key(
+    server_id: UUID, request: Request, db: DbSession, user: CurrentUser, access: CurrentAccess
+) -> ServerOut:
+    return await connection.keep_host_key(db, request, user, access, server_id)
+
+
+@router.post(
+    "/servers/{server_id}/connection-test",
+    dependencies=[
+        Depends(require_grant(Permission.CONNECT_SSH, group=group_of_server)),
+        audited(actions.SERVER_CONNECTION_TESTED, actions.SERVER_HOST_KEY_MISMATCH),
+    ],
+)
+async def test_connection(server_id: UUID, request: Request, db: DbSession, user: CurrentUser) -> ConnectionTestResult:
+    return await connection.test_connection(db, request, user, server_id)
+
+
+@router.get("/ssh/public-key")
+async def read_public_key(user: CurrentUser) -> PublicKeyOut:
+    return PublicKeyOut(public_key=keys.public_key())

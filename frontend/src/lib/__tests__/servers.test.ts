@@ -3,11 +3,13 @@ import {
   addressOf,
   addTag,
   bodyOf,
+  CHECK_LABELS,
   changesOf,
   cleanTag,
   DEFAULT_PORT,
   draftOf,
   filtersFrom,
+  fingerprintCommand,
   listPath,
   MAX_TAGS,
   type Server,
@@ -28,6 +30,13 @@ const SERVER: Server = {
   created_at: "2026-11-01T00:00:00Z",
   updated_at: "2026-11-01T00:00:00Z",
   can_manage: true,
+  host_key_state: "not_pinned",
+  host_key_fingerprint: null,
+  host_key_type: null,
+  host_key_pinned_at: null,
+  host_key_changed_at: null,
+  host_key_offered: null,
+  can_connect: true,
 };
 
 describe("DEFAULT_PORT", () => {
@@ -186,5 +195,23 @@ describe("listPath", () => {
   it("asks for the group and every tag", () => {
     expect(listPath({ group: "g1", tags: ["web", "db"] })).toBe("/servers?group_id=g1&tag=web&tag=db");
     expect(listPath({ group: null, tags: ["web"] })).toBe("/servers?tag=web");
+  });
+});
+
+describe("fingerprintCommand", () => {
+  it.each([
+    ["ssh-ed25519", "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"],
+    [null, "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"],
+    ["ecdsa-sha2-nistp256", "ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub"],
+    ["ssh-rsa", "ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub"],
+    ["rsa-sha2-512", "ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub"],
+  ])("%s → %s", (type, command) => {
+    expect(fingerprintCommand(type)).toBe(command);
+  });
+});
+
+describe("CHECK_LABELS", () => {
+  it("names the four checks", () => {
+    expect(Object.keys(CHECK_LABELS).sort()).toEqual(["host_key", "not_in_docker_group", "not_root", "platform_key"]);
   });
 });

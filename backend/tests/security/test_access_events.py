@@ -10,6 +10,7 @@ from app.auth import actions as auth_actions
 from app.auth import recovery, sessions
 from app.core.db import SessionLocal
 from app.inventory import actions as inventory_actions
+from app.ssh import keys
 from app.users import actions as user_actions
 
 PASSWORD_ADA = "ada chose this long passphrase"
@@ -31,11 +32,17 @@ class Walk:
         self.secrets: set[str] = {PASSWORD, PASSWORD_ADA, WRONG_TOKEN}
         self.groups: dict[str, str] = {}
         self.ada_id = ""
+        # Every base64 line of the platform's private key.
+        pem = keys.load_key().export_private_key().decode().splitlines()
+        self.private_key = [line for line in pem if not line.startswith("-----")]
+        self.secrets.update(self.private_key)
 
     async def call(self, client: AsyncClient, method: str, url: str, body: dict | None = None) -> Response:
         response = await client.request(method, url, json=body)
         if token := client.cookies.get(sessions.COOKIE):
             self.secrets.add(token)
+        # The platform's private key never leaves the backend: no answer holds a line of it.
+        assert [line for line in self.private_key if line in response.text] == []
         return response
 
     async def owner(self, method: str, url: str, body: dict | None = None, status: int = 200) -> Response:
@@ -120,6 +127,33 @@ async def manage_servers(walk: Walk) -> None:
     await walk.owner("DELETE", url, status=204)
 
 
+async def connect_servers(walk: Walk, fake_server) -> None:
+    body = {
+        "name": "ssh-01",
+        "address": fake_server.host,
+        "port": fake_server.port,
+        "group_id": walk.groups["staging"],
+        "os": "linux",
+    }
+    url = f"/api/servers/{(await walk.owner('POST', '/api/servers', body)).json()['id']}"
+    fetched = (await walk.owner("POST", f"{url}/host-key/fetch")).json()
+    await walk.owner("PUT", f"{url}/host-key", {"fingerprint": fetched["fingerprint"]})
+    # Ada is an Operator with Connect SSH on staging: Ada tests the connection, but may not fetch a key.
+    tested = await walk.call(walk.ada, "POST", f"{url}/connection-test")
+    assert (tested.status_code, tested.json()["ok"]) == (200, True), tested.text
+    assert (await walk.call(walk.ada, "POST", f"{url}/host-key/fetch")).status_code == 403
+
+    fake_server.swap_host_key()
+    assert (await walk.owner("POST", f"{url}/connection-test")).json()["reason"] == "host_key_changed"
+    await walk.owner("POST", f"{url}/host-key/keep")
+    # Kept, but the server still presents the other key: the next test flags it again.
+    assert (await walk.owner("POST", f"{url}/connection-test")).json()["reason"] == "host_key_changed"
+    presented = (await walk.owner("GET", url)).json()["host_key_offered"]["fingerprint"]
+    await walk.owner("PUT", f"{url}/host-key", {"fingerprint": presented, "reason": "reinstalled"})
+    assert (await walk.owner("POST", f"{url}/connection-test")).json()["ok"] is True
+    await walk.owner("DELETE", url, status=204)
+
+
 async def second_invite_renewed(walk: Walk) -> None:
     body = {"name": "Bo Brown", "email": "bo@example.com", "platform_role": "auditor", "grants": []}
     link = (await walk.owner("POST", "/api/users", body)).json()
@@ -136,7 +170,7 @@ async def delete_staging(walk: Walk) -> None:
     await walk.owner("DELETE", f"/api/server-groups/{walk.groups['staging']}", status=204)
 
 
-async def test_one_walk_records_every_access_and_user_action_and_no_secret(api, clock):
+async def test_one_walk_records_every_access_and_user_action_and_no_secret(api, clock, fake_server):
     _, secret = await make_user()
     await sign_in(api, clock, secret)
     async with other_client(api) as ada:
@@ -150,6 +184,7 @@ async def test_one_walk_records_every_access_and_user_action_and_no_secret(api, 
         await change_adas_access(walk)
         await ada_is_denied_users(walk)
         await manage_servers(walk)
+        await connect_servers(walk, fake_server)
         await second_invite_renewed(walk)
         await owner_manages_ada(walk)
         await delete_staging(walk)
@@ -158,6 +193,7 @@ async def test_one_walk_records_every_access_and_user_action_and_no_secret(api, 
         user_actions.ALL_ACTIONS
         | inventory_actions.ALL_ACTIONS
         | inventory_actions.SERVER_ACTIONS
+        | inventory_actions.CONNECTION_ACTIONS
         | {ACCESS_DENIED, auth_actions.MFA_RESET, auth_actions.SESSION_REVOKED}
     )
     assert expected - set(await actions()) == set()

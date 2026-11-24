@@ -11,7 +11,8 @@ import pytest
 
 MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
 UP = "up -d --build --wait --wait-timeout 300"
-TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password"]
+TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password", "ssh-public-key", "fake-server-swap"]
+STACK_FILES = "-f docker-compose.yml -f tools/fake-server/docker-compose.stack.yml"
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def test_up_creates_env_then_starts_the_real_instance_and_waits(workdir):
 def test_up_with_a_stack_uses_its_own_project_and_env_file_and_never_env(workdir, stack):
     result = make(workdir, "-n", "up", f"STACK={stack}")
     assert result.returncode == 0, result.stderr
-    assert f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {UP}" in result.stdout.splitlines()
+    assert f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {STACK_FILES} {UP}" in result.stdout.splitlines()
     assert "/dev/urandom" not in result.stdout
     assert not (workdir / ".env").exists()
 
@@ -68,7 +69,57 @@ def test_up_with_a_stack_uses_its_own_project_and_env_file_and_never_env(workdir
 )
 def test_the_stack_targets_act_on_the_chosen_stack(workdir, target, command):
     result = make(workdir, "-n", target, "STACK=dev")
-    assert f"docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env {command}" in result.stdout.splitlines()
+    assert f"docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env {STACK_FILES} {command}" in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("stack", ["dev", "e2e"])
+def test_up_with_a_stack_authorizes_its_key_in_the_fake_server(workdir, stack):
+    result = make(workdir, "-n", "up", f"STACK={stack}")
+    assert result.returncode == 0, result.stderr
+    compose = f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {STACK_FILES}"
+    pipe = f"{compose} exec -T backend python -m app.ssh.cli public-key | {compose} exec -T fake-server authorize-key"
+    assert pipe in result.stdout.splitlines()
+    assert result.stdout.index(UP) < result.stdout.index(pipe)
+
+
+@pytest.mark.parametrize("target", ["up", "down"])
+def test_the_real_instance_never_gets_a_fake_server(workdir, target):
+    result = make(workdir, "-n", target)
+    assert result.returncode == 0, result.stderr
+    assert "fake-server" not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("args", "compose"),
+    [
+        ([], "docker compose"),
+        (["STACK=dev"], f"docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env {STACK_FILES}"),
+    ],
+)
+def test_ssh_public_key_prints_the_key_of_the_chosen_stack(workdir, args, compose):
+    result = make(workdir, "-n", "ssh-public-key", *args)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [f"{compose} exec -T backend python -m app.ssh.cli public-key"]
+
+
+@pytest.mark.parametrize("stack", ["dev", "e2e"])
+def test_fake_server_swap_swaps_in_the_chosen_stack(workdir, stack):
+    result = make(workdir, "-n", "fake-server-swap", f"STACK={stack}")
+    assert result.returncode == 0, result.stderr
+    command = f"docker compose -p megooitadmin-{stack} --env-file tools/stacks/{stack}.env {STACK_FILES} exec -T fake-server swap-host-key"
+    assert command in result.stdout.splitlines()
+
+
+def test_fake_server_swap_without_a_stack_runs_nothing(workdir):
+    bin_dir = workdir / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text('#!/bin/sh\ntouch "$(dirname "$0")/ran"\n')
+    docker.chmod(0o755)
+    result = make(workdir, "fake-server-swap", path=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert result.returncode != 0
+    assert "needs STACK=dev or STACK=e2e" in result.stderr
+    assert not (bin_dir / "ran").exists()
 
 
 def test_down_keeps_the_database_volume(workdir):
@@ -187,7 +238,7 @@ def test_test_security_runs_the_security_suites(workdir):
 def test_setup_code_runs_the_command_in_the_chosen_stack(workdir):
     result = make(workdir, "-n", "setup-code", "STACK=dev")
     assert result.returncode == 0, result.stderr
-    command = "docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli setup-code"
+    command = f"docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env {STACK_FILES} exec backend python -m app.auth.cli setup-code"
     assert command in result.stdout.splitlines()
 
 
@@ -195,7 +246,7 @@ def test_setup_code_runs_the_command_in_the_chosen_stack(workdir):
 def test_the_reset_targets_run_their_command_in_the_chosen_stack(workdir, target):
     result = make(workdir, "-n", target, "email=a@b.c", "STACK=dev")
     assert result.returncode == 0, result.stderr
-    command = f'docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env exec backend python -m app.auth.cli {target} "a@b.c"'
+    command = f'docker compose -p megooitadmin-dev --env-file tools/stacks/dev.env {STACK_FILES} exec backend python -m app.auth.cli {target} "a@b.c"'
     assert command in result.stdout.splitlines()
 
 

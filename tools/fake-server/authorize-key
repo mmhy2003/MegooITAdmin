@@ -1,0 +1,13 @@
+#!/bin/sh
+# Reads one public key line on stdin and makes it the only authorized key of megoo, megoo-docker and megoo-root.
+set -e
+head -n 1 > /tmp/authorized.pub
+ssh-keygen -l -f /tmp/authorized.pub > /dev/null || { echo "Not a public key." >&2; exit 1; }
+for user in megoo megoo-docker megoo-root; do
+  home=$(getent passwd "$user" | cut -d: -f6)
+  group=$(id -gn "$user")
+  install -d -m 0700 -o "$user" -g "$group" "$home/.ssh"
+  install -m 0600 -o "$user" -g "$group" /tmp/authorized.pub "$home/.ssh/authorized_keys"
+done
+rm -f /tmp/authorized.pub
+echo "Authorized the key for megoo, megoo-docker and megoo-root."

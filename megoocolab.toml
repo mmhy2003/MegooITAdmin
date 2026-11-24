@@ -1,7 +1,7 @@
 [services.test]
-description = "PostgreSQL with TimescaleDB and pgvector for backend pytest"
-compose = ["tools/test-services/docker-compose.yml"]
-ports = ["DB_PORT"]
+description = "PostgreSQL with TimescaleDB and pgvector, and the fake sshd server, for backend pytest"
+compose = ["tools/test-services/docker-compose.yml", "tools/fake-server/docker-compose.test.yml"]
+ports = ["DB_PORT", "SSH_PORT"]
 
 [services.test.env]
 DB_NAME = "megooitadmin_test"
@@ -43,8 +43,8 @@ FRONTEND_IMAGE = "megooitadmin-frontend:${MEGOO_SERVICES_PROJECT}"
 FRONTEND_URL = "http://localhost:${WEB_PORT}"
 
 [services.stack]
-description = "The whole Compose stack built from this checkout (caddy, frontend, backend, db), for pytest -m stack"
-compose = ["docker-compose.yml"]
+description = "The whole Compose stack built from this checkout (caddy, frontend, backend, db) and the fake sshd server, for pytest -m stack"
+compose = ["docker-compose.yml", "tools/fake-server/docker-compose.stack.yml"]
 ports = ["STACK_PORT"]
 
 [services.stack.env]

@@ -1,23 +1,35 @@
 "use client";
 
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, PlugZap, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { formatTime } from "@/components/profile/profile-page";
+import { ConnectionResult } from "@/components/servers/connection-result";
+import { HostKeyDialog } from "@/components/servers/host-key-dialog";
+import { PlatformAccessCard } from "@/components/servers/platform-access-card";
 import { RemoveServerDialog } from "@/components/servers/remove-server-dialog";
+import { ReviewHostKeyDialog } from "@/components/servers/review-host-key-dialog";
 import { ServerDialog } from "@/components/servers/server-dialog";
-import { Alert } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ServerGroup } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
-import { OS_LABELS, type Server } from "@/lib/servers";
+import { OS_LABELS, type ConnectionTestResult, type HostKeyState, type Server } from "@/lib/servers";
 
 /** What the Edit dialog offers: the groups the person manages and the tags in use. */
 type Choices = { groups: ServerGroup[]; tags: string[] };
+
+/** The badge beside the OS badge for each host key state a Linux server has. */
+const STATE_BADGES: Record<Exclude<HostKeyState, "none">, { label: string; variant: "secondary" | "outline" | "destructive" }> =
+  {
+    pinned: { label: "Host key pinned", variant: "secondary" },
+    not_pinned: { label: "Host key not pinned", variant: "outline" },
+    changed: { label: "Host key changed", variant: "destructive" },
+  };
 
 /** One server's page: its name and badges, and the Overview tab (the other tabs come later). */
 export function ServerPage({ serverId }: { serverId: string }) {
@@ -28,6 +40,11 @@ export function ServerPage({ serverId }: { serverId: string }) {
   const [choices, setChoices] = useState<Choices | null>(null);
   const [editing, setEditing] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [pinning, setPinning] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<ConnectionTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
 
   const reload = useCallback(
     () =>
@@ -68,6 +85,29 @@ export function ServerPage({ serverId }: { serverId: string }) {
     void reload();
   }
 
+  async function testConnection() {
+    setTesting(true);
+    setResult(null);
+    setTestError(null);
+    try {
+      setResult(await apiFetch<ConnectionTestResult>(`/servers/${serverId}/connection-test`, { method: "POST" }));
+      void reload();
+    } catch (e) {
+      setTestError(messageFor(e instanceof ApiError ? e.detail : "error"));
+      if (e instanceof ApiError && [403, 404, 409].includes(e.status)) void reload();
+    }
+    setTesting(false);
+  }
+
+  /** A pin or a review changed the server: show it as it is now, without the last test's result. */
+  function keyChanged(changed: Server) {
+    setPinning(false);
+    setReviewing(false);
+    setServer(changed);
+    setResult(null);
+    setTestError(null);
+  }
+
   if (missing) {
     return (
       <Card>
@@ -90,21 +130,75 @@ export function ServerPage({ serverId }: { serverId: string }) {
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold tracking-tight">{server.name}</h2>
               <Badge variant="secondary">{OS_LABELS[server.os]}</Badge>
+              {server.host_key_state !== "none" && (
+                <Badge variant={STATE_BADGES[server.host_key_state].variant}>
+                  {STATE_BADGES[server.host_key_state].label}
+                </Badge>
+              )}
               <Badge variant="outline">{server.group_name}</Badge>
             </div>
-            {server.can_manage && (
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" onClick={edit}>
-                  <Pencil aria-hidden />
-                  Edit
+            <div className="flex flex-wrap gap-2">
+              {server.can_connect && server.host_key_state !== "none" && (
+                <Button
+                  variant="outline"
+                  disabled={testing || server.host_key_state !== "pinned"}
+                  onClick={() => void testConnection()}
+                >
+                  <PlugZap aria-hidden />
+                  {testing ? "Testing…" : "Test connection"}
                 </Button>
-                <Button variant="outline" onClick={() => setRemoving(true)}>
-                  <Trash2 aria-hidden />
-                  Remove
-                </Button>
-              </div>
-            )}
+              )}
+              {server.can_manage && (
+                <>
+                  <Button variant="outline" onClick={edit}>
+                    <Pencil aria-hidden />
+                    Edit
+                  </Button>
+                  <Button variant="outline" onClick={() => setRemoving(true)}>
+                    <Trash2 aria-hidden />
+                    Remove
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
+          {result && <ConnectionResult result={result} />}
+          {testError && <Alert variant="destructive">{testError}</Alert>}
+          {server.host_key_state === "not_pinned" && (
+            <Alert>
+              <AlertDescription className="flex flex-wrap items-center justify-between gap-3 text-foreground">
+                <p>The host key of {server.name} is not pinned yet. Nothing connects to it until it is.</p>
+                {server.can_manage ? (
+                  <Button size="sm" onClick={() => setPinning(true)}>
+                    Pin host key
+                  </Button>
+                ) : (
+                  <p>Ask an Admin of {server.group_name} to pin it.</p>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
+          {server.host_key_state === "changed" && (
+            <Alert variant="destructive">
+              <AlertTitle>Host key changed: connections to {server.name} are blocked</AlertTitle>
+              <AlertDescription>
+                {server.host_key_changed_at && (
+                  <p>
+                    On {formatTime(server.host_key_changed_at)} the server presented another host key than the pinned
+                    one. The server may have been reinstalled, or someone may be in the way.
+                  </p>
+                )}
+                {server.host_key_offered === null && <p>The new key could not be read.</p>}
+                {server.can_manage ? (
+                  <Button size="sm" variant="destructive" onClick={() => setReviewing(true)}>
+                    Review host key
+                  </Button>
+                ) : (
+                  <p>An Admin of {server.group_name} must review it.</p>
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           <div role="tablist" aria-label="Server" className="flex gap-2 border-b">
             <button
               type="button"
@@ -133,13 +227,21 @@ export function ServerPage({ serverId }: { serverId: string }) {
                   <Field label="Login account">
                     <span className="font-mono">{server.connection_settings.username}</span>
                   </Field>
-                  <Field label="Host key">
-                    {server.host_key ? (
-                      <span className="font-mono break-all">{server.host_key}</span>
-                    ) : (
-                      <span className="text-muted-foreground">Not pinned yet</span>
-                    )}
-                  </Field>
+                  {server.os !== "windows" && (
+                    <Field label="Host key">
+                      {server.host_key_fingerprint === null ? (
+                        <span className="text-muted-foreground">Not pinned yet</span>
+                      ) : (
+                        <div className="space-y-1">
+                          <span className="block font-mono break-all">{server.host_key_fingerprint}</span>
+                          <span className="block text-sm text-muted-foreground">
+                            {server.host_key_type}
+                            {server.host_key_pinned_at && ` · Pinned ${formatTime(server.host_key_pinned_at)}`}
+                          </span>
+                        </div>
+                      )}
+                    </Field>
+                  )}
                 </dl>
               </CardContent>
             </Card>
@@ -173,6 +275,23 @@ export function ServerPage({ serverId }: { serverId: string }) {
               </CardContent>
             </Card>
           </div>
+          {server.can_manage && server.os === "linux" && (
+            <PlatformAccessCard username={server.connection_settings.username} />
+          )}
+          <HostKeyDialog
+            server={server}
+            open={pinning}
+            onOpenChange={setPinning}
+            onPinned={keyChanged}
+            onStale={() => void reload()}
+          />
+          <ReviewHostKeyDialog
+            server={server}
+            open={reviewing}
+            onOpenChange={setReviewing}
+            onDone={keyChanged}
+            onStale={() => void reload()}
+          />
         </>
       )}
       <ServerDialog

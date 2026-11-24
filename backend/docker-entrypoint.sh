@@ -13,6 +13,10 @@ alembic upgrade head
 echo "Setting the password of the API role..."
 python -m app.core.db_roles
 
+# The platform's SSH key: made at the first start, kept after. A key others can read stops the start.
+echo "Checking the platform's SSH key..."
+python -m app.ssh.cli ensure-key
+
 # On a fresh install every start logs a new code, which replaces the last one. Once an account exists, this says nothing.
 echo "Checking for a setup code..."
 python -m app.auth.cli setup-code --if-no-account

@@ -191,9 +191,13 @@ function ServerTable({ servers, onEdit, onRemove }: TableProps) {
           {servers.map((server) => (
             <TableRow key={server.id}>
               <TableCell className="font-medium">
-                <Link href={`/servers/${server.id}`} className="hover:underline">
-                  {server.name}
-                </Link>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link href={`/servers/${server.id}`} className="hover:underline">
+                    {server.name}
+                  </Link>
+                  {server.host_key_state === "changed" && <Badge variant="destructive">Host key changed</Badge>}
+                  {server.host_key_state === "not_pinned" && <Badge variant="outline">Host key not pinned</Badge>}
+                </div>
               </TableCell>
               <TableCell className="font-mono">{`${server.address}:${server.port}`}</TableCell>
               <TableCell>{server.group_name}</TableCell>

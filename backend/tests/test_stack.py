@@ -17,6 +17,7 @@ pytestmark = pytest.mark.stack
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "docker-compose.yml"
+FAKE_SERVER_FILE = ROOT / "tools" / "fake-server" / "docker-compose.stack.yml"
 CADDYFILE = ROOT / "caddy" / "Caddyfile"
 RUN = "megoocolab-runner services run stack -- uv run pytest -m stack"
 NETWORKS = {
@@ -37,6 +38,13 @@ def _env(name: str) -> str:
 def _compose(*args: str) -> subprocess.CompletedProcess[str]:
     command = ["docker", "compose", "-p", _env("MEGOO_SERVICES_PROJECT"), "-f", str(COMPOSE_FILE), *args]
     return subprocess.run(command, capture_output=True, text=True, timeout=120)
+
+
+def _compose_with_fake_server(*args: str, input: str | None = None) -> subprocess.CompletedProcess[str]:
+    # The stack set also runs the fake server, which only docker-compose.stack.yml declares.
+    project = _env("MEGOO_SERVICES_PROJECT")
+    command = ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE), "-f", str(FAKE_SERVER_FILE), *args]
+    return subprocess.run(command, input=input, capture_output=True, text=True, timeout=120)
 
 
 @cache
@@ -162,6 +170,19 @@ def test_core_exec_and_sandbox_are_internal_and_edge_and_servers_are_not():
     networks = _declared()["networks"]
     assert set(networks) == {"edge", "core", "servers", "exec", "sandbox"}
     assert {name for name, network in networks.items() if network.get("internal")} == {"core", "exec", "sandbox"}
+
+
+def test_only_the_backend_mounts_the_ssh_key_volume():
+    services = _model()["services"]
+    backend = [(v["type"], v["source"], v["target"]) for v in services["backend"]["volumes"]]
+    assert backend == [("volume", "ssh_key", "/var/lib/megooitadmin/ssh")]
+    others = {name for name, service in services.items() if name != "backend" and any(v["source"] == "ssh_key" for v in service.get("volumes", []))}
+    assert others == set()
+    assert "ssh_key" in _model()["volumes"]
+
+
+def test_docker_compose_yml_holds_no_fake_server():
+    assert "fake-server" not in _declared()["services"]
 
 
 def test_the_backend_waits_for_a_healthy_database():
@@ -320,6 +341,24 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         assert client.get("/api/auth/me").status_code == 401
         response = client.post("/api/auth/login", json={"email": "ada@stack.invalid", "password": "ada's own long password"})
         assert (response.status_code, response.json()) == (401, {"detail": "invalid_credentials"})
+
+
+def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    group = owner.post("/api/server-groups", json={"name": "ssh-lab"}).json()["id"]
+    server = {"name": "fake-server", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+    server_id = owner.post("/api/servers", json=server).json()["id"]
+    fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+    assert fetched["ok"], fetched
+    assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
+    assert owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()["ok"] is True
+    assert _compose_with_fake_server("exec", "-T", "fake-server", "swap-host-key").returncode == 0
+    refused = owner.post(f"/api/servers/{server_id}/connection-test", timeout=30).json()
+    assert (refused["ok"], refused["reason"]) == (False, "host_key_changed")
+    assert owner.get(f"/api/servers/{server_id}").json()["host_key_state"] == "changed"
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):

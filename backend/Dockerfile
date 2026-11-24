@@ -16,7 +16,9 @@ ARG APP_VERSION=dev
 ENV APP_VERSION=$APP_VERSION
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh && useradd --system --uid 10001 megooitadmin
+# The key directory: a new named volume mounted here takes this owner and mode.
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh && useradd --system --uid 10001 megooitadmin \
+    && install -d -o megooitadmin -g megooitadmin -m 0700 /var/lib/megooitadmin/ssh
 USER megooitadmin
 EXPOSE 8000
 # The entrypoint migrates and sets the API role's password first; if either fails, Uvicorn never starts.
