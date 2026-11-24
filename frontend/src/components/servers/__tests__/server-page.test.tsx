@@ -197,7 +197,7 @@ describe("ServerPage", () => {
     if (testable) expect(test).toBeEnabled();
     else expect(test).toBeDisabled();
     expect(await screen.findByRole("heading", { name: "Platform access" })).toBeInTheDocument();
-    expect(screen.getByText(/create the account deploy/)).toBeInTheDocument();
+    expect(await screen.findByText(/--user 'deploy'$/)).toBeInTheDocument();
   });
 
   it("tells when a changed key was seen, and that the new key could not be read", async () => {
