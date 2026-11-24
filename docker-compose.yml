@@ -51,6 +51,9 @@ services:
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
       SESSION_ABSOLUTE_MINUTES: ${SESSION_ABSOLUTE_MINUTES:-720}
       API_DOCS: ${API_DOCS:-false}
+    volumes:
+      # The platform's SSH private key. Back it up: a lost key means a new one on every server.
+      - ssh_key:/var/lib/megooitadmin/ssh
     networks: [edge, core, servers]
     depends_on:
       db:
@@ -91,3 +94,4 @@ networks:
 
 volumes:
   db_data: {}
+  ssh_key: {}

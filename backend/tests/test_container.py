@@ -124,7 +124,8 @@ def test_it_refuses_to_serve_without_the_auth_secret_key():
     assert "Uvicorn running" not in output
 
 
-def test_the_log_of_a_fresh_install_holds_a_setup_code():
+def _container() -> str:
+    """The id of the image set's backend container."""
     project = _env("MEGOO_SERVICES_PROJECT")
     container = subprocess.run(
         [
@@ -135,5 +136,43 @@ def test_the_log_of_a_fresh_install_holds_a_setup_code():
         capture_output=True, text=True, timeout=30, check=True,
     ).stdout.strip()
     assert container, f"No backend container in the Compose project {project}"
-    logs = subprocess.run(["docker", "logs", container], capture_output=True, text=True, timeout=30, check=True)
+    return container
+
+
+def _exec(*command: str) -> str:
+    return subprocess.run(
+        ["docker", "exec", _container(), *command], capture_output=True, text=True, timeout=30, check=True
+    ).stdout.strip()
+
+
+def test_the_log_of_a_fresh_install_holds_a_setup_code():
+    logs = subprocess.run(["docker", "logs", _container()], capture_output=True, text=True, timeout=30, check=True)
     assert re.search(r"Setup code: [A-Z2-7]{4}(-[A-Z2-7]{4}){3}", logs.stdout + logs.stderr), logs.stdout + logs.stderr
+
+
+def test_the_backend_made_its_ssh_key_with_mode_0600():
+    assert _exec("stat", "-c", "%a", "/var/lib/megooitadmin/ssh/id_ed25519") == "600"
+    assert _exec("stat", "-c", "%a", "/var/lib/megooitadmin/ssh") == "700"
+
+
+def test_public_key_prints_an_ed25519_line():
+    line = _exec("python", "-m", "app.ssh.cli", "public-key")
+    assert re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]+ megooitadmin", line), line
+
+
+def test_it_refuses_to_start_with_a_key_readable_by_others(tmp_path):
+    key = tmp_path / "id_ed25519"
+    key.write_text("not a key")
+    key.chmod(0o644)
+    result = _run_once(
+        {
+            "DATABASE_URL": _url("megooitadmin_api:megooitadminapi"),
+            "DATABASE_OWNER_URL": _url("megooitadmin:megooitadmin"),
+            "AUTH_SECRET_KEY": TEST_KEY,
+        },
+        "-v", f"{key}:/var/lib/megooitadmin/ssh/id_ed25519:ro",
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "readable by others" in output
+    assert "Uvicorn running" not in output
