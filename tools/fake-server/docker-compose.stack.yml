@@ -1,8 +1,12 @@
 # The fake server of the stack set and of make up STACK=dev|e2e, on the servers network, without a published
 # port. The real instance never gets it. Paths are relative to the repository root, where docker-compose.yml is.
+# The setup context gives the image megoo-setup.sh from backend/app/ssh.
 services:
   fake-server:
-    build: ./tools/fake-server
+    build:
+      context: ./tools/fake-server
+      additional_contexts:
+        setup: ./backend/app/ssh
     restart: unless-stopped
     networks: [servers]
     healthcheck:

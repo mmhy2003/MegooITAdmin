@@ -1,8 +1,12 @@
 # The fake server for backend pytest (the test set in megoocolab.toml): sshd on 127.0.0.1:${SSH_PORT}.
-# Paths are relative to tools/test-services, the first file of the set.
+# Paths are relative to tools/test-services, the first file of the set. The setup context gives the image
+# megoo-setup.sh from backend/app/ssh.
 services:
   fake-server:
-    build: ../fake-server
+    build:
+      context: ../fake-server
+      additional_contexts:
+        setup: ../../backend/app/ssh
     ports:
       - "127.0.0.1:${SSH_PORT}:22"
     healthcheck:

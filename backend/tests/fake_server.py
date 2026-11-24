@@ -13,6 +13,8 @@ from conftest import RUN_TESTS
 
 from app.ssh import keys
 
+SETUP = "/usr/local/lib/megoo-setup.sh"
+
 
 @dataclass(frozen=True)
 class FakeServer:
@@ -20,15 +22,20 @@ class FakeServer:
     port: int
     container: str
 
-    def exec(self, *args: str, input: str | None = None) -> subprocess.CompletedProcess[str]:
-        """Runs a command in the container, as root."""
+    def exec(self, *args: str, input: str | None = None, user: str | None = None) -> subprocess.CompletedProcess[str]:
+        """Runs a command in the container, as root unless a user is given."""
+        as_user = ["-u", user] if user else []
         return subprocess.run(
-            ["docker", "exec", "-i", self.container, *args],
+            ["docker", "exec", "-i", *as_user, self.container, *args],
             input=input,
             text=True,
             capture_output=True,
             timeout=60,
         )
+
+    def setup(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Runs megoo-setup.sh with these arguments, as root."""
+        return self.exec("sh", SETUP, *args)
 
     def host_key(self) -> str:
         """The Ed25519 host key sshd serves, as "ssh-ed25519 AAAA…" without a comment."""

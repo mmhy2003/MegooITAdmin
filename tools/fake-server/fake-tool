@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stands in for docker and systemctl: logs its name and each argument in brackets to /var/log/fake-tools.log, so a
+# test sees exactly what megoo-ctl passed on.
+{ printf '%s' "${0##*/}"; printf ' [%s]' "$@"; printf '\n'; } >> /var/log/fake-tools.log
