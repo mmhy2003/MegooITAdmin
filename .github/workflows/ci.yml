@@ -1,0 +1,161 @@
+# Every check of AGENTS.md ("Checks"), one job each. release.yml reuses this workflow (workflow_call).
+name: CI
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MEGOO_RUNNER_VERSION: "0.12.0" # the pinned megoocolab-runner; it starts the sets of megoocolab.toml
+  UV_LOCKED: "1"                 # uv fails when uv.lock is out of date
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: backend/.python-version
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install megoocolab-runner
+        run: curl -fsSL https://raw.githubusercontent.com/mmhy2003/MegooColab/main/runner/install.sh | MEGOO_RUNNER_VERSION="$MEGOO_RUNNER_VERSION" sh -s -- --system
+      - run: megoocolab-runner services run test -- uv run pytest
+
+  security:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: backend/.python-version
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install megoocolab-runner
+        run: curl -fsSL https://raw.githubusercontent.com/mmhy2003/MegooColab/main/runner/install.sh | MEGOO_RUNNER_VERSION="$MEGOO_RUNNER_VERSION" sh -s -- --system
+      - run: make test-security
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22 # frontend/Dockerfile builds with node:22-alpine
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  release-tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: backend/.python-version
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv run --project backend pytest tools/release
+      # Not plan or guard: the version never changes on develop, so both belong to the release.
+      - run: python tools/release/versions.py check
+
+  backend-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: backend/.python-version
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install megoocolab-runner
+        run: curl -fsSL https://raw.githubusercontent.com/mmhy2003/MegooColab/main/runner/install.sh | MEGOO_RUNNER_VERSION="$MEGOO_RUNNER_VERSION" sh -s -- --system
+      - run: megoocolab-runner services run image -- uv run pytest -m docker
+
+  frontend-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install megoocolab-runner
+        run: curl -fsSL https://raw.githubusercontent.com/mmhy2003/MegooColab/main/runner/install.sh | MEGOO_RUNNER_VERSION="$MEGOO_RUNNER_VERSION" sh -s -- --system
+      - run: npm ci
+      - run: megoocolab-runner services run web -- npm run test:image
+
+  stack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: backend/.python-version
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install megoocolab-runner
+        run: curl -fsSL https://raw.githubusercontent.com/mmhy2003/MegooColab/main/runner/install.sh | MEGOO_RUNNER_VERSION="$MEGOO_RUNNER_VERSION" sh -s -- --system
+      - run: megoocolab-runner services run stack -- uv run pytest -m stack
