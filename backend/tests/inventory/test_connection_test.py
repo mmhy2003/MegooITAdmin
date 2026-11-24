@@ -4,15 +4,25 @@ from sqlalchemy import select
 
 from app.audit import Actor
 from app.core.db import SessionLocal
+from app.inventory.connection import _checks, _reason
 from app.inventory.models import Server
-from app.ssh.client import HostKeyChanged
+from app.ssh.client import HostKeyChanged, Setup
 from app.ssh.hostkeys import fingerprint
 
 OWNER = "owner@example.com"
 ADMIN = "ada@example.com"
 OPERATOR = "otto@example.com"
 AUDITOR = "aude@example.com"
-CHECKS = ("host_key", "platform_key", "not_root", "not_in_docker_group")
+CHECKS = (
+    "host_key",
+    "platform_key",
+    "not_root",
+    "not_in_docker_group",
+    "in_log_groups",
+    "sudo_checker",
+    "sudo_limited",
+)
+P, F, N = "passed", "failed", "not_run"
 
 
 def checks(*statuses: str) -> list[dict]:
@@ -31,7 +41,7 @@ async def test_the_test_passes_as_megoo(api, clock, fake_server):
         response = await client.post(f"/api/servers/{server.id}/connection-test")
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"ok": True, "reason": None, "checks": checks("passed", "passed", "passed", "passed")}
+    assert response.json() == {"ok": True, "reason": None, "checks": checks(*[P] * 7)}
     (tested,) = await events("server.connection_tested")
     assert (tested.actor_id, tested.result, tested.mfa) == (str(owner.id), "success", True)
     assert (tested.target_type, tested.target_id, tested.target_name) == ("server", str(server.id), "ssh-01")
@@ -46,20 +56,30 @@ async def test_the_test_passes_as_megoo(api, clock, fake_server):
     assert await events("server.host_key_mismatch") == []
 
 
-@pytest.mark.parametrize(
-    ("username", "reason", "statuses"),
-    [
-        ("megoo-docker", "account_in_docker_group", ("passed", "passed", "passed", "failed")),
-        ("megoo-root", "account_is_root", ("passed", "passed", "failed", "passed")),
-    ],
-)
-async def test_the_two_wrong_accounts_fail(api, clock, fake_server, username, reason, statuses):
+async def connection_test_as(api, clock, fake_server, username: str):
+    """Pins the fake server's key, then tests the connection as `username`."""
     server = await ssh_server(fake_server)
     async with signed_in(api, clock, OWNER, "owner") as (_, client):
         await pin_host_key(client, server.id)
-        patched = await client.patch(f"/api/servers/{server.id}", json={"connection_settings": {"username": username}})
-        assert patched.status_code == 200, patched.text
-        response = await client.post(f"/api/servers/{server.id}/connection-test")
+        if username != "megoo":
+            settings = {"connection_settings": {"username": username}}
+            patched = await client.patch(f"/api/servers/{server.id}", json=settings)
+            assert patched.status_code == 200, patched.text
+        return await client.post(f"/api/servers/{server.id}/connection-test")
+
+
+@pytest.mark.parametrize(
+    ("username", "reason", "statuses"),
+    [
+        ("megoo-docker", "account_in_docker_group", (P, P, P, F, F, F, N)),
+        ("megoo-root", "account_is_root", (P, P, F, P, F, P, F)),
+        ("megoo-nologs", "account_not_in_log_groups", (P, P, P, P, F, P, P)),
+        ("megoo-nosudo", "sudo_checker_missing", (P, P, P, P, P, F, N)),
+        ("megoo-wide", "sudo_too_wide", (P, P, P, P, P, P, F)),
+    ],
+)
+async def test_the_wrong_accounts_fail(api, clock, fake_server, username, reason, statuses):
+    response = await connection_test_as(api, clock, fake_server, username)
 
     assert response.status_code == 200, response.text
     assert response.json() == {"ok": False, "reason": reason, "checks": checks(*statuses)}
@@ -68,6 +88,39 @@ async def test_the_two_wrong_accounts_fail(api, clock, fake_server, username, re
     assert tested.result_detail["username"] == username
     assert tested.result_detail["reason"] == reason
     assert tested.result_detail["checks"] == dict(zip(CHECKS, statuses, strict=True))
+
+
+async def test_an_older_megoo_ctl_fails_the_checker(api, clock, fake_server, monkeypatch):
+    monkeypatch.setattr("app.inventory.connection.ctl_version", lambda: 2)
+    response = await connection_test_as(api, clock, fake_server, "megoo")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": False, "reason": "sudo_checker_missing", "checks": checks(P, P, P, P, P, F, P)}
+
+
+ROOM = (1000, ["adm", "systemd-journal"])
+
+
+@pytest.mark.parametrize(
+    ("account", "setup", "reason"),
+    [
+        ((0, ["docker"]), Setup(None, False), "account_is_root"),
+        ((1000, ["docker"]), Setup(None, None), "account_in_docker_group"),
+        ((1000, ["adm"]), Setup(None, False), "account_not_in_log_groups"),
+        (ROOM, Setup(None, False), "sudo_checker_missing"),
+        (ROOM, Setup(1, False), "sudo_too_wide"),
+        (ROOM, Setup(1, None), "account_check_failed"),
+        (ROOM, Setup(1, True), None),
+    ],
+)
+def test_the_reason_order(account, setup, reason):
+    assert _reason(account, setup, bundled=1) == reason
+
+
+def test_an_unreadable_list_is_not_checked():
+    (*_, last) = _checks(None, ROOM, Setup(1, None))
+    assert last.status == N
+    assert _reason(ROOM, Setup(1, None), bundled=1) == "account_check_failed"
 
 
 async def test_409_before_a_key_is_pinned(api, clock, fake_server):
@@ -95,7 +148,7 @@ async def test_a_swapped_key_is_refused_flagged_and_blocks_the_next_test(api, cl
     assert response.json() == {
         "ok": False,
         "reason": "host_key_changed",
-        "checks": checks("failed", "not_run", "not_run", "not_run"),
+        "checks": checks(F, *[N] * 6),
     }
     presented = fingerprint(fake_server.host_key())
     assert after["host_key_state"] == "changed"

@@ -28,6 +28,7 @@ from app.inventory.connection_schemas import (
 from app.inventory.models import Server
 from app.inventory.server_schemas import ServerOut
 from app.ssh import client, hostkeys
+from app.ssh.setup import ctl_version
 
 
 class ConnectionRefused(Exception):
@@ -239,37 +240,71 @@ _SIGN_IN_CHECKS: dict[str, tuple[CheckStatus, CheckStatus]] = {
 }
 
 
-def _checks(reason: str | None, account: tuple[int, list[str]] | None) -> list[Check]:
-    """The four checks of an outcome, in CheckName order. `account` is the uid and groups, when they were read."""
+LOG_GROUPS = frozenset({"systemd-journal", "adm"})
+
+
+def _passed(ok: bool) -> CheckStatus:
+    return "passed" if ok else "failed"
+
+
+def _checks(reason: str | None, account: tuple[int, list[str]] | None, sudo: client.Setup | None) -> list[Check]:
+    """The seven checks of an outcome, in CheckName order. `account` and `sudo` are what was read, or None."""
     statuses: tuple[CheckStatus, ...] = _SIGN_IN_CHECKS.get(reason, ("passed", "passed"))
     if account is None:
-        statuses += ("not_run", "not_run")
+        statuses += ("not_run",) * 3
     else:
         uid, groups = account
-        statuses += ("failed" if uid == 0 else "passed", "failed" if "docker" in groups else "passed")
+        statuses += (_passed(uid != 0), _passed("docker" not in groups), _passed(LOG_GROUPS <= set(groups)))
+    if sudo is None:
+        statuses += ("not_run",) * 2
+    else:
+        statuses += (
+            _passed(sudo.version is not None and sudo.version >= ctl_version()),
+            "not_run" if sudo.limited is None else _passed(sudo.limited),
+        )
     return [Check(name=name, status=status) for name, status in zip(get_args(CheckName), statuses, strict=True)]
 
 
+def _reason(account: tuple[int, list[str]], sudo: client.Setup, bundled: int) -> str | None:
+    """The first failed check, in the order root, docker, log groups, checker, too wide; an unreadable sudo list with
+    a working checker is account_check_failed."""
+    uid, groups = account
+    if uid == 0:
+        return "account_is_root"
+    if "docker" in groups:
+        return "account_in_docker_group"
+    if not LOG_GROUPS <= set(groups):
+        return "account_not_in_log_groups"
+    if sudo.version is None or sudo.version < bundled:
+        return "sudo_checker_missing"
+    if sudo.limited is False:
+        return "sudo_too_wide"
+    if sudo.limited is None:
+        return "account_check_failed"
+    return None
+
+
 async def test_connection(db: AsyncSession, request: Request, user: User, server_id: UUID) -> ConnectionTestResult:
-    """Signs in as the server's account and checks it is neither root nor in the docker group. A failed test answers
-    200 with its reason; a server that cannot be tried (not Linux, not pinned, flagged) answers 409."""
+    """Signs in as the server's account and runs the seven checks: the host key, the platform key, not root, not in
+    the docker group, in the log groups, megoo-ctl answering through sudo, and sudo allowing only megoo-ctl. A failed
+    test answers 200 with its reason; a server that cannot be tried (not Linux, not pinned, flagged) answers 409."""
     server = await _load(db, server_id)
     actor, source = _who(request, user)
     username = server.connection_settings["username"]
     account: tuple[int, list[str]] | None = None
+    sudo: client.Setup | None = None
     try:
         async with open_connection(server, actor=actor, source=source) as conn:
             account = await client.account_of(conn)
+            sudo = await client.setup_of(conn)
     except ConnectionRefused as refused:
         raise HTTPException(409, refused.detail) from refused
     except client.SshFailure as failure:
         reason: str | None = failure.reason
     else:
-        uid, groups = account
-        # When both fail, the reason is root.
-        reason = "account_is_root" if uid == 0 else "account_in_docker_group" if "docker" in groups else None
+        reason = _reason(account, sudo, ctl_version())
 
-    checks = _checks(reason, account)
+    checks = _checks(reason, account, sudo)
     detail = {
         "username": username,
         "address": server.address,
