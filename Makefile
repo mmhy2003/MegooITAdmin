@@ -6,7 +6,7 @@
 # with the throwaway values of tools/stacks/<STACK>.env. Those never read .env.
 
 .DEFAULT_GOAL := help
-.PHONY: help .env up down logs migrate shell-backend migration test test-security release-check setup-code reset-mfa reset-password
+.PHONY: help .env up down logs migrate shell-backend migration test test-security release-check setup-code reset-mfa reset-password ssh-public-key fake-server-swap
 
 RUNNER := megoocolab-runner
 VERSIONS := backend/migrations/versions
@@ -15,7 +15,8 @@ ifeq ($(STACK),)
 COMPOSE := docker compose
 ENV_FILE := .env
 else ifeq ($(filter-out dev e2e,$(STACK))$(word 2,$(STACK)),)
-COMPOSE := docker compose -p megooitadmin-$(STACK) --env-file tools/stacks/$(STACK).env
+# The dev and e2e stacks also run the fake server (tools/fake-server), on the servers network.
+COMPOSE := docker compose -p megooitadmin-$(STACK) --env-file tools/stacks/$(STACK).env -f docker-compose.yml -f tools/fake-server/docker-compose.stack.yml
 ENV_FILE :=
 else
 $(error STACK must be dev or e2e)
@@ -32,12 +33,14 @@ help:
 	@echo "  setup-code             Print a new one-time setup code (only before the first account exists)"
 	@echo "  reset-mfa email=<email>       Make <email> set up a new authenticator at the next sign-in"
 	@echo "  reset-password email=<email>  Set a new password for <email> and unlock the account"
+	@echo "  ssh-public-key         Print the platform's SSH public key, for the megoo account's authorized_keys"
+	@echo "  fake-server-swap       Give the stack's fake server new host keys (needs STACK=dev or STACK=e2e)"
 	@echo "  migration name=<name>  Create the next numbered migration on the scratch database"
 	@echo "  test                   Run every backend, frontend and stack check"
 	@echo "  test-security          Run the security suites"
 	@echo "  release-check          Check the versions and the release plan"
 	@echo ""
-	@echo "Without STACK, up, down, logs, migrate, shell-backend, setup-code, reset-mfa and reset-password act on the real instance."
+	@echo "Without STACK, up, down, logs, migrate, shell-backend, setup-code, reset-mfa, reset-password and ssh-public-key act on the real instance."
 
 # Only the real instance reads .env. A missing file is created with both passwords and AUTH_SECRET_KEY. A file
 # without POSTGRES_API_PASSWORD or AUTH_SECRET_KEY gets the missing line appended. No line is ever changed or removed.
@@ -73,6 +76,9 @@ help:
 
 up: $(ENV_FILE)
 	$(COMPOSE) up -d --build --wait --wait-timeout 300
+ifneq ($(STACK),)
+	$(COMPOSE) exec -T backend python -m app.ssh.cli public-key | $(COMPOSE) exec -T fake-server authorize-key
+endif
 
 # Never with -v: the database volume holds the data.
 down:
@@ -98,6 +104,14 @@ reset-mfa:
 reset-password:
 	@case "$$email" in ''|*[!A-Za-z0-9.@_+-]*|*@*@*) echo "make reset-password needs an email, for example: make reset-password email=owner@example.com" >&2; exit 1;; esac
 	$(COMPOSE) exec backend python -m app.auth.cli reset-password "$(email)"
+
+ssh-public-key:
+	$(COMPOSE) exec -T backend python -m app.ssh.cli public-key
+
+# Only a dev or e2e stack has a fake server.
+fake-server-swap:
+	@if [ -z "$(STACK)" ]; then echo "make fake-server-swap needs STACK=dev or STACK=e2e: the real instance has no fake server." >&2; exit 1; fi
+	$(COMPOSE) exec -T fake-server swap-host-key
 
 # The highest migration number plus one, with four digits. The leading 1 keeps 0008 from being read as octal.
 LAST_MIGRATION = $(lastword $(sort $(foreach file,$(notdir $(wildcard $(VERSIONS)/[0-9][0-9][0-9][0-9]_*.py)),$(firstword $(subst _, ,$(file))))))

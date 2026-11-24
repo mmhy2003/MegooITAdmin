@@ -1,0 +1,13 @@
+# The fake server of the stack set and of make up STACK=dev|e2e, on the servers network, without a published
+# port. The real instance never gets it. Paths are relative to the repository root, where docker-compose.yml is.
+services:
+  fake-server:
+    build: ./tools/fake-server
+    restart: unless-stopped
+    networks: [servers]
+    healthcheck:
+      test: ["CMD-SHELL", "ssh-keyscan -T 2 -t ed25519 127.0.0.1 2>/dev/null | grep -q ssh-ed25519"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
