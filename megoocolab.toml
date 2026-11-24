@@ -43,8 +43,8 @@ FRONTEND_IMAGE = "megooitadmin-frontend:${MEGOO_SERVICES_PROJECT}"
 FRONTEND_URL = "http://localhost:${WEB_PORT}"
 
 [services.stack]
-description = "The whole Compose stack built from this checkout (caddy, frontend, backend, db) and the fake sshd server, for pytest -m stack"
-compose = ["docker-compose.yml", "tools/fake-server/docker-compose.stack.yml"]
+description = "The whole Compose stack built from this checkout (docker-compose.build.yml: caddy, frontend, backend, db) and the fake sshd server, for pytest -m stack"
+compose = ["docker-compose.yml", "docker-compose.build.yml", "tools/fake-server/docker-compose.stack.yml"]
 ports = ["STACK_PORT"]
 
 [services.stack.env]
@@ -53,3 +53,5 @@ POSTGRES_PASSWORD = "megooitadmin"
 POSTGRES_API_PASSWORD = "megooitadminapi"
 AUTH_SECRET_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 STACK_URL = "http://localhost:${STACK_PORT}"
+# Each check builds and starts its own images, under its own project name.
+MEGOOITADMIN_VERSION = "${MEGOO_SERVICES_PROJECT}"

@@ -15,8 +15,9 @@ ifeq ($(STACK),)
 COMPOSE := docker compose
 ENV_FILE := .env
 else ifeq ($(filter-out dev e2e,$(STACK))$(word 2,$(STACK)),)
-# The dev and e2e stacks also run the fake server (tools/fake-server), on the servers network.
-COMPOSE := docker compose -p megooitadmin-$(STACK) --env-file tools/stacks/$(STACK).env -f docker-compose.yml -f tools/fake-server/docker-compose.stack.yml
+# The dev and e2e stacks build the images from this checkout (docker-compose.build.yml) and also run the fake
+# server (tools/fake-server), on the servers network.
+COMPOSE := docker compose -p megooitadmin-$(STACK) --env-file tools/stacks/$(STACK).env -f docker-compose.yml -f docker-compose.build.yml -f tools/fake-server/docker-compose.stack.yml
 ENV_FILE :=
 else
 $(error STACK must be dev or e2e)

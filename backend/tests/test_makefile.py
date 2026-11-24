@@ -12,7 +12,7 @@ import pytest
 MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
 UP = "up -d --build --wait --wait-timeout 300"
 TARGETS = ["up", "down", "logs", "migrate", "shell-backend", "migration", "test", "test-security", "release-check", "setup-code", "reset-mfa", "reset-password", "ssh-public-key", "fake-server-swap"]
-STACK_FILES = "-f docker-compose.yml -f tools/fake-server/docker-compose.stack.yml"
+STACK_FILES = "-f docker-compose.yml -f docker-compose.build.yml -f tools/fake-server/docker-compose.stack.yml"
 
 
 @pytest.fixture
