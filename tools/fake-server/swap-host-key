@@ -1,0 +1,17 @@
+#!/bin/sh
+# Makes new host keys, has sshd (PID 1) re-execute itself with SIGHUP so it loads them, and waits until it serves
+# the new Ed25519 key.
+set -e
+rm -f /etc/ssh/ssh_host_*
+ssh-keygen -A > /dev/null
+new=$(cut -d ' ' -f 2 /etc/ssh/ssh_host_ed25519_key.pub)
+kill -HUP 1
+for _ in $(seq 1 50); do
+  if ssh-keyscan -T 2 -t ed25519 127.0.0.1 2> /dev/null | grep -qF "$new"; then
+    echo "The fake server has new host keys."
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "sshd did not load the new host keys." >&2
+exit 1

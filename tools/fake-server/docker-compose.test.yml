@@ -1,0 +1,12 @@
+# The fake server for backend pytest (the test set in megoocolab.toml): sshd on 127.0.0.1:${SSH_PORT}.
+# Paths are relative to tools/test-services, the first file of the set.
+services:
+  fake-server:
+    build: ../fake-server
+    ports:
+      - "127.0.0.1:${SSH_PORT}:22"
+    healthcheck:
+      test: ["CMD-SHELL", "ssh-keyscan -T 2 -t ed25519 127.0.0.1 2>/dev/null | grep -q ssh-ed25519"]
+      interval: 2s
+      timeout: 5s
+      retries: 60

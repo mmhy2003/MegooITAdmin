@@ -118,6 +118,14 @@ async def clean_auth(empty_audit_log):
         await session.commit()
 
 
+@pytest.fixture(scope="session")
+def fake_server():
+    """The fake sshd of the test set, with this run's platform key authorized for its three accounts."""
+    from fake_server import start
+
+    return start()
+
+
 class FakeClock:
     """The time auth code reads through app.auth.clock.now(). It moves only when a test advances it."""
 
