@@ -49,7 +49,8 @@ export const CONNECTION_REASONS: Record<ConnectionReason, { title: string; advic
   },
   key_refused: {
     title: "The server refused the platform's key.",
-    advice: "Add the platform's public key to the authorized_keys of the login account (see Platform access).",
+    advice:
+      "Run the setup script on the server with the platform's key (see Platform access), and check that --from holds the address the server sees MegooITAdmin connect from.",
   },
   account_is_root: {
     title: "The login account is root.",
@@ -58,6 +59,18 @@ export const CONNECTION_REASONS: Record<ConnectionReason, { title: string; advic
   account_in_docker_group: {
     title: "The login account is in the docker group.",
     advice: "Remove it from the docker group: that group is as strong as root.",
+  },
+  account_not_in_log_groups: {
+    title: "The login account cannot read the logs.",
+    advice: "Run the setup script on the server again: it adds the account to systemd-journal and adm.",
+  },
+  sudo_checker_missing: {
+    title: "megoo-ctl is missing or out of date.",
+    advice: "Run the setup script on the server again: it installs megoo-ctl and the sudo rule that allows it.",
+  },
+  sudo_too_wide: {
+    title: "The login account may run more than megoo-ctl with sudo.",
+    advice: "Remove its other sudo rights (the sudo or wheel group, other files in /etc/sudoers.d), then test again.",
   },
   account_check_failed: {
     title: "The account could not be checked.",

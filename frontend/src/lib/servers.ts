@@ -36,9 +36,19 @@ export type ConnectionReason =
   | "key_refused"
   | "account_is_root"
   | "account_in_docker_group"
+  | "account_not_in_log_groups"
+  | "sudo_checker_missing"
+  | "sudo_too_wide"
   | "account_check_failed"
   | "ssh_error";
-export type CheckName = "host_key" | "platform_key" | "not_root" | "not_in_docker_group";
+export type CheckName =
+  | "host_key"
+  | "platform_key"
+  | "not_root"
+  | "not_in_docker_group"
+  | "in_log_groups"
+  | "sudo_checker"
+  | "sudo_limited";
 export type CheckStatus = "passed" | "failed" | "not_run";
 export type ConnectionCheck = { name: CheckName; status: CheckStatus };
 export type ConnectionTestResult = { ok: boolean; reason: ConnectionReason | null; checks: ConnectionCheck[] };
@@ -53,6 +63,9 @@ export const CHECK_LABELS: Record<CheckName, string> = {
   platform_key: "The server accepts the platform's key",
   not_root: "The account is not root",
   not_in_docker_group: "The account is not in the docker group",
+  in_log_groups: "The account is in systemd-journal and adm",
+  sudo_checker: "megoo-ctl answers through sudo",
+  sudo_limited: "sudo allows only megoo-ctl",
 };
 export const CHECK_STATUS_LABELS: Record<CheckStatus, string> = {
   passed: "Passed",

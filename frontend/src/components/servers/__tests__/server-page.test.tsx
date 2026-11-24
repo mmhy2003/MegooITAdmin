@@ -56,6 +56,9 @@ const WORKS: ConnectionTestResult = {
     { name: "platform_key", status: "passed" },
     { name: "not_root", status: "passed" },
     { name: "not_in_docker_group", status: "passed" },
+    { name: "in_log_groups", status: "passed" },
+    { name: "sudo_checker", status: "passed" },
+    { name: "sudo_limited", status: "passed" },
   ],
 };
 
@@ -259,7 +262,7 @@ describe("ServerPage", () => {
     await user.click(await screen.findByRole("button", { name: "Test connection" }));
 
     expect(await screen.findByText("Connection works")).toBeInTheDocument();
-    expect(screen.getAllByText("Passed")).toHaveLength(4);
+    expect(screen.getAllByText("Passed")).toHaveLength(7);
     expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/connection-test", { method: "POST" });
     expect(vi.mocked(apiFetch).mock.calls.filter(([path]) => path === "/servers/s-1")).toHaveLength(2);
   });
