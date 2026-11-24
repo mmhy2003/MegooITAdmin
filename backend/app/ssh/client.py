@@ -23,6 +23,10 @@ HOST_KEY_ALGS = [
 ]
 
 
+# A signed-in connection, the type other modules name so that only this one uses asyncssh's connection API.
+Connection = asyncssh.SSHClientConnection
+
+
 class SshFailure(Exception):
     reason = "ssh_error"
 

@@ -7,8 +7,6 @@ from contextlib import asynccontextmanager
 from typing import get_args
 from uuid import UUID
 
-import asyncssh
-
 from fastapi import HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -213,7 +211,7 @@ async def _flag_changed(server: Server, presented: str | None, *, actor: Actor, 
 @asynccontextmanager
 async def open_connection(
     server: Server, *, actor: Actor, source: Source | None
-) -> AsyncIterator[asyncssh.SSHClientConnection]:
+) -> AsyncIterator[client.Connection]:
     """The door to a server for every feature: signs in with the platform's key, only with the pinned host key.
     Refuses a non-Linux server, one without a pinned key and one that is flagged (ConnectionRefused). When the
     server presents another key, it flags the server and re-raises client.HostKeyChanged."""
