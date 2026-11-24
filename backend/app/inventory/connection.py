@@ -1,7 +1,13 @@
-"""What the Owner and the Admins of a group do with a server's SSH host key, between the routes, the SSH client and
-the tables. The backend pins only a key it fetched itself, and never holds a row lock while it talks to a server."""
+"""What the Owner and the Admins of a group do with a server's SSH host key, and the connection test of anyone with
+Connect SSH, between the routes, the SSH client and the tables. The backend pins only a key it fetched itself, and
+never holds a row lock while it talks to a server. open_connection() is the only door to a server."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import get_args
 from uuid import UUID
+
+import asyncssh
 
 from fastapi import HTTPException, Request
 from sqlalchemy import func, select
@@ -11,8 +17,16 @@ from app.access.permissions import Access
 from app.audit import Actor, Event, Result, Source, record, source_of
 from app.auth.models import User
 from app.auth.service import actor_of
+from app.core.db import SessionLocal
 from app.inventory import actions, servers
-from app.inventory.connection_schemas import HostKeyFetchResult, HostKeyPin
+from app.inventory.connection_schemas import (
+    Check,
+    CheckName,
+    CheckStatus,
+    ConnectionTestResult,
+    HostKeyFetchResult,
+    HostKeyPin,
+)
 from app.inventory.models import Server
 from app.inventory.server_schemas import ServerOut
 from app.ssh import client, hostkeys
@@ -137,3 +151,104 @@ async def pin_host_key(
     # record() last: it holds the audit chain lock until the commit.
     await record(db, event)
     return await servers.get_server(db, access, server_id)
+
+
+async def _flag_changed(server: Server, presented: str | None, *, actor: Actor, source: Source | None) -> None:
+    """Blocks the server and records server.host_key_mismatch in a transaction of its own, so a caller's rollback
+    keeps both. `presented` is the key the server presented, or None when it could not be read."""
+    async with SessionLocal() as session:
+        row = await _load(session, server.id, lock=True)
+        row.host_key_changed_at = func.now()
+        row.host_key_offered = presented
+        row.host_key_offered_at = func.now() if presented is not None else None
+        await session.flush()
+        detail = {
+            "pinned_fingerprint": hostkeys.fingerprint(row.host_key),
+            "presented_fingerprint": None if presented is None else hostkeys.fingerprint(presented),
+            "address": row.address,
+            "port": row.port,
+        }
+        event = _event(
+            row, actions.SERVER_HOST_KEY_MISMATCH, actor=actor, source=source, result=Result.FAILURE, detail=detail
+        )
+        # record() last: it holds the audit chain lock until the commit.
+        await record(session, event)
+        await session.commit()
+
+
+@asynccontextmanager
+async def open_connection(
+    server: Server, *, actor: Actor, source: Source | None
+) -> AsyncIterator[asyncssh.SSHClientConnection]:
+    """The door to a server for every feature: signs in with the platform's key, only with the pinned host key.
+    Refuses a non-Linux server, one without a pinned key and one that is flagged (ConnectionRefused). When the
+    server presents another key, it flags the server and re-raises client.HostKeyChanged."""
+    if server.os != "linux":
+        raise ConnectionRefused("not_an_ssh_server")
+    if server.host_key is None:
+        raise ConnectionRefused("host_key_not_pinned")
+    if server.host_key_changed_at is not None:
+        raise ConnectionRefused("host_key_changed")
+    username = server.connection_settings["username"]
+    try:
+        async with client.connect(server.address, server.port, username, server.host_key) as conn:
+            yield conn
+    except client.HostKeyChanged as changed:
+        await _flag_changed(server, changed.presented, actor=actor, source=source)
+        raise
+
+
+# The host_key and platform_key checks of a failure before the account check; any other outcome passed both.
+_SIGN_IN_CHECKS: dict[str, tuple[CheckStatus, CheckStatus]] = {
+    "unreachable": ("not_run", "not_run"),
+    "ssh_error": ("not_run", "not_run"),
+    "host_key_changed": ("failed", "not_run"),
+    "key_refused": ("passed", "failed"),
+}
+
+
+def _checks(reason: str | None, account: tuple[int, list[str]] | None) -> list[Check]:
+    """The four checks of an outcome, in CheckName order. `account` is the uid and groups, when they were read."""
+    statuses: tuple[CheckStatus, ...] = _SIGN_IN_CHECKS.get(reason, ("passed", "passed"))
+    if account is None:
+        statuses += ("not_run", "not_run")
+    else:
+        uid, groups = account
+        statuses += ("failed" if uid == 0 else "passed", "failed" if "docker" in groups else "passed")
+    return [Check(name=name, status=status) for name, status in zip(get_args(CheckName), statuses, strict=True)]
+
+
+async def test_connection(db: AsyncSession, request: Request, user: User, server_id: UUID) -> ConnectionTestResult:
+    """Signs in as the server's account and checks it is neither root nor in the docker group. A failed test answers
+    200 with its reason; a server that cannot be tried (not Linux, not pinned, flagged) answers 409."""
+    server = await _load(db, server_id)
+    actor, source = _who(request, user)
+    username = server.connection_settings["username"]
+    account: tuple[int, list[str]] | None = None
+    try:
+        async with open_connection(server, actor=actor, source=source) as conn:
+            account = await client.account_of(conn)
+    except ConnectionRefused as refused:
+        raise HTTPException(409, refused.detail) from refused
+    except client.SshFailure as failure:
+        reason: str | None = failure.reason
+    else:
+        uid, groups = account
+        # When both fail, the reason is root.
+        reason = "account_is_root" if uid == 0 else "account_in_docker_group" if "docker" in groups else None
+
+    checks = _checks(reason, account)
+    detail = {
+        "username": username,
+        "address": server.address,
+        "port": server.port,
+        "reason": reason,
+        "checks": {check.name: check.status for check in checks},
+    }
+    result = Result.SUCCESS if reason is None else Result.FAILURE
+    event = _event(
+        server, actions.SERVER_CONNECTION_TESTED, actor=actor, source=source, result=result, detail=detail
+    )
+    # record() last: it holds the audit chain lock until the commit.
+    await record(db, event)
+    return ConnectionTestResult(ok=reason is None, reason=reason, checks=checks)
