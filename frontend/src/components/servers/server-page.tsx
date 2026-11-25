@@ -3,9 +3,10 @@
 import { Pencil, PlugZap, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { formatTime } from "@/components/profile/profile-page";
 import { ConnectionResult } from "@/components/servers/connection-result";
+import { Field } from "@/components/servers/field";
 import { HostKeyDialog } from "@/components/servers/host-key-dialog";
 import { PlatformAccessCard } from "@/components/servers/platform-access-card";
 import { RemoveServerDialog } from "@/components/servers/remove-server-dialog";
@@ -310,15 +311,6 @@ export function ServerPage({ serverId }: { serverId: string }) {
         onOpenChange={setRemoving}
         onRemoved={() => router.push("/servers")}
       />
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd>{children}</dd>
     </div>
   );
 }
