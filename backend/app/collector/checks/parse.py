@@ -153,3 +153,57 @@ def containers(lines: list[bytes]) -> ContainersResult:
         if seen is not None and len(kept) < MAX_CONTAINERS:
             kept.append(seen)
     return ContainersResult(containers=tuple(kept), total=total, running=running, not_running=total - running)
+
+
+class Proc(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pid: int
+    name: str
+    user: str
+    cpu_percent: float
+    memory_bytes: int
+
+
+class ProcessesResult(CheckResult):
+    # Process snapshots are not metrics (PRD §13): only the latest top five are kept, by name.
+    by_cpu: tuple[Proc, ...]
+    by_memory: tuple[Proc, ...]
+
+
+TOP = 5
+
+
+def _hz(line: bytes) -> int:
+    first = json.loads(line)
+    hz = first.get("hz") if isinstance(first, dict) else None
+    if type(hz) is not int or hz <= 0:
+        raise ValueError("no clock ticks per second")
+    return hz
+
+
+def _count(text: str, least: int) -> int | None:
+    return int(text) if text.isascii() and text.isdigit() and int(text) >= least else None
+
+
+def _proc(line: bytes, hz: int) -> Proc | None:
+    fields = line.decode(errors="replace").split("\t")
+    if len(fields) != 5:
+        return None
+    pid, ticks, rss_kb = _count(fields[0], 1), _count(fields[2], 0), _count(fields[3], 0)
+    user, name = clean(fields[1]), clean(fields[4])
+    if pid is None or ticks is None or rss_kb is None or not user or not name:
+        return None
+    return Proc(pid=pid, name=name, user=user, cpu_percent=ticks / hz * 100, memory_bytes=rss_kb * 1024)
+
+
+def processes(lines: list[bytes]) -> ProcessesResult:
+    """{"hz":N}, then pid<TAB>user<TAB>ticks<TAB>rss_kB<TAB>name for each process. Command lines are never read."""
+    if not lines:
+        raise ValueError("no clock ticks per second")
+    hz = _hz(lines[0])
+    procs = [proc for line in lines[1:] if (proc := _proc(line, hz)) is not None]
+    return ProcessesResult(
+        by_cpu=tuple(sorted(procs, key=lambda proc: (-proc.cpu_percent, proc.pid))[:TOP]),
+        by_memory=tuple(sorted(procs, key=lambda proc: (-proc.memory_bytes, proc.pid))[:TOP]),
+    )

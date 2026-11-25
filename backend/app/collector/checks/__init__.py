@@ -26,4 +26,7 @@ def script_of(kind: str) -> bytes:
     return Path(__file__).with_name(f"{kind}.sh").read_bytes()
 
 
-CHECKS: tuple[Check, ...] = (Check("containers", 30, 30, script_of("containers"), parse.containers),)
+CHECKS: tuple[Check, ...] = (
+    Check("containers", 30, 30, script_of("containers"), parse.containers),
+    Check("processes", 30, 30, script_of("processes"), parse.processes),
+)

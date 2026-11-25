@@ -262,3 +262,126 @@ def test_containers_through_read() -> None:
     assert outcome.status == "ok"
     assert isinstance(outcome.result, parse.ContainersResult)
     assert outcome.result.running == 2
+
+
+HZ = b'{"hz":100}'
+
+
+def _proc(pid: int | str, ticks: int | str = 0, rss_kb: int | str = 0, name: str = "proc", user: str = "root") -> bytes:
+    return f"{pid}\t{user}\t{ticks}\t{rss_kb}\t{name}".encode()
+
+
+def test_processes_reads_cpu_and_memory() -> None:
+    result = parse.processes([HZ, _proc(42, ticks=150, rss_kb=2048, name="nginx", user="www-data")])
+
+    assert result.by_cpu == (
+        parse.Proc(pid=42, name="nginx", user="www-data", cpu_percent=150.0, memory_bytes=2048 * 1024),
+    )
+    assert result.by_memory == result.by_cpu
+
+
+def test_processes_uses_hz() -> None:
+    result = parse.processes([b'{"hz":250}', _proc(1, ticks=50)])
+
+    assert result.by_cpu[0].cpu_percent == 20.0
+
+
+def test_processes_orders_by_cpu_and_by_memory_with_ties_by_pid() -> None:
+    lines = [
+        HZ,
+        _proc(9, ticks=10, rss_kb=100),
+        _proc(3, ticks=30, rss_kb=100),
+        _proc(5, ticks=10, rss_kb=300),
+        _proc(7, ticks=0, rss_kb=200),
+    ]
+
+    result = parse.processes(lines)
+
+    assert [proc.pid for proc in result.by_cpu] == [3, 5, 9, 7]
+    assert [proc.pid for proc in result.by_memory] == [5, 7, 3, 9]
+
+
+def test_processes_keeps_five() -> None:
+    lines = [HZ, *(_proc(pid, ticks=pid, rss_kb=10 - pid) for pid in range(1, 7))]
+
+    result = parse.processes(lines)
+
+    assert [proc.pid for proc in result.by_cpu] == [6, 5, 4, 3, 2]
+    assert [proc.pid for proc in result.by_memory] == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        _proc("abc"),
+        _proc(0),
+        _proc(-1),
+        _proc(2, ticks=-1),
+        _proc(2, ticks="x"),
+        _proc(2, rss_kb=-1),
+        _proc(2, name="bad\x07name"),
+        _proc(2, name=""),
+        _proc(2, name="x" * 256),
+        _proc(2, user="bad\x07user"),
+        b"2\troot\t0\t0",
+        b"2\troot\t0\t0\tname\textra",
+        b"\xff",
+    ],
+    ids=[
+        "letters-pid",
+        "zero-pid",
+        "negative-pid",
+        "negative-ticks",
+        "letters-ticks",
+        "negative-rss",
+        "control-in-name",
+        "empty-name",
+        "long-name",
+        "control-in-user",
+        "four-fields",
+        "six-fields",
+        "bad-utf8",
+    ],
+)
+def test_processes_a_bad_row_is_skipped(line: bytes) -> None:
+    result = parse.processes([HZ, line, _proc(1)])
+
+    assert [proc.pid for proc in result.by_cpu] == [1]
+
+
+def test_processes_a_name_with_spaces_is_kept_whole() -> None:
+    result = parse.processes([HZ, _proc(1, name="kworker/0:1 events")])
+
+    assert result.by_cpu[0].name == "kworker/0:1 events"
+
+
+def test_processes_with_none_is_empty() -> None:
+    result = parse.processes([HZ])
+
+    assert (result.by_cpu, result.by_memory) == ((), ())
+
+
+def test_processes_has_no_readings() -> None:
+    assert parse.processes([HZ, _proc(1, ticks=5)]).readings(datetime.now(UTC)) == ()
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [[], [_proc(1)], [b'{"hz":0}'], [b'{"hz":-100}'], [b'{"hz":"100"}'], [b'{"hz":1.5}'], [b'{"hz":true}'], [b"[100]"]],
+    ids=["empty", "no-hz", "zero", "negative", "string", "float", "bool", "list"],
+)
+def test_processes_without_a_good_hz_line_fails(lines: list[bytes]) -> None:
+    with pytest.raises(ValueError):
+        parse.processes(lines)
+
+
+def test_processes_a_missing_hz_line_fails_through_read() -> None:
+    assert read(parse.processes, _done(OK + _proc(1) + b"\n")) == Outcome("failed")
+
+
+def test_processes_through_read() -> None:
+    outcome = read(parse.processes, _done(OK + HZ + b"\n" + _proc(1, ticks=150) + b"\n"))
+
+    assert outcome.status == "ok"
+    assert isinstance(outcome.result, parse.ProcessesResult)
+    assert outcome.result.by_cpu[0].cpu_percent == 150.0
