@@ -1,18 +1,28 @@
 """Shared helpers of the collector tests: a server pinned to the fake server, what the collector wrote, and waiting."""
 
 import asyncio
+import contextlib
 import inspect
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from valkey.asyncio import Valkey
 
+from app.collector.state import StatusBook
+from app.collector.stream import Publisher, Stream, Timings
+from app.collector.writer import Writer
 from app.inventory.models import Server, ServerStatus
 from app.metrics.models import Metric
 from auth_helpers import make_group, make_server
 from conftest import owner_session
+
+# The test servers sample every second, so the watchdog waits 3 s: a 1-second one would fire between two samples.
+FAST = Timings(no_sample_after=3.0, backoff_first=0.2, backoff_max=1.0, jitter=0.0)
 
 
 async def pinned_server(
@@ -60,3 +70,25 @@ async def eventually(check: Callable[[], Any], timeout: float = 15.0, every: flo
         if time.monotonic() >= deadline:
             raise AssertionError(f"not within {timeout} s")
         await asyncio.sleep(every)
+
+
+def parts(
+    sessions: async_sessionmaker[AsyncSession], valkey: Valkey | None = None
+) -> tuple[Publisher, Writer, StatusBook]:
+    """What a stream feeds: a publisher (none without valkey), a writer and a status book on these sessions."""
+    return Publisher(valkey), Writer(sessions), StatusBook(sessions)
+
+
+@asynccontextmanager
+async def streaming(stream: Stream, writer: Writer) -> AsyncIterator[None]:
+    """Runs the stream and its writer while inside; leaving stops both and writes what is left."""
+    tasks = [asyncio.create_task(stream.run()), asyncio.create_task(writer.run())]
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await writer.flush()
