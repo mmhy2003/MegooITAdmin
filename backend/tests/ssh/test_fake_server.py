@@ -1,5 +1,6 @@
 import socket
 
+from app.ssh.client import account_of, connect
 from app.ssh.keys import public_key
 
 
@@ -21,6 +22,17 @@ def test_swap_host_key_gives_new_keys_and_sshd_keeps_answering(fake_server):
     assert after != before
     assert after.startswith("ssh-ed25519 ")
     assert banner(fake_server.host, fake_server.port).startswith("SSH-2.0-OpenSSH")
+
+
+async def test_the_host_keys_survive_a_restart(fake_server):
+    before = fake_server.host_key()
+
+    fake_server.restart()
+
+    assert fake_server.host_key() == before
+    async with connect(fake_server.host, fake_server.port, "megoo", before) as conn:
+        uid, _ = await account_of(conn)
+    assert uid != 0
 
 
 FROM = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1,fc00::/7"

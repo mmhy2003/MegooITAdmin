@@ -15,11 +15,11 @@ from app.auth.models import User
 from app.auth.service import actor_of, auth_event
 from app.core.db import flush_refusing
 from app.inventory import actions
-from app.inventory.models import Server, ServerGroup, ServerTag
-from app.inventory.server_schemas import HostKeyOffer, HostKeyState, ServerIn, ServerOut, ServerPatch
+from app.inventory.models import Server, ServerGroup, ServerStatus, ServerTag
+from app.inventory.server_schemas import HostKeyOffer, HostKeyState, Monitoring, ServerIn, ServerOut, ServerPatch
 from app.ssh import hostkeys
 
-FIELDS = ("name", "address", "port", "os", "role", "connection_settings")
+FIELDS = ("name", "address", "port", "os", "role", "connection_settings", "metrics_interval_seconds")
 
 # The constraints a request that won the race past a check runs into.
 REFUSALS = {
@@ -70,7 +70,9 @@ def host_key_state(server: Server) -> HostKeyState:
     return "changed" if server.host_key_changed_at is not None else "pinned"
 
 
-def _out(server: Server, group_name: str, tags: list[str], access: Access) -> ServerOut:
+def _out(
+    server: Server, group_name: str, tags: list[str], access: Access, status: ServerStatus | None = None
+) -> ServerOut:
     state = host_key_state(server)
     offered = None
     if state == "changed" and server.host_key_offered is not None:
@@ -98,6 +100,12 @@ def _out(server: Server, group_name: str, tags: list[str], access: Access) -> Se
         host_key_pinned_at=server.host_key_pinned_at,
         host_key_changed_at=server.host_key_changed_at,
         host_key_offered=offered,
+        metrics_interval_seconds=server.metrics_interval_seconds,
+        monitoring=None
+        if status is None
+        else Monitoring(
+            state=status.state, reason=status.reason, since=status.since, last_sample_at=status.last_sample_at
+        ),
         created_at=server.created_at,
         updated_at=server.updated_at,
         can_manage=access.manages(server.server_group_id),
@@ -124,7 +132,11 @@ async def _group(db: AsyncSession, group_id: UUID) -> ServerGroup:
 
 async def list_servers(db: AsyncSession, access: Access, group_id: UUID | None, tags: list[str]) -> list[ServerOut]:
     """The servers the person sees, by name, in one group when asked, carrying every tag asked for."""
-    query = select(Server, ServerGroup.name).join(ServerGroup, ServerGroup.id == Server.server_group_id)
+    query = (
+        select(Server, ServerGroup.name, ServerStatus)
+        .join(ServerGroup, ServerGroup.id == Server.server_group_id)
+        .outerjoin(ServerStatus, ServerStatus.server_id == Server.id)
+    )
     visible = access.visible_group_ids()
     if visible is not None:
         query = query.where(Server.server_group_id.in_(visible))
@@ -133,8 +145,10 @@ async def list_servers(db: AsyncSession, access: Access, group_id: UUID | None, 
     for tag in {tag.strip().lower() for tag in tags}:
         query = query.where(Server.id.in_(select(ServerTag.server_id).where(ServerTag.tag == tag)))
     rows = (await db.execute(query.order_by(func.lower(Server.name), Server.id))).all()
-    tags_of = await _tags_of(db, [server.id for server, _ in rows])
-    return [_out(server, group_name, tags_of.get(server.id, []), access) for server, group_name in rows]
+    tags_of = await _tags_of(db, [server.id for server, _, _ in rows])
+    return [
+        _out(server, group_name, tags_of.get(server.id, []), access, status) for server, group_name, status in rows
+    ]
 
 
 async def list_tags(db: AsyncSession, access: Access) -> list[str]:
@@ -148,15 +162,16 @@ async def list_tags(db: AsyncSession, access: Access) -> list[str]:
 
 async def get_server(db: AsyncSession, access: Access, server_id: UUID) -> ServerOut:
     """One server. The route's guard has already answered 404 for a server the person does not see."""
-    server, group_name = (
+    server, group_name, status = (
         await db.execute(
-            select(Server, ServerGroup.name)
+            select(Server, ServerGroup.name, ServerStatus)
             .join(ServerGroup, ServerGroup.id == Server.server_group_id)
+            .outerjoin(ServerStatus, ServerStatus.server_id == Server.id)
             .where(Server.id == server_id)
         )
     ).one()
     tags = await _tags_of(db, [server.id])
-    return _out(server, group_name, tags.get(server.id, []), access)
+    return _out(server, group_name, tags.get(server.id, []), access, status)
 
 
 async def create_server(db: AsyncSession, request: Request, user: User, access: Access, body: ServerIn) -> ServerOut:
@@ -170,6 +185,7 @@ async def create_server(db: AsyncSession, request: Request, user: User, access: 
         os=body.os,
         role=body.role,
         connection_settings=body.connection_settings.model_dump(),
+        metrics_interval_seconds=body.metrics_interval_seconds,
     )
     db.add(server)
     await flush_refusing(db, REFUSALS)
@@ -223,6 +239,7 @@ async def update_server(
     db.add_all(ServerTag(server_id=server.id, tag=tag) for tag in set(new_tags) - set(tags))
     await flush_refusing(db, REFUSALS)
     await db.refresh(server)
+    status = await db.scalar(select(ServerStatus).where(ServerStatus.server_id == server.id))
 
     # record() last: it holds the audit chain lock until the commit.
     if changed is not None:
@@ -232,7 +249,7 @@ async def update_server(
         await record(db, _event(request, user, actions.SERVER_MOVED, server, change=moved, detail=detail))
     if tags_changed is not None:
         await record(db, _event(request, user, actions.SERVER_TAGS_CHANGED, server, change=tags_changed))
-    return _out(server, target.name, new_tags, access)
+    return _out(server, target.name, new_tags, access, status)
 
 
 async def delete_server(db: AsyncSession, request: Request, user: User, server_id: UUID) -> None:

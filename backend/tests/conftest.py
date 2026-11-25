@@ -1,8 +1,9 @@
 """Points the app at the test database before any app module is imported.
 
 `megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL, the URL
-the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with. The set also starts
-Valkey and sets TEST_VALKEY_URL, passed on as VALKEY_URL.
+the app serves with, TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with, and
+TEST_DATABASE_COLLECTOR_URL, the collector role's URL. The set also starts Valkey and sets TEST_VALKEY_URL, passed on as
+VALKEY_URL.
 """
 
 import os
@@ -49,6 +50,7 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
     os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
+    os.environ["DATABASE_COLLECTOR_URL"] = _test_url("TEST_DATABASE_COLLECTOR_URL")
     os.environ["VALKEY_URL"] = _required("TEST_VALKEY_URL")
     os.environ["DB_NULL_POOL"] = "true"
     os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
@@ -88,15 +90,17 @@ async def owner_call(sql: str) -> None:
 
 
 def upgrade_to_head() -> None:
-    """Migrates as the owner, then sets the API role's password, as the entrypoint does. Sync: Alembic's env.py
-    runs its own event loop. A downgrade below 0003 drops the API role, so every way back to head goes through here."""
+    """Migrates as the owner, then sets the API and collector roles' passwords, as the entrypoint does. Sync: Alembic's
+    env.py runs its own event loop. A downgrade below 0003 drops the API role, and one below 0009 the collector role,
+    so every way back to head goes through here."""
     from alembic import command
     from alembic.config import Config
 
-    from app.core.db_roles import sync_api_role_password
+    from app.core.db_roles import sync_api_role_password, sync_collector_role_password
 
     command.upgrade(Config(str(ALEMBIC_INI)), "head")
     sync_api_role_password()
+    sync_collector_role_password()
 
 
 @pytest.fixture(scope="session")
@@ -154,6 +158,20 @@ async def clean_auth(empty_audit_log):
         await session.execute(text("DELETE FROM servers"))
         await session.execute(text("DELETE FROM server_groups"))
         await session.commit()
+
+
+@pytest.fixture
+async def collector_sessions(database_at_head, monkeypatch: pytest.MonkeyPatch):
+    """Sessions as megooitadmin_collector, the collector's role. open_connection flags a changed host key through
+    them too, as it does in the collector's process."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(os.environ["DATABASE_COLLECTOR_URL"], poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr("app.inventory.connection.SessionLocal", sessions)
+    yield sessions
+    await engine.dispose()
 
 
 @pytest.fixture(scope="session")

@@ -7,8 +7,8 @@ You need Docker with Compose v2 and GNU Make. On Windows, run `make` from Git Ba
     make up
 
 This creates `.env`, pulls the images of the latest release (`ghcr.io/mmhy2003/megooitadmin-backend` and
-`-frontend`, for amd64 and arm64) and starts Caddy, the frontend, the backend, the database and Valkey, and
-returns once the app answers. It pulls only images that are missing.
+`-frontend`, for amd64 and arm64) and starts Caddy, the frontend, the backend, the collector, the database and
+Valkey, and returns once the app answers. It pulls only images that are missing.
 The app is then at `http://<this host>/`, and `curl http://localhost/api/health` gives `{"status":"ok"}`.
 `make down` stops it and keeps the data; `make` lists every target.
 
@@ -22,11 +22,13 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 - Every sign-in then asks for the password and a code. A session ends after 1 hour without use and 12 hours after
   sign-in (`SESSION_IDLE_MINUTES`, `SESSION_ABSOLUTE_MINUTES`).
 
-- **`.env`.** The first `make up` creates `.env` with two random database passwords. `POSTGRES_PASSWORD` is the
+- **`.env`.** The first `make up` creates `.env` with three random database passwords. `POSTGRES_PASSWORD` is the
   owner's, used only at start-up to migrate. `POSTGRES_API_PASSWORD` belongs to `megooitadmin_api`, the
-  restricted role the backend serves as. Keep this file: the database keeps the owner's password it was first
-  started with, so a new one would lock the backend out. `make up` adds `POSTGRES_API_PASSWORD` to an older
-  `.env` and changes nothing else. `.env.example` explains every variable.
+  restricted role the backend serves as, and `POSTGRES_COLLECTOR_PASSWORD` to `megooitadmin_collector`, the
+  restricted role the collector writes samples as. Keep this file: the database keeps the owner's password it was
+  first started with, so a new one would lock the backend out. `make up` and `make upgrade` add
+  `POSTGRES_API_PASSWORD` and `POSTGRES_COLLECTOR_PASSWORD` to an older `.env` and change nothing else.
+  `.env.example` explains every variable.
   `make up` also writes `AUTH_SECRET_KEY`, which encrypts the authenticator secrets. Keep it: with another key no
   code can be checked and everyone needs `make reset-mfa`. `make up` adds it to an older `.env`.
 - **The port.** Caddy is the only service with a published port, 80 by default. Set `MEGOOITADMIN_HTTP_PORT` in
@@ -47,7 +49,8 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 
 - Run `git pull` first, so the Compose file and the images belong to the same release.
 - `make upgrade` pulls every image of the stack, Caddy and the database included, and restarts what changed.
-  It also pulls the Valkey image and creates its `valkey_data` volume the first time, so nobody has to act.
+  It also pulls the Valkey image and creates its `valkey_data` volume the first time, and starts the collector,
+  so nobody has to act.
 - To stay on a release, set `MEGOOITADMIN_VERSION=0.1.0` in `.env`. `make upgrade` then pulls that version until
   the line changes.
 - Each release note's "Upgrading" says what else the release needs.
@@ -94,6 +97,10 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   sudo allows nothing else.
 - A changed host key blocks the server until an Admin accepts the new key, with a reason, or keeps the pinned one.
   Every step is in the audit log.
+- Once a Linux server's host key is pinned, the collector signs in as its login account from the platform's
+  address and keeps one channel open, sampling every 5 seconds by default (1 to 10, `metrics_interval_seconds` in
+  the API). A server without a sample for 30 seconds is unreachable. Run one collector: a second one would publish
+  every sample twice. See [What the collector runs](docs/server-setup.md#what-the-collector-runs).
 - Back up the `ssh_key` Docker volume: it holds the platform's private key, and a lost key means a new one has to
   go on every server.
 - Windows servers connect from Phase 2.

@@ -49,7 +49,8 @@ Run these before any merge:
 
 - **Backend** (`backend/`): `megoocolab-runner services run test -- uv run pytest`, then the container start-up
   tests: `megoocolab-runner services run image -- uv run pytest -m docker`. The `test` set starts PostgreSQL with
-  TimescaleDB and pgvector, Valkey and the fake server.
+  TimescaleDB and pgvector, Valkey and the fake server, and sets `TEST_DATABASE_COLLECTOR_URL` for the
+  collector's role.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`, then the image
   check: `megoocolab-runner services run web -- npm run test:image`.
 - **Stack** (`backend/`): `megoocolab-runner services run stack -- uv run pytest -m stack`. It starts the whole
@@ -81,7 +82,8 @@ that file. CI does not replace the checks above: run them before you push.
   `megoocolab-runner services run migrate -- sh -c 'uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head'`
 - A migration that creates a table grants `megooitadmin_api`, the role the backend serves as, what the table needs
   (nothing more), and adds the table to `API_GRANTS` in `backend/tests/security/test_db_privileges.py`. A table
-  without a grant stays closed to the backend.
+  without a grant stays closed to the backend. A table the collector needs is granted to `megooitadmin_collector`
+  in its migration too, and declared in `COLLECTOR_GRANTS` (column grants in `COLLECTOR_COLUMN_GRANTS`).
 
 ## Safety
 

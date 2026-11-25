@@ -7,6 +7,7 @@ by the image. All six sign in with this run's platform key.
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -72,6 +73,36 @@ class FakeServer:
     def swap_host_key(self) -> None:
         """New host keys, served once this returns."""
         result = self.exec("swap-host-key")
+        assert result.returncode == 0, result.stderr
+
+    def restart(self) -> None:
+        """Restarts the container, and returns once sshd serves its Ed25519 key again."""
+        self._docker("restart")
+        deadline = time.monotonic() + 30
+        probe = "ssh-keyscan -T 2 -t ed25519 127.0.0.1 2>/dev/null | grep -q ssh-ed25519"
+        while self.exec("sh", "-c", probe).returncode != 0:
+            if time.monotonic() > deadline:
+                pytest.fail(f"sshd of {self.container} did not answer within 30 s of a restart")
+            time.sleep(0.5)
+
+    def pause(self) -> None:
+        """Freezes every process of the container: connections stay open but nothing answers."""
+        self._docker("pause")
+
+    def unpause(self) -> None:
+        self._docker("unpause")
+
+    def kill_sessions(self, user: str = "megoo") -> None:
+        """Kills every process of this account, its SSH sessions included."""
+        result = self.exec("pkill", "-KILL", "-u", user)
+        assert result.returncode in (0, 1), result.stderr  # 1: no process matched
+
+    def loops(self, user: str = "megoo") -> int:
+        """How many collector loops (sh -s <interval>) this account runs."""
+        return int(self.exec("pgrep", "-c", "-u", user, "-f", "^sh -s [0-9]+$").stdout.strip() or 0)
+
+    def _docker(self, command: str) -> None:
+        result = subprocess.run(["docker", command, self.container], text=True, capture_output=True, timeout=60)
         assert result.returncode == 0, result.stderr
 
     def sign_ins(self) -> int:

@@ -67,6 +67,12 @@ async def test_the_api_role_logs_in_and_is_not_a_superuser():
     assert [tuple(row) for row in rows] == [("megooitadmin_api", False)]
 
 
+async def test_the_collector_role_logs_in_and_is_not_a_superuser():
+    sql = "SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user"
+    rows = await _fetch(sql, variable="IMAGE_COLLECTOR_DATABASE_URL")
+    assert [tuple(row) for row in rows] == [("megooitadmin_collector", False)]
+
+
 def _url(credentials: str) -> str:
     return f"postgresql+asyncpg://{credentials}@db:5432/{_env('DB_NAME')}"
 
@@ -143,6 +149,12 @@ def _exec(*command: str) -> str:
     return subprocess.run(
         ["docker", "exec", _container(), *command], capture_output=True, text=True, timeout=30, check=True
     ).stdout.strip()
+
+
+def test_the_server_holds_neither_the_owners_nor_the_collectors_url():
+    names = {entry.split("=", 1)[0] for entry in _exec("cat", "/proc/1/environ").split("\0") if entry}
+    assert "DATABASE_URL" in names
+    assert not names & {"DATABASE_OWNER_URL", "DATABASE_COLLECTOR_URL"}
 
 
 def test_the_log_of_a_fresh_install_holds_a_setup_code():
