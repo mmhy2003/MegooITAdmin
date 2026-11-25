@@ -360,5 +360,45 @@ def test_the_database_refuses_a_bad_metric_name_and_a_value_that_is_not_finite()
             _insert_metric("cpu.used_percent", bad)
 
 
+def _collector_objects() -> list:
+    return _fetch(
+        "SELECT to_regclass('server_status'),"
+        " EXISTS (SELECT FROM information_schema.columns"
+        " WHERE table_name = 'servers' AND column_name = 'metrics_interval_seconds'),"
+        " EXISTS (SELECT FROM pg_roles WHERE rolname = 'megooitadmin_collector')"
+    )
+
+
+def test_0009_goes_down_and_up_again():
+    command.downgrade(_config(), "0008")
+    try:
+        assert _collector_objects() == [(None, False, False)]
+    finally:
+        upgrade_to_head()
+    assert _collector_objects() == [("server_status", True, True)]
+
+
+def test_the_database_refuses_an_interval_of_0_and_11_and_a_state_without_its_reason():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0009')")
+    try:
+        _execute(
+            "INSERT INTO servers (id, server_group_id, name, address, port, os)"
+            " SELECT gen_random_uuid(), id, 'probe-0009', '10.0.0.9', 22, 'linux' FROM server_groups"
+            " WHERE name = 'Migration probe group 0009'"
+        )
+        assert _fetch("SELECT metrics_interval_seconds FROM servers WHERE name = 'probe-0009'") == [(5,)]
+        for bad in (0, 11):
+            with pytest.raises(IntegrityError, match="servers_metrics_interval_seconds_check"):
+                _execute(f"UPDATE servers SET metrics_interval_seconds = {bad} WHERE name = 'probe-0009'")
+        with pytest.raises(IntegrityError, match="server_status_state_check"):
+            _execute(
+                "INSERT INTO server_status (server_id, state)"
+                " SELECT id, 'unreachable' FROM servers WHERE name = 'probe-0009'"
+            )
+    finally:
+        _execute("DELETE FROM servers WHERE name = 'probe-0009'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0009'")
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())
