@@ -7,6 +7,7 @@ ports = ["DB_PORT", "SSH_PORT", "VALKEY_PORT"]
 DB_NAME = "megooitadmin_test"
 TEST_DATABASE_URL = "postgresql+asyncpg://megooitadmin_api:megooitadminapi@localhost:${DB_PORT}/megooitadmin_test"
 TEST_DATABASE_OWNER_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin_test"
+TEST_DATABASE_COLLECTOR_URL = "postgresql+asyncpg://megooitadmin_collector:megooitadmincollector@localhost:${DB_PORT}/megooitadmin_test"
 TEST_VALKEY_URL = "valkey://localhost:${VALKEY_PORT}/0"
 
 [services.migrate]
@@ -31,6 +32,7 @@ BACKEND_NETWORK = "${MEGOO_SERVICES_PROJECT}_default"
 BACKEND_URL = "http://localhost:${API_PORT}"
 IMAGE_DATABASE_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin"
 IMAGE_API_DATABASE_URL = "postgresql+asyncpg://megooitadmin_api:megooitadminapi@localhost:${DB_PORT}/megooitadmin"
+IMAGE_COLLECTOR_DATABASE_URL = "postgresql+asyncpg://megooitadmin_collector:megooitadmincollector@localhost:${DB_PORT}/megooitadmin"
 
 [services.web]
 description = "The frontend image built from this checkout, for npm run test:image"

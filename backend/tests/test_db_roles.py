@@ -1,4 +1,5 @@
-"""The password step: `python -m app.core.db_roles` gives the API role LOGIN and the password of DATABASE_URL."""
+"""The password step: `python -m app.core.db_roles` gives the API role LOGIN and the password of DATABASE_URL, and the
+collector role LOGIN and the password of DATABASE_COLLECTOR_URL."""
 
 import asyncio
 import os
@@ -15,11 +16,19 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from app.core.config import Settings
-from app.core.db_roles import API_ROLE, ApiRoleError, sync_api_role_password
+from app.core.db_roles import (
+    API_ROLE,
+    COLLECTOR_ROLE,
+    ApiRoleError,
+    sync_api_role_password,
+    sync_collector_role_password,
+)
 
 BACKEND = Path(__file__).resolve().parents[1]
 # The API role's password in the test set of megoocolab.toml.
 PASSWORD = "megooitadminapi"
+# The collector role's password in the same set.
+COLLECTOR_PASSWORD = "megooitadmincollector"
 
 
 def _url(user: str, password: str) -> str:
@@ -28,19 +37,25 @@ def _url(user: str, password: str) -> str:
     )
 
 
-def _settings(database_url: str) -> Settings:
-    return Settings(database_url=database_url, database_owner_url=os.environ["DATABASE_OWNER_URL"])
+def _settings(database_url: str, database_collector_url: str | None = None) -> Settings:
+    return Settings(
+        database_url=database_url,
+        database_owner_url=os.environ["DATABASE_OWNER_URL"],
+        database_collector_url=database_collector_url,
+    )
 
 
 @pytest.fixture(autouse=True)
 def restored_password(database_at_head):
     yield
-    sync_api_role_password(_settings(_url(API_ROLE, PASSWORD)))
+    settings = _settings(_url(API_ROLE, PASSWORD), _url(COLLECTOR_ROLE, COLLECTOR_PASSWORD))
+    sync_api_role_password(settings)
+    sync_collector_role_password(settings)
 
 
-def _login(password: str) -> str:
+def _login(password: str, role: str = API_ROLE) -> str:
     async def run():
-        url = make_url(_url(API_ROLE, password)).set(drivername="postgresql")
+        url = make_url(_url(role, password)).set(drivername="postgresql")
         connection = await asyncpg.connect(url.render_as_string(hide_password=False))
         try:
             return await connection.fetchval("SELECT current_user")
@@ -112,3 +127,24 @@ def test_the_module_exits_1_and_never_prints_the_url():
     for output in (result.stdout, result.stderr):
         assert owner_url not in output
         assert "@localhost" not in output
+
+
+def test_after_the_step_the_collector_role_logs_in():
+    settings = _settings(_url(API_ROLE, PASSWORD), _url(COLLECTOR_ROLE, COLLECTOR_PASSWORD))
+    assert sync_collector_role_password(settings) is True
+    assert _login(COLLECTOR_PASSWORD, role=COLLECTOR_ROLE) == COLLECTOR_ROLE
+
+
+def test_a_collector_url_with_another_user_is_refused():
+    settings = _settings(_url(API_ROLE, PASSWORD), os.environ["DATABASE_OWNER_URL"])
+    with pytest.raises(ApiRoleError, match="DATABASE_COLLECTOR_URL must connect as megooitadmin_collector"):
+        sync_collector_role_password(settings)
+
+
+def test_without_the_collector_url_the_step_says_so_and_exits_0():
+    env = {name: value for name, value in os.environ.items() if name != "DATABASE_COLLECTOR_URL"}
+    result = subprocess.run(
+        [sys.executable, "-m", "app.core.db_roles"], cwd=BACKEND, env=env, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert "DATABASE_COLLECTOR_URL is not set" in result.stdout
