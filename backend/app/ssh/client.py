@@ -1,9 +1,10 @@
 """The only module that opens SSH connections: a host key fetch for pinning, and a sign-in that trusts the pinned
 host key and nothing else, and what the signed-in account may do with sudo."""
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 import asyncssh
@@ -14,6 +15,8 @@ from app.ssh.keys import load_key
 CONNECT_TIMEOUT = 10  # seconds: TCP and key exchange
 LOGIN_TIMEOUT = 10  # seconds: sign-in
 COMMAND_TIMEOUT = 5  # seconds: the account check
+SCRIPT_CHUNK = 65536  # bytes read from a script's output at a time
+CLOSE_TIMEOUT = 5  # seconds: waiting for a script's channel to close
 # What a fetch accepts, best first. No "ssh-rsa" (SHA-1): such servers fail with ssh_error.
 HOST_KEY_ALGS = [
     "ssh-ed25519",
@@ -173,3 +176,38 @@ async def setup_of(conn: asyncssh.SSHClientConnection) -> Setup:
     commands = sudo_commands(str(listed.stdout)) if listed.exit_status == 0 else None
     limited = None if not commands else all(command == CTL for command in commands)
     return Setup(version=int(found.group(1)) if found else None, limited=limited)
+
+
+@asynccontextmanager
+async def script_output(conn: Connection, script: bytes, interval: int) -> AsyncIterator[AsyncIterator[bytes]]:
+    """Runs `sh -s <interval>` with the script on stdin and its errors discarded, and yields its output as chunks of
+    bytes. Leaving closes the channel. Raises SshError when the channel cannot start or breaks."""
+    if type(interval) is not int or not 1 <= interval <= 10:
+        raise ValueError(f"interval must be an int from 1 to 10, not {interval!r}")
+    try:
+        # Stderr is discarded: unread, it would fill the channel's window and stall stdout.
+        process = await conn.create_process(f"sh -s {interval}", encoding=None, stderr=asyncssh.DEVNULL)
+    except asyncssh.Error as error:
+        raise SshError() from error
+    try:
+        try:
+            process.stdin.write(script)
+            process.stdin.write_eof()
+        except (asyncssh.Error, OSError) as error:
+            raise SshError() from error
+        yield _chunks(process)
+    finally:
+        process.close()
+        with suppress(asyncssh.Error, OSError, TimeoutError):
+            await asyncio.wait_for(process.wait_closed(), CLOSE_TIMEOUT)
+
+
+async def _chunks(process: asyncssh.SSHClientProcess[bytes]) -> AsyncIterator[bytes]:
+    while True:
+        try:
+            chunk = await process.stdout.read(SCRIPT_CHUNK)
+        except (asyncssh.Error, OSError) as error:
+            raise SshError() from error
+        if not chunk:
+            return
+        yield chunk
