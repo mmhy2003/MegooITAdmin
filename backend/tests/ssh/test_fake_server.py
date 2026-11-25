@@ -1,3 +1,4 @@
+import json
 import socket
 
 from app.ssh.client import account_of, connect
@@ -65,3 +66,51 @@ def test_the_accounts_are_what_the_checks_expect(fake_server):
     assert fake_server.exec("test", "-f", "/etc/sudoers.d/megoo-wide-all").returncode == 0
     check = fake_server.setup("--check", "--user", "megoo")
     assert check.returncode == 0, check.stdout + check.stderr
+
+
+def test_the_stub_tools_print_their_default_fixtures(fake_server):
+    units = fake_server.exec("systemctl", "list-units", "--type=service", user="megoo")
+    assert units.returncode == 0, units.stderr
+    assert any(line.startswith("nginx.service loaded failed failed") for line in units.stdout.splitlines())
+    ps = fake_server.ctl("docker", "ps")
+    assert ps.returncode == 0, ps.stderr
+    lines = ps.stdout.splitlines()
+    assert len(lines) == 4
+    assert [json.loads(line)["Names"] for line in lines] == [
+        "shop-web-1",
+        "shop-db-1",
+        "monitoring-grafana-1",
+        "hello-adhoc",
+    ]
+
+
+def test_a_fixture_sets_output_and_exit_status_and_is_put_back(fake_server):
+    with fake_server.fixture("journalctl", "line\n", exit=3):
+        inside = fake_server.exec("journalctl", "-q", user="megoo")
+        assert (inside.stdout, inside.returncode) == ("line\n", 3)
+    after = fake_server.exec("journalctl", "-q", user="megoo")
+    assert (after.stdout, after.returncode) == ("", 0)
+
+    with fake_server.fixture("docker_ps", ""):
+        assert fake_server.ctl("docker", "ps").stdout == ""
+    assert len(fake_server.ctl("docker", "ps").stdout.splitlines()) == 4
+
+
+def test_stub_calls_by_megoo_are_logged(fake_server):
+    fake_server.clear_tool_log()
+
+    result = fake_server.exec("apt-get", "-s", "upgrade", user="megoo")
+
+    assert result.returncode == 0, result.stderr
+    assert fake_server.tool_log() == ["apt-get [-s] [upgrade]"]
+
+
+def test_openssl_is_installed(fake_server):
+    assert fake_server.exec("openssl", "version", user="megoo").returncode == 0
+
+
+def test_hidden_hides_a_tool(fake_server):
+    probe = ("sh", "-c", "command -v journalctl")
+    with fake_server.hidden("/usr/local/bin/journalctl"):
+        assert fake_server.exec(*probe, user="megoo").returncode != 0
+    assert fake_server.exec(*probe, user="megoo").returncode == 0

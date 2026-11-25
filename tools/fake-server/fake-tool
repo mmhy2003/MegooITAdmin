@@ -1,4 +1,13 @@
 #!/bin/sh
-# Stands in for docker and systemctl: logs its name and each argument in brackets to /var/log/fake-tools.log, so a
-# test sees exactly what megoo-ctl passed on.
+# Stands in for docker, systemctl, journalctl, apt-get and dnf: logs its name and each argument in brackets to
+# /var/log/fake-tools.log, then prints the fixture of the call and exits with its status. The fixture of a call is
+# /etc/fake-tools/<tool>_<first argument> when that file exists, else /etc/fake-tools/<tool>; <fixture>.exit holds the
+# exit status (0 without one). No fixture: nothing printed, status 0.
 { printf '%s' "${0##*/}"; printf ' [%s]' "$@"; printf '\n'; } >> /var/log/fake-tools.log
+dir=/etc/fake-tools
+tool=${0##*/}
+name=$tool
+case ${1-} in [A-Za-z0-9]*) case $1 in *[!A-Za-z0-9-]*) ;; *) [ -f "$dir/${tool}_$1" ] && name=${tool}_$1 ;; esac ;; esac
+[ -f "$dir/$name" ] && cat "$dir/$name"
+[ -f "$dir/$name.exit" ] && exit "$(cat "$dir/$name.exit")"
+exit 0
