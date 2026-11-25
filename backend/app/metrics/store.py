@@ -42,7 +42,9 @@ async def write_samples(session: AsyncSession, samples: Iterable[Sample]) -> Non
     ]
     if not rows:
         return
-    await session.execute(postgresql.insert(Metric).on_conflict_do_nothing(constraint="metrics_pkey"), rows)
+    # No conflict target: naming one needs SELECT on the table, which the collector's role does not have. The
+    # primary key is the table's only unique constraint, so this ignores the same rows.
+    await session.execute(postgresql.insert(Metric).on_conflict_do_nothing(), rows)
 
 
 async def read_rollup(
