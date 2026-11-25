@@ -3,7 +3,8 @@
 import { MoreHorizontal, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { MonitoringBadge } from "@/components/servers/monitoring-badge";
 import { RemoveServerDialog } from "@/components/servers/remove-server-dialog";
 import { ServerDialog } from "@/components/servers/server-dialog";
 import { ServerFilters } from "@/components/servers/server-filters";
@@ -18,9 +19,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
-import { messageFor } from "@/lib/auth/messages";
+import { messageFor, monitoringText, NOT_CHECKED } from "@/lib/auth/messages";
 import {
   addressOf,
   filtersFrom,
@@ -42,22 +44,38 @@ export function ServersPage() {
   // `undefined` is closed, `null` is a new server.
   const [editing, setEditing] = useState<Server | null | undefined>(undefined);
   const [removing, setRemoving] = useState<Server | null>(null);
+  // Each foreground read takes a number; an answer is applied only while its read is still the latest.
+  const reads = useRef(0);
 
-  const reload = useCallback(
-    () =>
-      Promise.all([
-        apiFetch<ServerGroup[]>("/server-groups"),
-        apiFetch<string[]>("/server-tags"),
-        apiFetch<Server[]>(path),
-      ]).then(
-        ([groups, tags, servers]) => {
-          setLists({ groups, tags, servers });
-          setError(null);
-        },
-        (e: unknown) => setError(e instanceof ApiError ? e.detail : "error"),
-      ),
-    [path],
-  );
+  const reload = useCallback(() => {
+    const read = ++reads.current;
+    return Promise.all([
+      apiFetch<ServerGroup[]>("/server-groups"),
+      apiFetch<string[]>("/server-tags"),
+      apiFetch<Server[]>(path),
+    ]).then(
+      ([groups, tags, servers]) => {
+        if (read !== reads.current) return;
+        setLists({ groups, tags, servers });
+        setError(null);
+      },
+      (e: unknown) => {
+        if (read === reads.current) setError(e instanceof ApiError ? e.detail : "error");
+      },
+    );
+  }, [path]);
+
+  // A background re-read replaces the servers only if no foreground read started meanwhile, and fails silently.
+  const refresh = useCallback(() => {
+    const read = reads.current;
+    apiFetch<Server[]>(path, { background: true }).then(
+      (servers) => {
+        if (reads.current === read) setLists((l) => l && { ...l, servers });
+      },
+      () => {},
+    );
+  }, [path]);
+  useRefresh(refresh, editing === undefined && removing === null);
 
   useEffect(() => {
     void reload();
@@ -177,6 +195,7 @@ function ServerTable({ servers, onEdit, onRemove }: TableProps) {
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
+            <TableHead>Status</TableHead>
             <TableHead>Address</TableHead>
             <TableHead>Group</TableHead>
             <TableHead>OS</TableHead>
@@ -188,47 +207,56 @@ function ServerTable({ servers, onEdit, onRemove }: TableProps) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {servers.map((server) => (
-            <TableRow key={server.id}>
-              <TableCell className="font-medium">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Link href={`/servers/${server.id}`} className="hover:underline">
-                    {server.name}
-                  </Link>
-                  {server.host_key_state === "changed" && <Badge variant="destructive">Host key changed</Badge>}
-                  {server.host_key_state === "not_pinned" && <Badge variant="outline">Host key not pinned</Badge>}
-                </div>
-              </TableCell>
-              <TableCell className="font-mono">{`${server.address}:${server.port}`}</TableCell>
-              <TableCell>{server.group_name}</TableCell>
-              <TableCell>{OS_LABELS[server.os]}</TableCell>
-              <TableCell>{server.role}</TableCell>
-              <TableCell>
-                <div className="flex flex-wrap gap-1">
-                  {server.tags.map((tag) => (
-                    <Badge key={tag} variant="secondary">
-                      {tag}
-                    </Badge>
-                  ))}
-                </div>
-              </TableCell>
-              <TableCell className="text-right">
-                {server.can_manage && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" aria-label={`Actions for ${server.name}`}>
-                        <MoreHorizontal aria-hidden />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => onEdit(server)}>Edit</DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => onRemove(server)}>Remove</DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-              </TableCell>
-            </TableRow>
-          ))}
+          {servers.map((server) => {
+            const text = server.monitoring ? monitoringText(server.monitoring.reason) : NOT_CHECKED;
+            return (
+              <TableRow key={server.id}>
+                <TableCell className="font-medium">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link href={`/servers/${server.id}`} className="hover:underline">
+                      {server.name}
+                    </Link>
+                    {server.host_key_state === "changed" && <Badge variant="destructive">Host key changed</Badge>}
+                    {server.host_key_state === "not_pinned" && <Badge variant="outline">Host key not pinned</Badge>}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div className="space-y-1">
+                    <MonitoringBadge monitoring={server.monitoring} />
+                    {text && <p className="text-sm text-muted-foreground">{text.title}</p>}
+                  </div>
+                </TableCell>
+                <TableCell className="font-mono">{`${server.address}:${server.port}`}</TableCell>
+                <TableCell>{server.group_name}</TableCell>
+                <TableCell>{OS_LABELS[server.os]}</TableCell>
+                <TableCell>{server.role}</TableCell>
+                <TableCell>
+                  <div className="flex flex-wrap gap-1">
+                    {server.tags.map((tag) => (
+                      <Badge key={tag} variant="secondary">
+                        {tag}
+                      </Badge>
+                    ))}
+                  </div>
+                </TableCell>
+                <TableCell className="text-right">
+                  {server.can_manage && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" aria-label={`Actions for ${server.name}`}>
+                          <MoreHorizontal aria-hidden />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => onEdit(server)}>Edit</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => onRemove(server)}>Remove</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
     </div>

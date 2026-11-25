@@ -45,6 +45,8 @@ const WEB: Server = {
   host_key_changed_at: null,
   host_key_offered: null,
   can_connect: true,
+  metrics_interval_seconds: 5,
+  monitoring: null,
 };
 
 beforeEach(() => {
@@ -90,6 +92,7 @@ describe("ServerDialog", () => {
         group_id: "g-staging",
         os: "linux",
         port: 22,
+        metrics_interval_seconds: 5,
         role: null,
         tags: ["web"],
         connection_settings: { username: "megoo" },
@@ -139,6 +142,89 @@ describe("ServerDialog", () => {
 
     await user.click(screen.getByRole("radio", { name: "Windows" }));
     expect(screen.getByLabelText("Port")).toHaveValue(2222);
+  });
+
+  it("registers a chosen sample interval", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ ...WEB, id: "s-2" });
+    const { user } = renderDialog();
+    const interval = screen.getByLabelText("Sample interval");
+
+    expect(interval).toHaveValue(5);
+    expect(interval).toHaveAttribute("min", "1");
+    expect(interval).toHaveAttribute("max", "10");
+    expect(interval).toHaveAttribute("step", "1");
+    expect(interval).toBeRequired();
+    expect(interval).toHaveAccessibleDescription("How often its metrics are read: 1 to 10 seconds.");
+    expect(screen.getByText("seconds")).toBeInTheDocument();
+
+    await user.clear(interval);
+    await user.type(interval, "2");
+    await user.type(screen.getByLabelText("Name"), "web-02");
+    await user.type(screen.getByLabelText("Address"), "10.0.0.6");
+    await user.click(screen.getByRole("button", { name: "Register server" }));
+
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/servers",
+      expect.objectContaining({ method: "POST", body: expect.objectContaining({ metrics_interval_seconds: 2 }) }),
+    );
+  });
+
+  it("saves only the changed interval", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ ...WEB, metrics_interval_seconds: 10 });
+    const { user } = renderDialog({ server: WEB });
+    const interval = screen.getByLabelText("Sample interval");
+
+    expect(interval).toHaveValue(5);
+    await user.clear(interval);
+    await user.type(interval, "10");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiFetch).toHaveBeenCalledWith("/servers/s-1", { method: "PATCH", body: { metrics_interval_seconds: 10 } });
+  });
+
+  it("copies a saved interval", () => {
+    renderDialog({ server: { ...WEB, metrics_interval_seconds: 3 } });
+    expect(screen.getByLabelText("Sample interval")).toHaveValue(3);
+  });
+
+  it("hides the interval for Windows and sends its saved value", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ ...WEB, id: "s-2" });
+    const { user } = renderDialog();
+
+    await user.clear(screen.getByLabelText("Sample interval"));
+    await user.type(screen.getByLabelText("Sample interval"), "8");
+    await user.click(screen.getByRole("radio", { name: "Windows" }));
+    expect(screen.queryByLabelText("Sample interval")).toBeNull();
+
+    await user.type(screen.getByLabelText("Name"), "win-01");
+    await user.type(screen.getByLabelText("Address"), "10.0.0.7");
+    await user.click(screen.getByRole("button", { name: "Register server" }));
+    expect(apiFetch).toHaveBeenCalledWith(
+      "/servers",
+      expect.objectContaining({
+        body: expect.objectContaining({ metrics_interval_seconds: 5, os: "windows" }),
+      }),
+    );
+
+    await user.click(screen.getByRole("radio", { name: "Linux" }));
+    expect(screen.getByLabelText("Sample interval")).toHaveValue(5);
+  });
+
+  it("an edited Windows switch sends no interval change", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ ...WEB, os: "windows", port: 3389 });
+    const { user } = renderDialog({ server: WEB });
+
+    await user.clear(screen.getByLabelText("Sample interval"));
+    await user.type(screen.getByLabelText("Sample interval"), "8");
+    await user.click(screen.getByRole("radio", { name: "Windows" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiFetch).toHaveBeenCalledWith("/servers/s-1", { method: "PATCH", body: { os: "windows", port: 3389 } });
+  });
+
+  it("shows no interval for a Windows server", () => {
+    renderDialog({ server: { ...WEB, os: "windows", port: 3389 } });
+    expect(screen.queryByLabelText("Sample interval")).toBeNull();
   });
 
   it("says what moving the server to another group means", async () => {

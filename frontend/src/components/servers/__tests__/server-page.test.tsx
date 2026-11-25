@@ -1,14 +1,16 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter } from "next/navigation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatTime } from "@/components/profile/profile-page";
 import { ServerPage } from "@/components/servers/server-page";
+import { useRefresh } from "@/hooks/use-refresh";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { ConnectionTestResult, Server } from "@/lib/servers";
 
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
 vi.mock("@/lib/auth/navigate");
+vi.mock("@/hooks/use-refresh", () => ({ useRefresh: vi.fn() }));
 
 const DB: Server = {
   id: "s-1",
@@ -32,6 +34,8 @@ const DB: Server = {
   host_key_changed_at: null,
   host_key_offered: null,
   can_connect: true,
+  metrics_interval_seconds: 5,
+  monitoring: null,
 };
 
 const FINGERPRINT = "SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
@@ -87,8 +91,19 @@ function card(title: string) {
   return within(screen.getByRole("heading", { name: title }).closest("[data-slot=card]") as HTMLElement);
 }
 
+function refreshArgs() {
+  return vi.mocked(useRefresh).mock.lastCall!;
+}
+
+async function refreshNow() {
+  await act(async () => {
+    refreshArgs()[0]();
+  });
+}
+
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
+  vi.mocked(useRefresh).mockReset();
   push = vi.fn();
   vi.mocked(useRouter).mockReturnValue({ push, replace: vi.fn(), refresh: vi.fn() } as unknown as ReturnType<
     typeof useRouter
@@ -301,5 +316,92 @@ describe("ServerPage", () => {
     await user.click(await screen.findByRole("button", { name: "Review host key" }));
 
     expect(await screen.findByRole("dialog", { name: "Review the host key of db-01" })).toBeInTheDocument();
+  });
+
+  it("shows the monitoring badge after the name and the Monitoring card first", async () => {
+    mockApi({
+      ...PINNED,
+      monitoring: { state: "unreachable", reason: "unreachable", since: "2026-11-05T10:00:00Z", last_sample_at: null },
+    });
+    render(<ServerPage serverId="s-1" />);
+
+    const name = await screen.findByRole("heading", { name: "db-01", level: 2 });
+    const titleRow = within(name.parentElement as HTMLElement);
+    expect(titleRow.getByText("Unreachable")).toHaveAttribute("data-slot", "badge");
+    expect(name.nextElementSibling).toHaveTextContent("Unreachable");
+    const monitoring = card("Monitoring");
+    expect(monitoring.getByText("The server did not answer.")).toBeInTheDocument();
+    expect(monitoring.getByText("Last sample").nextSibling).toHaveTextContent("None yet");
+    const order = screen
+      .getByRole("heading", { name: "Monitoring" })
+      .compareDocumentPosition(screen.getByRole("heading", { name: "Connection" }));
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("updates the state on a background re-read", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("heading", { name: "db-01", level: 2 });
+    expect(screen.queryByText("Reachable")).not.toBeInTheDocument();
+
+    mockApi({
+      ...PINNED,
+      monitoring: {
+        state: "reachable",
+        reason: null,
+        since: "2026-11-05T10:00:00Z",
+        last_sample_at: "2026-11-05T10:05:00Z",
+      },
+    });
+    await refreshNow();
+
+    expect(screen.getAllByText("Reachable").length).toBeGreaterThan(0);
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1", { background: true });
+  });
+
+  it("shows the missing card when a background re-read answers 404", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("heading", { name: "db-01", level: 2 });
+
+    mockApi(new ApiError(404, "not_found"));
+    await refreshNow();
+
+    expect(screen.getByText("This server does not exist, or you cannot see it.")).toBeInTheDocument();
+  });
+
+  it("keeps the page and shows no error when a background re-read fails otherwise", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("heading", { name: "db-01", level: 2 });
+
+    mockApi(new ApiError(500, "invalid"));
+    await refreshNow();
+
+    expect(screen.getByRole("heading", { name: "db-01", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("pauses the re-read while a dialog is open or a test runs", async () => {
+    mockApi(DB);
+    const { unmount } = render(<ServerPage serverId="s-1" />);
+    const user = userEvent.setup();
+
+    await screen.findByRole("heading", { name: "db-01", level: 2 });
+    expect(refreshArgs()[1]).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(refreshArgs()[1]).toBe(false);
+    unmount();
+
+    mockApi(PINNED);
+    const pending = vi.mocked(apiFetch).getMockImplementation()!;
+    vi.mocked(apiFetch).mockImplementation((path: string, init?: { method?: string }) =>
+      path === "/servers/s-1/connection-test" ? new Promise(() => {}) : pending(path, init),
+    );
+    render(<ServerPage serverId="s-1" />);
+    await user.click(await screen.findByRole("button", { name: "Test connection" }));
+    expect(await screen.findByRole("button", { name: "Testing…" })).toBeDisabled();
+    expect(refreshArgs()[1]).toBe(false);
   });
 });

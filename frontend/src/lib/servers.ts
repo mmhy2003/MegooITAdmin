@@ -2,11 +2,23 @@ export type ServerOs = "linux" | "windows";
 export const OS_LABELS: Record<ServerOs, string> = { linux: "Linux", windows: "Windows" };
 export const DEFAULT_PORT: Record<ServerOs, number> = { linux: 22, windows: 3389 };
 export const DEFAULT_USERNAME = "megoo";
+export const DEFAULT_INTERVAL = 5;
 export const MAX_TAGS = 20;
 export type ConnectionSettings = { username: string };
 export type HostKeyState = "none" | "not_pinned" | "pinned" | "changed";
 /** The key a server presented when it no longer matched the pinned one. */
 export type HostKeyOffer = { fingerprint: string; type: string; at: string };
+export type MonitoringState = "reachable" | "unreachable" | "not_monitored";
+export type MonitoringReason =
+  | "unreachable"
+  | "key_refused"
+  | "ssh_error"
+  | "no_samples"
+  | "not_an_ssh_server"
+  | "host_key_not_pinned"
+  | "host_key_changed";
+/** What the collector last wrote about a server. `reason` is a string: a newer backend may send one we do not know. */
+export type Monitoring = { state: MonitoringState; reason: string | null; since: string; last_sample_at: string | null };
 export type Server = {
   id: string;
   name: string;
@@ -29,6 +41,8 @@ export type Server = {
   host_key_changed_at: string | null;
   host_key_offered: HostKeyOffer | null;
   can_connect: boolean;
+  metrics_interval_seconds: number;
+  monitoring: Monitoring | null;
 };
 export type ConnectionReason =
   | "unreachable"
@@ -79,6 +93,7 @@ export type ServerDraft = {
   group_id: string;
   os: ServerOs;
   port: number;
+  interval: number;
   role: string;
   tags: string[];
   username: string;
@@ -90,6 +105,7 @@ export type ServerBody = {
   group_id: string;
   os: ServerOs;
   port: number;
+  metrics_interval_seconds: number;
   role: string | null;
   tags: string[];
   connection_settings: ConnectionSettings;
@@ -128,6 +144,7 @@ export function draftOf(server: Server | null, groupId: string): ServerDraft {
       group_id: groupId,
       os: "linux",
       port: DEFAULT_PORT.linux,
+      interval: DEFAULT_INTERVAL,
       role: "",
       tags: [],
       username: DEFAULT_USERNAME,
@@ -139,6 +156,7 @@ export function draftOf(server: Server | null, groupId: string): ServerDraft {
     group_id: server.group_id,
     os: server.os,
     port: server.port,
+    interval: server.metrics_interval_seconds,
     role: server.role ?? "",
     tags: server.tags,
     username: server.connection_settings.username,
@@ -154,6 +172,7 @@ export function bodyOf(draft: ServerDraft): ServerBody {
     group_id: draft.group_id,
     os: draft.os,
     port: draft.port,
+    metrics_interval_seconds: draft.interval,
     role: role === "" ? null : role,
     tags: [...draft.tags].sort(),
     connection_settings: { username: draft.username.trim() },
@@ -169,6 +188,9 @@ export function changesOf(server: Server, draft: ServerDraft): Partial<ServerBod
   if (body.group_id !== server.group_id) changes.group_id = body.group_id;
   if (body.os !== server.os) changes.os = body.os;
   if (body.port !== server.port) changes.port = body.port;
+  if (body.metrics_interval_seconds !== server.metrics_interval_seconds) {
+    changes.metrics_interval_seconds = body.metrics_interval_seconds;
+  }
   if (body.role !== server.role) changes.role = body.role;
   if (body.tags.join(" ") !== [...server.tags].sort().join(" ")) changes.tags = body.tags;
   if (body.connection_settings.username !== server.connection_settings.username) {

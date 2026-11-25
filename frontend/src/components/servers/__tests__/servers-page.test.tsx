@@ -1,14 +1,16 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRouter, useSearchParams } from "next/navigation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ServersPage } from "@/components/servers/servers-page";
+import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
-import { apiFetch } from "@/lib/api";
+import { ApiError, apiFetch } from "@/lib/api";
 import type { Server } from "@/lib/servers";
 
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
 vi.mock("@/lib/auth/navigate");
+vi.mock("@/hooks/use-refresh", () => ({ useRefresh: vi.fn() }));
 
 function group(id: string, name: string, canManage: boolean): ServerGroup {
   return {
@@ -48,6 +50,8 @@ function server(id: string, name: string, g: ServerGroup, extra: Partial<Server>
     host_key_changed_at: null,
     host_key_offered: null,
     can_connect: true,
+    metrics_interval_seconds: 5,
+    monitoring: null,
     ...extra,
   };
 }
@@ -77,8 +81,19 @@ function listCalls() {
   return vi.mocked(apiFetch).mock.calls.filter(([path, init]) => path.startsWith("/servers") && !init);
 }
 
+function refreshArgs() {
+  return vi.mocked(useRefresh).mock.lastCall!;
+}
+
+async function refreshNow() {
+  await act(async () => {
+    refreshArgs()[0]();
+  });
+}
+
 beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
+  vi.mocked(useRefresh).mockReset();
   replace = vi.fn();
   vi.mocked(useRouter).mockReturnValue({ push: vi.fn(), replace, refresh: vi.fn() } as unknown as ReturnType<
     typeof useRouter
@@ -93,18 +108,18 @@ describe("ServersPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Servers" })).toBeInTheDocument();
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-    expect(headers.slice(0, 6)).toEqual(["Name", "Address", "Group", "OS", "Role", "Tags"]);
+    expect(headers.slice(0, 7)).toEqual(["Name", "Status", "Address", "Group", "OS", "Role", "Tags"]);
     const db = within(await screen.findByRole("row", { name: /db-01/ }));
     expect(db.getByRole("link", { name: "db-01" })).toHaveAttribute("href", "/servers/s-1");
     expect(db.getByText("db.example.com:2222")).toBeInTheDocument();
-    expect(db.getAllByRole("cell").map((c) => c.textContent).slice(2, 6)).toEqual([
+    expect(db.getAllByRole("cell").map((c) => c.textContent).slice(3, 7)).toEqual([
       "staging",
       "Linux",
       "database",
       "dbweb",
     ]);
     const app = within(screen.getByRole("row", { name: /app-01/ }));
-    expect(app.getAllByRole("cell").map((c) => c.textContent).slice(1, 4)).toEqual([
+    expect(app.getAllByRole("cell").map((c) => c.textContent).slice(2, 5)).toEqual([
       "10.0.0.5:3389",
       "production",
       "Windows",
@@ -130,6 +145,112 @@ describe("ServersPage", () => {
     expect((await nameCell("unpinned-01")).queryByText("Host key changed")).not.toBeInTheDocument();
     expect((await nameCell("pinned-01")).queryByText(/Host key/)).not.toBeInTheDocument();
     expect((await nameCell("win-01")).queryByText(/Host key/)).not.toBeInTheDocument();
+  });
+
+  it("shows each server's monitoring state and reason in the Status column", async () => {
+    mockApi({
+      servers: [
+        server("s-1", "down-01", STAGING, {
+          monitoring: {
+            state: "unreachable",
+            reason: "key_refused",
+            since: "2026-11-25T10:00:00Z",
+            last_sample_at: null,
+          },
+        }),
+        server("s-2", "up-01", STAGING, {
+          monitoring: {
+            state: "reachable",
+            reason: null,
+            since: "2026-11-25T10:00:00Z",
+            last_sample_at: "2026-11-25T10:05:00Z",
+          },
+        }),
+        server("s-3", "new-01", STAGING, { monitoring: null }),
+      ],
+    });
+    render(<ServersPage />);
+
+    const statusCell = async (name: string) =>
+      within(await screen.findByRole("row", { name: new RegExp(`^${name}`) })).getAllByRole("cell")[1];
+    expect((await statusCell("down-01")).textContent).toBe("UnreachableThe server refused the platform's key.");
+    expect((await statusCell("up-01")).textContent).toBe("Reachable");
+    expect((await statusCell("new-01")).textContent).toBe(
+      "Not checked yetThe collector has not looked at this server yet.",
+    );
+  });
+
+  it("replaces the rows on a background re-read", async () => {
+    mockApi();
+    render(<ServersPage />);
+    const db = await screen.findByRole("row", { name: /db-01/ });
+    expect(within(db).getByText("Not checked yet")).toBeInTheDocument();
+
+    const reachable: Server = {
+      ...DB,
+      monitoring: {
+        state: "reachable",
+        reason: null,
+        since: "2026-11-25T10:00:00Z",
+        last_sample_at: null,
+      },
+    };
+    mockApi({ servers: [reachable, APP] });
+    await refreshNow();
+
+    expect(within(screen.getByRole("row", { name: /db-01/ })).getByText("Reachable")).toBeInTheDocument();
+    expect(apiFetch).toHaveBeenCalledWith("/servers", { background: true });
+    expect(listCalls()).toHaveLength(1);
+  });
+
+  it("keeps the rows and shows no error when a background re-read fails", async () => {
+    mockApi();
+    render(<ServersPage />);
+    expect(await screen.findByRole("row", { name: /db-01/ })).toBeInTheDocument();
+
+    vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+      throw path.startsWith("/servers") ? new ApiError(0, "unreachable") : new Error(`unexpected ${path}`);
+    });
+    await refreshNow();
+
+    expect(screen.getByRole("row", { name: /db-01/ })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("pauses the re-read while a dialog is open", async () => {
+    mockApi();
+    render(<ServersPage />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Register server" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(refreshArgs()[1]).toBe(false);
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(refreshArgs()[1]).toBe(true);
+  });
+
+  it("drops a background answer once a newer read started", async () => {
+    mockApi();
+    const { rerender } = render(<ServersPage />);
+    expect(await screen.findByRole("row", { name: /db-01/ })).toBeInTheDocument();
+    expect(refreshArgs()[1]).toBe(true);
+
+    let answer: (servers: Server[]) => void = () => {};
+    const foreground = vi.mocked(apiFetch).getMockImplementation()!;
+    vi.mocked(apiFetch).mockImplementation((path: string, init?: { background?: boolean }) =>
+      init?.background ? new Promise((resolve) => (answer = resolve)) : foreground(path, init),
+    );
+    await refreshNow();
+
+    query("tag=web");
+    rerender(<ServersPage />);
+    await waitFor(() => expect(listCalls().map(([path]) => path)).toEqual(["/servers", "/servers?tag=web"]));
+    expect(await screen.findByRole("button", { name: "web" })).toHaveAttribute("aria-pressed", "true");
+    await act(async () => answer([]));
+
+    expect(screen.getByRole("row", { name: /db-01/ })).toBeInTheDocument();
+    expect(screen.getByRole("row", { name: /app-01/ })).toBeInTheDocument();
   });
 
   it("offers the row menu only on the servers the person manages", async () => {

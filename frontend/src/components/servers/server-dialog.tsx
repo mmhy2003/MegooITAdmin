@@ -22,6 +22,7 @@ import { messageFor } from "@/lib/auth/messages";
 import {
   bodyOf,
   changesOf,
+  DEFAULT_INTERVAL,
   DEFAULT_PORT,
   draftOf,
   OS_LABELS,
@@ -85,7 +86,13 @@ function ServerForm({ server, groups, groupId, tags, onSaved, onStale }: FormPro
   }
 
   function chooseOs(os: ServerOs) {
-    setDraft((d) => ({ ...d, os, port: portEdited ? d.port : DEFAULT_PORT[os] }));
+    setDraft((d) => ({
+      ...d,
+      os,
+      port: portEdited ? d.port : DEFAULT_PORT[os],
+      // Windows is not sampled: it keeps the saved interval, so the hidden field changes nothing.
+      interval: os === "windows" ? (server?.metrics_interval_seconds ?? DEFAULT_INTERVAL) : d.interval,
+    }));
   }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -207,15 +214,40 @@ function ServerForm({ server, groups, groupId, tags, onSaved, onStale }: FormPro
             />
           </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="server-role">Role</Label>
-          <Input
-            id="server-role"
-            maxLength={64}
-            placeholder="web, database…"
-            value={draft.role}
-            onChange={(e) => set("role", e.target.value)}
-          />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="server-role">Role</Label>
+            <Input
+              id="server-role"
+              maxLength={64}
+              placeholder="web, database…"
+              value={draft.role}
+              onChange={(e) => set("role", e.target.value)}
+            />
+          </div>
+          {draft.os === "linux" && (
+            <div className="space-y-2">
+              <Label htmlFor="server-interval">Sample interval</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="server-interval"
+                  type="number"
+                  required
+                  min={1}
+                  max={10}
+                  step={1}
+                  className="w-24"
+                  aria-describedby="server-interval-hint"
+                  value={Number.isNaN(draft.interval) ? "" : draft.interval}
+                  onChange={(e) => set("interval", e.target.valueAsNumber)}
+                />
+                <span className="text-sm text-muted-foreground">seconds</span>
+              </div>
+              <p id="server-interval-hint" className="text-sm text-muted-foreground">
+                How often its metrics are read: 1 to 10 seconds.
+              </p>
+            </div>
+          )}
         </div>
         <div className="space-y-2">
           <Label htmlFor="server-tags">Tags</Label>

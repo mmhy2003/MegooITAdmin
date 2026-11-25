@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CONNECTION_REASONS, messageFor, reasonText } from "@/lib/auth/messages";
+import { CONNECTION_REASONS, MONITORING_REASONS, NOT_CHECKED, messageFor, monitoringText, reasonText } from "@/lib/auth/messages";
 import type { ConnectionReason } from "@/lib/servers";
 
 describe("messageFor", () => {
@@ -59,5 +59,40 @@ describe("reasonText", () => {
 
   it("says the server did not answer", () => {
     expect(reasonText("unreachable").title).toBe("The server did not answer.");
+  });
+});
+
+describe("monitoringText", () => {
+  it("covers every monitoring reason", () => {
+    expect(Object.keys(MONITORING_REASONS).sort()).toEqual(
+      [
+        "unreachable",
+        "key_refused",
+        "ssh_error",
+        "no_samples",
+        "not_an_ssh_server",
+        "host_key_not_pinned",
+        "host_key_changed",
+      ].sort(),
+    );
+  });
+
+  it("says no sample came for 30 seconds", () => {
+    expect(monitoringText("no_samples")).toEqual({
+      title: "No sample for 30 seconds.",
+      advice: "The server stopped sending samples. It may be overloaded or frozen.",
+    });
+  });
+
+  it("has no advice for a server that is not an SSH server", () => {
+    expect(monitoringText("not_an_ssh_server")!.advice).toBeNull();
+  });
+
+  it.each([null, "something_new", "toString"])("has no text for %s", (reason) => {
+    expect(monitoringText(reason)).toBeNull();
+  });
+
+  it("says the collector has not looked at the server yet", () => {
+    expect(NOT_CHECKED.title).toBe("The collector has not looked at this server yet.");
   });
 });

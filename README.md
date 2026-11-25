@@ -101,6 +101,13 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   address and keeps one channel open, sampling every 5 seconds by default (1 to 10, `metrics_interval_seconds` in
   the API). A server without a sample for 30 seconds is unreachable. Run one collector: a second one would publish
   every sample twice. See [What the collector runs](docs/server-setup.md#what-the-collector-runs).
+- The Servers list (Status column) and each server's page (a badge beside the name and the Monitoring card) show
+  whether the collector reaches the server: Reachable, Unreachable with the reason and what to do, Not monitored
+  (Windows, or a host key not pinned or changed) or Not checked yet. The Owner and Admins of the group set a Linux
+  server's sample interval in the Register and Edit dialog.
+- Both pages re-read the servers every 15 seconds while the tab is visible. These re-reads carry
+  `X-Megoo-Background: 1` and do not count as activity, so a page left open still signs out after
+  `session_idle_minutes`.
 - Back up the `ssh_key` Docker volume: it holds the platform's private key, and a lost key means a new one has to
   go on every server.
 - Windows servers connect from Phase 2.
