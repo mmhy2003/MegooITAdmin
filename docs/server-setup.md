@@ -104,6 +104,20 @@ PowerShell:
 Set-NetFirewallRule -DisplayGroup "Remote Desktop" -RemoteAddress <addr>
 ```
 
+## What the collector runs
+
+Once the server's host key is pinned, the collector signs in as the login account and keeps one channel open
+running `sh -s <interval>`, with `backend/app/collector/script.sh` sent on stdin, so nothing is installed on the
+server. `<interval>` is the server's sampling interval, 1 to 10 seconds (5 by default).
+
+- Every interval it reads `/proc/uptime`, `/proc/stat`, `/proc/loadavg`, `/proc/meminfo`, `/proc/net/dev`,
+  `/proc/diskstats` and `/proc/mounts`, runs `df -kP` and `df -iP` on local filesystems only (so a hung network
+  mount cannot stall it), and prints one JSON line.
+- It uses no sudo and writes no file. It ends by itself when the connection closes.
+- It signs in from the same address as the backend, so `--from` does not change.
+- To see it on the server: `ps -u megoo -o pid,args`.
+- It needs Linux 3.14 or later, for `MemAvailable` in `/proc/meminfo`.
+
 ## Run it again
 
 Run the script again, with the same `--from` and `--key`:
