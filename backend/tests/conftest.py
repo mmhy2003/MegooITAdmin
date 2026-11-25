@@ -80,6 +80,13 @@ def owner_session():
     return AsyncSession(_owner_engine(), expire_on_commit=False)
 
 
+async def owner_call(sql: str) -> None:
+    """Runs, as the owner, a statement that refuses a transaction block: CALL run_job, CALL refresh_continuous_aggregate."""
+    async with _owner_engine().connect() as connection:
+        connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await connection.exec_driver_sql(sql)
+
+
 def upgrade_to_head() -> None:
     """Migrates as the owner, then sets the API role's password, as the entrypoint does. Sync: Alembic's env.py
     runs its own event loop. A downgrade below 0003 drops the API role, so every way back to head goes through here."""
@@ -95,6 +102,30 @@ def upgrade_to_head() -> None:
 @pytest.fixture(scope="session")
 def database_at_head():
     upgrade_to_head()
+
+
+METRICS_JOBS_WHERE = (
+    "hypertable_name = 'metrics' OR hypertable_name IN (SELECT materialization_hypertable_name"
+    " FROM timescaledb_information.continuous_aggregates WHERE view_name IN ('metrics_1m', 'metrics_1h'))"
+)
+
+
+@pytest.fixture
+async def metrics_jobs_paused(database_at_head):
+    """Stops the metrics jobs from running on their own, so a test runs them when it wants. Restored afterwards."""
+    from sqlalchemy import text
+
+    async with owner_session() as session:
+        await session.execute(
+            text(f"SELECT alter_job(job_id, scheduled => false) FROM timescaledb_information.jobs WHERE {METRICS_JOBS_WHERE}")
+        )
+        await session.commit()
+    yield
+    async with owner_session() as session:
+        await session.execute(
+            text(f"SELECT alter_job(job_id, scheduled => true) FROM timescaledb_information.jobs WHERE {METRICS_JOBS_WHERE}")
+        )
+        await session.commit()
 
 
 @pytest.fixture
