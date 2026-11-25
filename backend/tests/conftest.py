@@ -160,6 +160,20 @@ async def clean_auth(empty_audit_log):
         await session.commit()
 
 
+@pytest.fixture
+async def collector_sessions(database_at_head, monkeypatch: pytest.MonkeyPatch):
+    """Sessions as megooitadmin_collector, the collector's role. open_connection flags a changed host key through
+    them too, as it does in the collector's process."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(os.environ["DATABASE_COLLECTOR_URL"], poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr("app.inventory.connection.SessionLocal", sessions)
+    yield sessions
+    await engine.dispose()
+
+
 @pytest.fixture(scope="session")
 def fake_server():
     """The fake sshd of the test set, prepared by megoo-setup.sh, with this run's platform key."""
