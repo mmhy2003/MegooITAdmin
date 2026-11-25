@@ -1,4 +1,4 @@
-import type { ConnectionReason } from "@/lib/servers";
+import type { ConnectionReason, MonitoringReason } from "@/lib/servers";
 
 const MESSAGES: Record<string, string> = {
   invalid_credentials: "The email or the password is wrong.",
@@ -85,4 +85,44 @@ export const CONNECTION_REASONS: Record<ConnectionReason, { title: string; advic
 /** The title and advice shown for a failed connection or key fetch. */
 export function reasonText(reason: ConnectionReason): { title: string; advice: string } {
   return CONNECTION_REASONS[reason];
+}
+
+export type MonitoringText = { title: string; advice: string | null };
+
+export const MONITORING_REASONS: Record<MonitoringReason, MonitoringText> = {
+  unreachable: {
+    title: "The server did not answer.",
+    advice: "Check the address and the port, and that the server accepts SSH connections from MegooITAdmin.",
+  },
+  key_refused: {
+    title: "The server refused the platform's key.",
+    advice: "Run the setup script on the server with the platform's key (see Platform access).",
+  },
+  ssh_error: {
+    title: "The SSH connection failed.",
+    advice: "The server may offer only old algorithms, or the metrics loop could not start there.",
+  },
+  no_samples: {
+    title: "No sample for 30 seconds.",
+    advice: "The server stopped sending samples. It may be overloaded or frozen.",
+  },
+  not_an_ssh_server: { title: "Only Linux servers are monitored.", advice: null },
+  host_key_not_pinned: {
+    title: "The host key is not pinned yet.",
+    advice: "Monitoring starts once the host key is pinned.",
+  },
+  host_key_changed: {
+    title: "The host key has changed.",
+    advice: "Monitoring resumes once the new key is reviewed.",
+  },
+};
+
+/** The text for a server the collector has not looked at yet (`monitoring` is null). */
+export const NOT_CHECKED: MonitoringText = { title: "The collector has not looked at this server yet.", advice: null };
+
+/** The title and advice for a monitoring reason, or null for none or one this frontend does not know. */
+export function monitoringText(reason: string | null): MonitoringText | null {
+  return reason !== null && Object.hasOwn(MONITORING_REASONS, reason)
+    ? MONITORING_REASONS[reason as MonitoringReason]
+    : null;
 }
