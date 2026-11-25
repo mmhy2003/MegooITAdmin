@@ -29,6 +29,7 @@ NETWORKS = {
     "frontend": {"edge"},
     "backend": {"edge", "core", "servers"},
     "db": {"core", "exec"},
+    "valkey": {"core"},
 }
 
 
@@ -155,7 +156,7 @@ def test_a_websocket_upgrade_reaches_the_backend():
     assert _get("/api/ws/check", headers=handshake).status_code == 403
 
 
-def test_the_stack_has_exactly_the_four_phase_0_services():
+def test_the_stack_has_exactly_its_five_services():
     assert set(_model()["services"]) == set(NETWORKS)
 
 
@@ -223,6 +224,48 @@ def test_the_backend_waits_for_a_healthy_database():
     assert _model()["services"]["backend"]["depends_on"]["db"]["condition"] == "service_healthy"
 
 
+def test_the_backend_waits_for_a_healthy_valkey_and_has_its_url():
+    backend = _model()["services"]["backend"]
+    assert backend["depends_on"]["valkey"]["condition"] == "service_healthy"
+    assert backend["environment"]["VALKEY_URL"] == "valkey://valkey:6379/0"
+
+
+def test_valkey_keeps_an_append_only_file_in_valkey_data():
+    valkey = _model()["services"]["valkey"]
+    assert valkey["command"] == ["valkey-server", "--appendonly", "yes"]
+    assert [(v["type"], v["source"], v["target"]) for v in valkey["volumes"]] == [("volume", "valkey_data", "/data")]
+    assert "valkey_data" in _model()["volumes"]
+    result = _compose("exec", "-T", "valkey", "valkey-cli", "CONFIG", "GET", "appendonly")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["appendonly", "yes"]
+
+
+FANOUT_PROBE = """
+import asyncio, uuid
+from datetime import UTC, datetime
+from app.core.valkey import valkey_client
+from app.metrics.fanout import publish, subscribe
+from app.metrics.samples import Reading, Sample
+
+async def main():
+    client = valkey_client()
+    sample = Sample(time=datetime.now(UTC), server_id=uuid.uuid4(), readings=(Reading(metric="cpu.used_percent", value=12.5),))
+    async with subscribe(client, [sample.server_id]) as samples:
+        await publish(client, sample)
+        received = await asyncio.wait_for(anext(samples), 5)
+    await client.aclose()
+    print("received" if received == sample else "different")
+
+asyncio.run(main())
+"""
+
+
+def test_a_sample_published_in_the_backend_reaches_a_subscriber_there():
+    result = _compose("exec", "-T", "backend", "python", "-c", FANOUT_PROBE)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "received"
+
+
 def test_caddy_waits_for_a_healthy_backend_and_frontend():
     depends_on = _model()["services"]["caddy"]["depends_on"]
     assert {name: d["condition"] for name, d in depends_on.items()} == {
@@ -263,9 +306,12 @@ def _resolves(service: str, host: str) -> bool:
         ("frontend", "caddy", True),
         ("frontend", "db", False),
         ("backend", "db", True),
+        ("backend", "valkey", True),
+        ("caddy", "valkey", False),
+        ("frontend", "valkey", False),
     ],
 )
-def test_only_the_backend_can_find_the_database(service, host, expected):
+def test_only_the_backend_can_find_the_database_and_valkey(service, host, expected):
     assert _resolves(service, host) is expected
 
 
@@ -311,6 +357,12 @@ def test_the_api_role_logs_in_and_may_not_update_audit_log():
     update = _psql_as_api_role("UPDATE audit_log SET reason = 'changed'")
     assert update.returncode != 0, update.stdout
     assert "permission denied" in update.stderr
+
+
+def test_the_api_role_can_read_metrics_1m():
+    result = _psql_as_api_role("SELECT count(*) FROM metrics_1m")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0"
 
 
 def test_caddy_accepts_the_caddyfile_and_finds_nothing_to_reformat():

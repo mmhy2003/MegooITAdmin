@@ -44,7 +44,7 @@ FRONTEND_IMAGE = "megooitadmin-frontend:${MEGOO_SERVICES_PROJECT}"
 FRONTEND_URL = "http://localhost:${WEB_PORT}"
 
 [services.stack]
-description = "The whole Compose stack built from this checkout (docker-compose.build.yml: caddy, frontend, backend, db) and the fake sshd server, for pytest -m stack"
+description = "The whole Compose stack built from this checkout (docker-compose.build.yml: caddy, frontend, backend, db, valkey) and the fake sshd server, for pytest -m stack"
 compose = ["docker-compose.yml", "docker-compose.build.yml", "tools/fake-server/docker-compose.stack.yml"]
 ports = ["STACK_PORT"]
 

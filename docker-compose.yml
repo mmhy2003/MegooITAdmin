@@ -52,12 +52,15 @@ services:
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
       SESSION_ABSOLUTE_MINUTES: ${SESSION_ABSOLUTE_MINUTES:-720}
       API_DOCS: ${API_DOCS:-false}
+      VALKEY_URL: valkey://valkey:6379/0
     volumes:
       # The platform's SSH private key. Back it up: a lost key means a new one on every server.
       - ssh_key:/var/lib/megooitadmin/ssh
     networks: [edge, core, servers]
     depends_on:
       db:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     healthcheck:
       # The image has no curl.
@@ -82,6 +85,19 @@ services:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U megooitadmin -d megooitadmin"]
       <<: *healthcheck-timing
 
+  valkey:
+    image: valkey/valkey:9
+    restart: unless-stopped
+    # Append-only file in /data, so the job queue finds it ready. No password: valkey is only on core (internal) and
+    # publishes no port, and the image turns protected mode off.
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - valkey_data:/data
+    networks: [core]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      <<: *healthcheck-timing
+
 networks:
   # edge and servers have a route out: caddy publishes a port, and the backend reaches managed servers.
   edge: {}
@@ -96,3 +112,4 @@ networks:
 volumes:
   db_data: {}
   ssh_key: {}
+  valkey_data: {}
