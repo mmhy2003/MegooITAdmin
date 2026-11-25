@@ -7,14 +7,15 @@ from fastapi import Depends, HTTPException, Request
 from app.audit import Actor, Event, Result, Target, record, source_of
 from app.auth import actions
 from app.auth.models import AuthSession, User
-from app.auth.sessions import COOKIE, lookup_session
+from app.auth.sessions import BACKGROUND_HEADER, COOKIE, lookup_session
 from app.core.db import DbSession
 
 NOT_SIGNED_IN = "not_signed_in"
 
 
 async def current_session(request: Request, db: DbSession) -> AuthSession:
-    lookup = await lookup_session(db, request.cookies.get(COOKIE))
+    background = request.headers.get(BACKGROUND_HEADER) == "1"
+    lookup = await lookup_session(db, request.cookies.get(COOKIE), touch=not background)
     if lookup.session is not None:
         return lookup.session
     expired = lookup.expired

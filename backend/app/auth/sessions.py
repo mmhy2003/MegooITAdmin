@@ -1,7 +1,8 @@
 """Sessions: a row per signed-in browser, keyed by the SHA-256 of a random token that only the cookie holds.
 
 A pending session (password right, second factor to come) lives 10 minutes. An active one ends after
-session_idle_minutes without a request and session_absolute_minutes after sign-in. Revoking a session deletes its row.
+session_idle_minutes without a request (background requests do not count) and session_absolute_minutes after
+sign-in. Revoking a session deletes its row.
 """
 
 import hashlib
@@ -25,6 +26,9 @@ COOKIE = "megoo_session"
 PENDING_LIFETIME = timedelta(minutes=10)
 # last_seen_at is written at most this often, so most requests do not write.
 TOUCH_EVERY = timedelta(minutes=1)
+# A request with this header set to 1 (the pages' automatic re-reads) does not move last_seen_at: it can only let a
+# session end sooner, never keep it alive.
+BACKGROUND_HEADER = "x-megoo-background"
 
 
 @dataclass(frozen=True)
@@ -78,7 +82,7 @@ async def create_session(
     return token
 
 
-async def lookup_session(db: AsyncSession, token: str | None) -> Lookup:
+async def lookup_session(db: AsyncSession, token: str | None, *, touch: bool = True) -> Lookup:
     if not token:
         return Lookup(None, None)
     session = await db.scalar(
@@ -91,7 +95,7 @@ async def lookup_session(db: AsyncSession, token: str | None) -> Lookup:
         await db.delete(session)
         await db.flush()
         return Lookup(None, session)
-    if now - session.last_seen_at >= TOUCH_EVERY:
+    if touch and now - session.last_seen_at >= TOUCH_EVERY:
         session.last_seen_at = now
     return Lookup(session, None)
 

@@ -194,11 +194,12 @@ def probe_app() -> FastAPI:
     return app
 
 
-async def get_probe(token: str | None):
+async def get_probe(token: str | None, *, background: str | None = None):
     transport = ASGITransport(app=probe_app())
     cookies = {sessions.COOKIE: token} if token else {}
+    headers = {sessions.BACKGROUND_HEADER: background} if background is not None else {}
     async with AsyncClient(transport=transport, base_url="http://test", cookies=cookies) as client:
-        return await client.get("/probe")
+        return await client.get("/probe", headers=headers)
 
 
 async def test_a_pending_session_cannot_call_a_current_user_route(clock):
@@ -232,3 +233,46 @@ async def test_an_expired_active_session_records_nothing_and_is_deleted(clock):
     assert await events("auth.mfa_failed") == []
     async with SessionLocal() as db:
         assert await db.scalar(select(func.count()).select_from(AuthSession)) == 0
+
+
+async def test_a_background_request_does_not_move_last_seen_at(clock):
+    user, _ = await make_user()
+    token = await start(user)
+    signed_in = clock.now
+    clock.advance(minutes=5)
+    assert (await get_probe(token, background="1")).status_code == 200
+    assert (await rows())[0].last_seen_at == signed_in
+
+
+async def test_a_session_kept_only_by_background_requests_ends_after_the_idle_limit(clock):
+    user, _ = await make_user()
+    token = await start(user)
+    for _ in range(2):
+        clock.advance(minutes=20)
+        assert (await get_probe(token, background="1")).status_code == 200
+    clock.advance(minutes=20)  # 60 minutes without a foreground request
+    response = await get_probe(token, background="1")
+    assert response.status_code == 401 and response.json() == {"detail": "not_signed_in"}
+    assert await rows() == []
+
+
+@pytest.mark.parametrize("background", [None, "0"])
+async def test_a_request_without_the_header_still_moves_last_seen_at(clock, background):
+    user, _ = await make_user()
+    token = await start(user)
+    signed_in = clock.now
+    clock.advance(minutes=5)
+    assert (await get_probe(token, background=background)).status_code == 200
+    assert (await rows())[0].last_seen_at == signed_in + timedelta(minutes=5)
+
+
+async def test_lookup_without_touch_leaves_last_seen_at(clock):
+    user, _ = await make_user()
+    token = await start(user)
+    signed_in = clock.now
+    clock.advance(minutes=5)
+    async with SessionLocal() as db:
+        found = await sessions.lookup_session(db, token, touch=False)
+        await db.commit()
+    assert found.session is not None
+    assert (await rows())[0].last_seen_at == signed_in
