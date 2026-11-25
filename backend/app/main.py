@@ -9,6 +9,10 @@ from app.users.router import router as users_router
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    if settings.auth_secret_key is None:
+        raise RuntimeError(
+            "AUTH_SECRET_KEY is not set: the API checks authenticator codes with it. Run make up, or see .env.example"
+        )
     # Caddy forwards /api/* unchanged, and nothing is served outside /api, the docs included. The docs are open to
     # anyone who reaches them, so they are served only on request (decision 20).
     docs = settings.api_docs

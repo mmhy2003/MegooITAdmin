@@ -41,10 +41,27 @@ def test_alembic_url_without_the_owners_url_names_the_variable(monkeypatch):
 TEST_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 
 
-def test_auth_secret_key_is_required(monkeypatch):
+def test_auth_secret_key_is_optional_and_auth_key_names_it(monkeypatch):
     monkeypatch.delenv("AUTH_SECRET_KEY", raising=False)
-    with pytest.raises(ValidationError, match="auth_secret_key"):
-        Settings(database_url=URL)
+    settings = Settings(database_url=URL)
+    assert settings.auth_secret_key is None
+    with pytest.raises(RuntimeError, match="AUTH_SECRET_KEY is not set"):
+        settings.auth_key()
+
+
+def test_the_app_refuses_to_start_without_the_key():
+    from app.main import create_app
+
+    with pytest.raises(RuntimeError, match="AUTH_SECRET_KEY is not set"):
+        create_app(Settings(database_url=URL, auth_secret_key=None))
+
+
+def test_the_collector_settings_have_their_defaults(monkeypatch):
+    monkeypatch.delenv("DATABASE_COLLECTOR_URL", raising=False)
+    monkeypatch.delenv("COLLECTOR_HEARTBEAT_FILE", raising=False)
+    settings = Settings(database_url=URL)
+    assert settings.database_collector_url is None
+    assert settings.collector_heartbeat_file == "/tmp/megooitadmin-collector.heartbeat"
 
 
 @pytest.mark.parametrize("key", ["abc", "zz" * 32, "00" * 33])
