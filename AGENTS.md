@@ -48,7 +48,8 @@ this file says what each one means here. [docs/releasing.md](docs/releasing.md) 
 Run these before any merge:
 
 - **Backend** (`backend/`): `megoocolab-runner services run test -- uv run pytest`, then the container start-up
-  tests: `megoocolab-runner services run image -- uv run pytest -m docker`.
+  tests: `megoocolab-runner services run image -- uv run pytest -m docker`. The `test` set starts PostgreSQL with
+  TimescaleDB and pgvector, Valkey and the fake server.
 - **Frontend** (`frontend/`): `npx tsc --noEmit`, `npx eslint <changed files>` and `npm test`, then the image
   check: `megoocolab-runner services run web -- npm run test:image`.
 - **Stack** (`backend/`): `megoocolab-runner services run stack -- uv run pytest -m stack`. It starts the whole

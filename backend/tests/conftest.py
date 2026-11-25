@@ -1,7 +1,8 @@
 """Points the app at the test database before any app module is imported.
 
 `megoocolab-runner services run test -- uv run pytest` starts that database and sets TEST_DATABASE_URL, the URL
-the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with.
+the app serves with, and TEST_DATABASE_OWNER_URL, the owner's URL that Alembic migrates with. The set also starts
+Valkey and sets TEST_VALKEY_URL, passed on as VALKEY_URL.
 """
 
 import os
@@ -26,10 +27,15 @@ def _own_file(config: pytest.Config) -> str | None:
     return ONLY.get(config.getoption("markexpr"))
 
 
-def _test_url(name: str) -> str:
-    url = os.environ.get(name)
-    if not url:
+def _required(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
         pytest.exit(f"{name} is not set. Run the suite as: {RUN_TESTS}", returncode=2)
+    return value
+
+
+def _test_url(name: str) -> str:
+    url = _required(name)
     database = url.rsplit("/", 1)[-1].split("?", 1)[0]
     if not database.endswith("_test"):
         pytest.exit(
@@ -43,6 +49,7 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     os.environ["DATABASE_URL"] = _test_url("TEST_DATABASE_URL")
     os.environ["DATABASE_OWNER_URL"] = _test_url("TEST_DATABASE_OWNER_URL")
+    os.environ["VALKEY_URL"] = _required("TEST_VALKEY_URL")
     os.environ["DB_NULL_POOL"] = "true"
     os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
     # Each run makes its own platform key in a fresh directory, never the image's path.
@@ -73,6 +80,13 @@ def owner_session():
     return AsyncSession(_owner_engine(), expire_on_commit=False)
 
 
+async def owner_call(sql: str) -> None:
+    """Runs, as the owner, a statement that refuses a transaction block: CALL run_job, CALL refresh_continuous_aggregate."""
+    async with _owner_engine().connect() as connection:
+        connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await connection.exec_driver_sql(sql)
+
+
 def upgrade_to_head() -> None:
     """Migrates as the owner, then sets the API role's password, as the entrypoint does. Sync: Alembic's env.py
     runs its own event loop. A downgrade below 0003 drops the API role, so every way back to head goes through here."""
@@ -88,6 +102,30 @@ def upgrade_to_head() -> None:
 @pytest.fixture(scope="session")
 def database_at_head():
     upgrade_to_head()
+
+
+METRICS_JOBS_WHERE = (
+    "hypertable_name = 'metrics' OR hypertable_name IN (SELECT materialization_hypertable_name"
+    " FROM timescaledb_information.continuous_aggregates WHERE view_name IN ('metrics_1m', 'metrics_1h'))"
+)
+
+
+@pytest.fixture
+async def metrics_jobs_paused(database_at_head):
+    """Stops the metrics jobs from running on their own, so a test runs them when it wants. Restored afterwards."""
+    from sqlalchemy import text
+
+    async with owner_session() as session:
+        await session.execute(
+            text(f"SELECT alter_job(job_id, scheduled => false) FROM timescaledb_information.jobs WHERE {METRICS_JOBS_WHERE}")
+        )
+        await session.commit()
+    yield
+    async with owner_session() as session:
+        await session.execute(
+            text(f"SELECT alter_job(job_id, scheduled => true) FROM timescaledb_information.jobs WHERE {METRICS_JOBS_WHERE}")
+        )
+        await session.commit()
 
 
 @pytest.fixture

@@ -26,6 +26,10 @@ API_GRANTS: dict[str, frozenset[str]] = {
     "user_invites": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "servers": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "server_tags": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    # The backend only reads metrics. The collector's role writes them (MITA-26).
+    "metrics": frozenset({"SELECT"}),
+    "metrics_1m": frozenset({"SELECT"}),
+    "metrics_1h": frozenset({"SELECT"}),
 }
 ROLE_OID = "(SELECT oid FROM pg_roles WHERE rolname = :role)"
 
@@ -51,6 +55,20 @@ async def test_the_api_role_cannot_create_a_table_in_public():
         await session.execute(text(f"SET LOCAL ROLE {API_ROLE}"))
         with pytest.raises(DBAPIError) as exc:
             await session.execute(text("CREATE TABLE api_role_probe (id int)"))
+        await session.rollback()
+    assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE
+
+
+async def test_the_api_role_cannot_insert_a_metric():
+    async with owner_session() as session:
+        await session.execute(text(f"SET LOCAL ROLE {API_ROLE}"))
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(
+                text(
+                    "INSERT INTO metrics (time, server_id, metric, value)"
+                    " VALUES (now(), gen_random_uuid(), 'cpu.used_percent', 1)"
+                )
+            )
         await session.rollback()
     assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE
 

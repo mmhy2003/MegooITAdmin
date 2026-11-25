@@ -270,5 +270,95 @@ def test_the_database_refuses_a_pin_without_its_time_and_a_block_without_a_pin()
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0007'")
 
 
+METRICS_RELATIONS = ("metrics", "metrics_1m", "metrics_1h")
+# Policy jobs of the three relations. For a rollup, jobs.hypertable_name is its materialization hypertable.
+METRICS_JOBS_SQL = (
+    "SELECT j.job_id, j.proc_name, coalesce(c.view_name, j.hypertable_name) AS relation, j.schedule_interval, j.config"
+    " FROM timescaledb_information.jobs j LEFT JOIN timescaledb_information.continuous_aggregates c"
+    " ON c.materialization_hypertable_name = j.hypertable_name"
+    " WHERE coalesce(c.view_name, j.hypertable_name) IN ('metrics', 'metrics_1m', 'metrics_1h')"
+)
+# (job, relation, config key, value, runs every or None when the default is fine)
+METRICS_JOBS = [
+    ("policy_retention", "metrics", "drop_after", "48 hours", "1 hour"),
+    ("policy_compression", "metrics", "compress_after", "1 hour", None),
+    ("policy_refresh_continuous_aggregate", "metrics_1m", "start_offset", "24 hours", "1 minute"),
+    ("policy_compression", "metrics_1m", "compress_after", "2 days", None),
+    ("policy_retention", "metrics_1m", "drop_after", "30 days", None),
+    ("policy_refresh_continuous_aggregate", "metrics_1h", "start_offset", "7 days", "1 hour"),
+    ("policy_compression", "metrics_1h", "compress_after", "30 days", None),
+    ("policy_retention", "metrics_1h", "drop_after", "13 months", None),
+]
+
+
+def _metrics_relations() -> list:
+    return _fetch(f"SELECT {', '.join(f'to_regclass({r!r})' for r in METRICS_RELATIONS)}")
+
+
+def test_0008_goes_down_and_up_again():
+    command.downgrade(_config(), "0007")
+    try:
+        assert _metrics_relations() == [(None, None, None)]
+        assert _fetch(f"SELECT count(*) FROM ({METRICS_JOBS_SQL}) j") == [(0,)]
+    finally:
+        upgrade_to_head()
+    assert _metrics_relations() == [METRICS_RELATIONS]
+
+
+def test_metrics_is_a_hypertable_on_time_with_6_hour_chunks():
+    assert _fetch(
+        "SELECT column_name, time_interval = INTERVAL '6 hours' FROM timescaledb_information.dimensions"
+        " WHERE hypertable_name = 'metrics'"
+    ) == [("time", True)]
+
+
+def test_both_rollups_are_real_time_with_their_chunk_intervals():
+    rows = _fetch(
+        "SELECT c.view_name, c.materialized_only, d.time_interval FROM timescaledb_information.continuous_aggregates c"
+        " JOIN timescaledb_information.dimensions d ON d.hypertable_name = c.materialization_hypertable_name"
+        " WHERE c.view_name IN ('metrics_1m', 'metrics_1h') ORDER BY c.view_name"
+    )
+    assert [(r[0], r[1]) for r in rows] == [("metrics_1h", False), ("metrics_1m", False)]
+    assert _fetch(
+        "SELECT d.time_interval = INTERVAL '30 days' FROM timescaledb_information.continuous_aggregates c"
+        " JOIN timescaledb_information.dimensions d ON d.hypertable_name = c.materialization_hypertable_name"
+        " WHERE c.view_name = 'metrics_1h'"
+    ) == [(True,)]
+    assert _fetch(
+        "SELECT d.time_interval = INTERVAL '1 day' FROM timescaledb_information.continuous_aggregates c"
+        " JOIN timescaledb_information.dimensions d ON d.hypertable_name = c.materialization_hypertable_name"
+        " WHERE c.view_name = 'metrics_1m'"
+    ) == [(True,)]
+
+
+def test_the_metrics_jobs_are_scheduled():
+    actual = sorted((row[1], row[2]) for row in _fetch(METRICS_JOBS_SQL))
+    assert actual == sorted((job, relation) for job, relation, *_ in METRICS_JOBS)
+    for job, relation, key, value, every in METRICS_JOBS:
+        every_check = f", j.schedule_interval = INTERVAL '{every}'" if every else ""
+        rows = _fetch(
+            f"SELECT (j.config->>'{key}')::interval = INTERVAL '{value}'{every_check} FROM ({METRICS_JOBS_SQL}) j"
+            f" WHERE j.proc_name = '{job}' AND j.relation = '{relation}'"
+        )
+        assert rows == [(True, True) if every else (True,)], (job, relation)
+
+
+def _insert_metric(metric: str, value: str) -> None:
+    _execute(
+        "INSERT INTO metrics (time, server_id, metric, instance, value)"
+        f" VALUES (now(), gen_random_uuid(), '{metric}', '', {value})"
+    )
+
+
+def test_the_database_refuses_a_bad_metric_name_and_a_value_that_is_not_finite():
+    with pytest.raises(IntegrityError, match="metrics_metric_check"):
+        _insert_metric("CPU.used", "1")
+    with pytest.raises(IntegrityError, match="metrics_metric_check"):
+        _insert_metric("a" * 65, "1")
+    for bad in ("'NaN'::float8", "'Infinity'::float8", "'-Infinity'::float8"):
+        with pytest.raises(IntegrityError, match="metrics_value_check"):
+            _insert_metric("cpu.used_percent", bad)
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())
