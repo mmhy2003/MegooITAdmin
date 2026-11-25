@@ -3,6 +3,7 @@ when a server's row changes, a stop when it is removed, and the heartbeat and pe
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -108,6 +109,32 @@ async def test_windows_unpinned_and_flagged_servers_are_not_monitored_without_a_
         assert sup.targets == {}
 
 
+async def test_a_stream_that_stopped_by_itself_restarts_once_its_row_can_be_tried(
+    clean_auth, collector_sessions, fake_server, tmp_path
+):
+    # A stream returns after a changed host key. If an Admin keeps the pinned key before the next poll, the row looks
+    # as before: the stream must start again all the same.
+    server = await pinned_server(fake_server, "sup-restart")
+    sup, writer = supervisor_of(collector_sessions, tmp_path)
+
+    async with supervising(sup, writer):
+        await sup.poll()
+        stream, task = sup._streams[server.id]
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        returned = asyncio.create_task(asyncio.sleep(0))
+        await returned
+        sup._streams[server.id] = (stream, returned)
+        assert sup.targets == {}
+
+        await sup.poll()
+
+        assert set(sup.targets) == {server.id}
+        assert sup._streams[server.id][1] is not returned
+        await eventually(counted(lambda: fake_server.loops() == 1))
+
+
 async def test_a_changed_interval_restarts_the_loop(clean_auth, collector_sessions, fake_server, tmp_path):
     server = await pinned_server(fake_server, "sup-4")
     sup, writer = supervisor_of(collector_sessions, tmp_path)
@@ -160,3 +187,25 @@ async def test_sign_ins_are_limited_to_20(clean_auth, collector_sessions, fake_s
         await sup.poll()
         stream, _ = sup._streams[server.id]
         assert stream.sign_ins is sup.sign_ins
+
+
+async def test_an_unexpected_error_in_a_poll_is_logged_and_the_next_poll_runs(collector_sessions, tmp_path, caplog):
+    sup, _ = supervisor_of(collector_sessions, tmp_path)
+    sup.poll_every = 0.01
+    calls = []
+
+    async def poll() -> None:
+        calls.append(None)
+        if len(calls) == 1:
+            raise KeyError("username")
+
+    sup.poll = poll
+    task = asyncio.create_task(sup.run())
+    try:
+        await eventually(lambda: len(calls) >= 2, timeout=5)
+        assert not task.done()
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert [r for r in caplog.records if r.name == "app.collector.supervisor" and r.levelno == logging.ERROR]

@@ -1,6 +1,7 @@
 """The collector's metrics writer: one insert per batch, and during a database outage the newest samples wait in a
 bounded buffer."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -123,3 +124,55 @@ async def test_flush_of_an_empty_buffer_does_nothing(collector_sessions, monkeyp
 
     assert await Writer(collector_sessions).flush() == 0
     assert calls == []
+
+
+async def test_a_sample_the_database_refuses_is_dropped_and_the_others_are_written(
+    clean_auth, collector_sessions, caplog
+):
+    # A NUL that got past parse makes PostgreSQL refuse the whole insert, every time: retrying it would stop every
+    # server's metrics. The batch is written sample by sample instead, without the refused one.
+    good, bad = uuid.uuid4(), uuid.uuid4()
+    poisoned = Sample(
+        time=START, server_id=bad, readings=(Reading(metric="net.rx_bytes_per_sec", instance="eth\x00", value=1.0),)
+    )
+    writer = Writer(collector_sessions)
+    writer.add(sample(good, 1))
+    writer.add(poisoned)
+    writer.add(sample(good, 2))
+
+    assert await writer.flush() == 2
+
+    assert (writer.pending, writer.refused) == (0, 1)
+    assert await times_of(good) == [START + timedelta(seconds=n) for n in (1, 2)]
+    assert await metric_rows(bad) == 0
+    assert [r for r in caplog.records if r.name == "app.collector.writer"]
+
+    writer.add(sample(good, 3))
+    assert await writer.flush() == 1
+
+
+async def test_a_flush_cancelled_midway_keeps_its_batch(clean_auth, collector_sessions, monkeypatch):
+    # SIGTERM cancels the writer's loop, maybe inside a flush: the final flush must still write that batch.
+    server_id = uuid.uuid4()
+    writer = Writer(collector_sessions)
+    started, real = asyncio.Event(), writer_module.write_samples
+
+    async def stuck(session, samples):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(writer_module, "write_samples", stuck)
+    writer.add(sample(server_id, 1))
+    writer.add(sample(server_id, 2))
+    flushing = asyncio.create_task(writer.flush())
+    await started.wait()
+    writer.add(sample(server_id, 3))
+
+    flushing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await flushing
+
+    assert writer.pending == 3
+    monkeypatch.setattr(writer_module, "write_samples", real)
+    assert await writer.flush() == 3
+    assert await times_of(server_id) == [START + timedelta(seconds=n) for n in (1, 2, 3)]

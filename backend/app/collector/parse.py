@@ -1,16 +1,20 @@
 """The loop's output: a byte stream cut into lines, and each line read as one sample (script.sh prints the format).
 
-The server's account writes this output, so every size is bounded: a line, a name and the number of rows of each list.
+The server's account writes this output, so every size is bounded: a line, a name, a counter and the number of rows of
+each list. A name with a control character is dropped too: PostgreSQL cannot store NUL in text.
 """
 
+import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_LINE = 256 * 1024
 MAX_NAME = 255
 MAX_CORES = 256  # cpu rows kept: the whole-server row and 256 cores
 MAX_DEVICES = 64  # interfaces, disks and filesystems kept, each
+
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 _KEEP = {"cpu": MAX_CORES + 1, "net": MAX_DEVICES, "disk": MAX_DEVICES, "fs": MAX_DEVICES}
 
@@ -47,7 +51,7 @@ class Lines:
         return lines
 
 
-Counter = NonNegativeInt
+Counter = Annotated[int, Field(ge=0, lt=2**64)]  # the kernel's counters are 64 bits
 Load = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
@@ -87,12 +91,14 @@ class Raw(BaseModel):
         for key, keep in _KEEP.items():
             rows = data.get(key)
             if isinstance(rows, list):
-                data[key] = [row for row in rows if not _long_name(row)][:keep]
+                data[key] = [row for row in rows if not _bad_name(row)][:keep]
         return data
 
 
-def _long_name(row: Any) -> bool:
-    return isinstance(row, list) and bool(row) and isinstance(row[0], str) and len(row[0]) > MAX_NAME
+def _bad_name(row: Any) -> bool:
+    if not (isinstance(row, list) and row and isinstance(row[0], str)):
+        return False
+    return len(row[0]) > MAX_NAME or CONTROL.search(row[0]) is not None
 
 
 def parse(line: bytes) -> Raw:

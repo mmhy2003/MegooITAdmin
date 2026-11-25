@@ -60,6 +60,8 @@ class Supervisor:
     async def poll(self) -> None:
         """Starts, keeps, restarts or stops each server's stream after the servers table. Raises on a database
         error."""
+        # A stream that returned by itself (a changed host key) flagged its row first, so this read sees the flag.
+        ended = {server_id for server_id, (_, task) in self._streams.items() if task.done()}
         async with self.sessions() as session:
             rows = (await session.scalars(select(Server))).all()
         for row in rows:
@@ -72,10 +74,10 @@ class Supervisor:
             current = self._streams.get(row.id)
             if current is not None and current[0].target == target:
                 task = current[1]
-                if not task.done() or (not task.cancelled() and task.exception() is None):
-                    # Running, or stopped by itself (a changed host key) until the row changes.
+                if row.id not in ended:
+                    # Running, or it returned after this poll read the rows: the next poll sees why.
                     continue
-                if not task.cancelled():
+                if not task.cancelled() and task.exception() is not None:
                     logger.warning("The stream of %s stopped: %r", row.id, task.exception())
             self._stop(row.id)
             self._start(target)
@@ -115,6 +117,9 @@ class Supervisor:
             except (SQLAlchemyError, OSError) as error:
                 if self._warned():
                     logger.warning("Could not read the servers, will retry: %s", type(error).__name__)
+            except Exception:
+                # A bug: the heartbeat goes stale, so the healthcheck shows it, and the next poll tries again.
+                logger.exception("Could not follow the servers, will retry")
             await asyncio.sleep(self.poll_every)
 
     async def stop(self) -> None:

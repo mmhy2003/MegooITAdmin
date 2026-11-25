@@ -1,6 +1,7 @@
 """python -m app.collector as its own process: it starts without the auth key, reports healthy through its heartbeat,
 and stops cleanly on SIGTERM. The healthcheck follows the heartbeat's age."""
 
+import asyncio
 import os
 import signal
 import subprocess
@@ -8,7 +9,11 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
+import app.collector.__main__ as main_module
 from app.collector.health import healthy
+from app.collector.writer import Writer
 
 BACKEND = Path(__file__).resolve().parents[2]
 
@@ -53,3 +58,25 @@ def test_the_collector_starts_without_the_key_reports_healthy_and_stops_on_sigte
         if process.poll() is None:
             process.kill()
             process.communicate()
+
+
+async def test_serve_raises_when_the_writer_or_the_supervisor_ends(clean_auth, monkeypatch):
+    # The process must exit then, so that Compose restarts it: an unhealthy container is not restarted.
+    async def broken(self) -> None:
+        raise ValueError("a bug")
+
+    monkeypatch.setattr(Writer, "run", broken)
+
+    with pytest.raises(ValueError, match="a bug"):
+        await asyncio.wait_for(main_module.serve(asyncio.Event()), 20)
+
+
+def test_the_collector_exits_non_zero_when_serve_fails(monkeypatch):
+    async def failing(stop: asyncio.Event) -> None:
+        raise ValueError("a bug")
+
+    monkeypatch.setattr(main_module, "serve", failing)
+
+    with pytest.raises(SystemExit) as exit_:
+        main_module.main()
+    assert exit_.value.code == 1

@@ -1,8 +1,10 @@
-"""python -m app.collector: the collector's process. SIGTERM closes the channels, writes what is buffered and exits."""
+"""python -m app.collector: the collector's process. SIGTERM closes the channels, writes what is buffered and exits.
+If the writer or the supervisor ends by itself, the process exits with status 1, so that Compose restarts it."""
 
 import asyncio
 import logging
 import signal
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -22,7 +24,8 @@ SHUTDOWN_FLUSH = 5.0
 
 
 async def serve(stop: asyncio.Event) -> None:
-    """Runs the writer and the supervisor until `stop` is set, then stops every stream and writes what is buffered."""
+    """Runs the writer and the supervisor until `stop` is set, then stops every stream and writes what is buffered.
+    Raises when the writer or the supervisor ends before (RuntimeError when it returned)."""
     settings = get_settings()
     status = StatusBook(SessionLocal)
     while not stop.is_set():  # wait for the database, without giving up
@@ -49,9 +52,14 @@ async def serve(stop: asyncio.Event) -> None:
         heartbeat=Path(settings.collector_heartbeat_file),
     )
     tasks = [asyncio.create_task(writer.run()), asyncio.create_task(supervisor.run())]
+    stopped = asyncio.create_task(stop.wait())
     try:
-        await stop.wait()
+        await asyncio.wait([stopped, *tasks], return_when=asyncio.FIRST_COMPLETED)
+        for task in tasks:
+            if task.done():
+                raise task.exception() or RuntimeError(f"{task.get_coro().__qualname__} returned")
     finally:
+        stopped.cancel()
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -74,7 +82,11 @@ def main() -> None:
         await serve(stop)
         logger.info("The collector stopped.")
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except Exception:
+        logger.exception("The collector failed.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

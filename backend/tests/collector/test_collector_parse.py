@@ -65,6 +65,10 @@ def test_a_line_longer_than_256_kb_is_skipped_and_counted_and_the_next_one_arriv
         pytest.param(_line(net=[["eth0", -1, 2000]]), id="a negative counter"),
         pytest.param(_without("mem"), id="mem missing"),
         pytest.param(APPENDIX_A_LINE.replace(b"[0.5,0.25,0.125]", b"[NaN,0.25,0.125]"), id="NaN load"),
+        pytest.param(_line(net=[["eth0", 10**400, 2000]]), id="a counter past 64 bits"),
+        pytest.param(
+            _line(mem={"total": 2**64, "available": 1, "swap_total": 0, "swap_free": 0}), id="memory past 64 bits"
+        ),
     ],
 )
 def test_malformed_lines_are_refused(line: bytes) -> None:
@@ -89,6 +93,25 @@ def test_a_name_longer_than_255_characters_is_dropped() -> None:
 
     assert raw.net == (("e" * 255, 3, 4),)
     assert raw.fs == ()
+
+
+def test_a_name_with_a_control_character_is_dropped() -> None:
+    # PostgreSQL text cannot hold NUL: such a name would make the database refuse the writer's whole batch.
+    line = _line(
+        net=[["eth\u0000", 1, 2], ["eth\n1", 1, 2], ["eth\u007f", 1, 2], ["eth0", 3, 4]],
+        disk=[["sda\u0000", 1, 1, 1]],
+        fs=[["/\u0001", 1, 1, 0, 1, 1]],
+    )
+
+    raw = parse(line)
+
+    assert raw.net == (("eth0", 3, 4),)
+    assert raw.disk == ()
+    assert raw.fs == ()
+
+
+def test_the_largest_64_bit_counter_parses() -> None:
+    assert parse(_line(net=[["eth0", 2**64 - 1, 0]])).net == (("eth0", 2**64 - 1, 0),)
 
 
 def test_odd_names_are_kept_as_given() -> None:
