@@ -240,8 +240,10 @@ def test_no_script_pastes_an_expression(release):
 
 
 def test_the_workflow_publishes_exactly_the_images_compose_pulls(release):
-    pulled = {name for name, s in yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"].items() if s.get("image", "").startswith(GHCR)}
-    built = set(yaml.safe_load((ROOT / "docker-compose.build.yml").read_text())["services"])
+    # Images, not services: the collector runs the backend's image.
+    services = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"].values()
+    pulled = {s["image"].removeprefix(GHCR).split(":")[0] for s in services if s.get("image", "").startswith(GHCR)}
+    built = {name for name, s in yaml.safe_load((ROOT / "docker-compose.build.yml").read_text())["services"].items() if "build" in s}
     matrix = set(release["jobs"]["images"]["strategy"]["matrix"]["image"])
     published = set(release["jobs"]["publish"]["env"]["IMAGES"].split())
     assert pulled == built == matrix == published == {"backend", "frontend"}

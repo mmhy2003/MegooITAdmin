@@ -6,6 +6,8 @@ import json
 import os
 import re
 import subprocess
+import time
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from uuid import UUID
@@ -28,6 +30,7 @@ NETWORKS = {
     "caddy": {"edge"},
     "frontend": {"edge"},
     "backend": {"edge", "core", "servers"},
+    "collector": {"core", "servers"},
     "db": {"core", "exec"},
     "valkey": {"core"},
 }
@@ -156,7 +159,7 @@ def test_a_websocket_upgrade_reaches_the_backend():
     assert _get("/api/ws/check", headers=handshake).status_code == 403
 
 
-def test_the_stack_has_exactly_its_five_services():
+def test_the_stack_has_exactly_its_six_services():
     assert set(_model()["services"]) == set(NETWORKS)
 
 
@@ -177,11 +180,14 @@ def test_core_exec_and_sandbox_are_internal_and_edge_and_servers_are_not():
     assert {name for name, network in networks.items() if network.get("internal")} == {"core", "exec", "sandbox"}
 
 
-def test_only_the_backend_mounts_the_ssh_key_volume():
+def test_the_backend_mounts_the_ssh_key_volume_and_the_collector_reads_it():
     services = _model()["services"]
-    backend = [(v["type"], v["source"], v["target"]) for v in services["backend"]["volumes"]]
-    assert backend == [("volume", "ssh_key", "/var/lib/megooitadmin/ssh")]
-    others = {name for name, service in services.items() if name != "backend" and any(v["source"] == "ssh_key" for v in service.get("volumes", []))}
+    for name, read_only in (("backend", False), ("collector", True)):
+        volumes = services[name]["volumes"]
+        assert [(v["type"], v["source"], v["target"]) for v in volumes] == [("volume", "ssh_key", "/var/lib/megooitadmin/ssh")], name
+        assert volumes[0].get("read_only", False) is read_only, name
+    mounting = {"backend", "collector"}
+    others = {name for name, service in services.items() if name not in mounting and any(v["source"] == "ssh_key" for v in service.get("volumes", []))}
     assert others == set()
     assert "ssh_key" in _model()["volumes"]
 
@@ -198,12 +204,15 @@ def test_docker_compose_yml_pulls_the_two_release_images_and_builds_nothing():
     services = _written(COMPOSE_FILE)
     for name in ("backend", "frontend"):
         assert services[name]["image"] == f"{GHCR}{name}:${{MEGOOITADMIN_VERSION:-latest}}"
+    assert services["collector"]["image"] == f"{GHCR}backend:${{MEGOOITADMIN_VERSION:-latest}}"
     assert {name for name, service in services.items() if "build" in service} == set()
 
 
 def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
     services = _written(BUILD_FILE)
-    assert set(services) == {"backend", "frontend"}
+    assert set(services) == {"backend", "frontend", "collector"}
+    # The collector runs the image the backend service builds, and never pulls it.
+    assert services.pop("collector") == {"image": "megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}", "pull_policy": "never"}
     for name, service in services.items():
         assert service["build"] == f"./{name}"
         assert service["image"] == f"megooitadmin-{name}:${{MEGOOITADMIN_VERSION:-dev}}"
@@ -212,12 +221,32 @@ def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
 
 def test_the_stack_runs_the_images_it_built_under_its_own_tag():
     project = _env("MEGOO_SERVICES_PROJECT")
-    for name in ("backend", "frontend"):
+    for name, image in (("backend", "backend"), ("frontend", "frontend"), ("collector", "backend")):
         container = _compose("ps", "-q", name).stdout.strip()
         inspected = subprocess.run(
             ["docker", "inspect", "--format", "{{.Config.Image}}", container], capture_output=True, text=True, timeout=30
         )
-        assert inspected.stdout.strip() == f"megooitadmin-{name}:{project}"
+        assert inspected.stdout.strip() == f"megooitadmin-{image}:{project}", name
+
+
+def _environ_of(service: str) -> dict[str, str]:
+    result = _compose("exec", "-T", service, "cat", "/proc/1/environ")
+    assert result.returncode == 0, result.stderr
+    return dict(item.split("=", 1) for item in result.stdout.split("\0") if "=" in item)
+
+
+def test_the_collector_runs_the_backends_image_as_its_own_role():
+    collector = _model()["services"]["collector"]
+    assert collector["entrypoint"] == ["python", "-m", "app.collector"]
+    # Names and booleans only, so a failure never prints a password.
+    for variables in (collector["environment"], _environ_of("collector")):
+        assert variables.get("DATABASE_URL", "").startswith("postgresql+asyncpg://megooitadmin_collector:") is True
+        assert not set(variables) & {"AUTH_SECRET_KEY", "DATABASE_OWNER_URL", "DATABASE_COLLECTOR_URL"}
+    assert {name: d["condition"] for name, d in collector["depends_on"].items()} == {
+        "backend": "service_healthy",
+        "valkey": "service_healthy",
+    }
+    assert collector["healthcheck"]["test"] == ["CMD", "python", "-m", "app.collector.health"]
 
 
 def test_the_backend_waits_for_a_healthy_database():
@@ -293,6 +322,7 @@ def _resolves(service: str, host: str) -> bool:
         "caddy": ["getent", "hosts", host],
         "frontend": ["node", "-e", f"require('dns').lookup('{host}', (error) => process.exit(error ? 1 : 0))"],
         "backend": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
+        "collector": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
     }
     return _compose("exec", "-T", service, *commands[service]).returncode == 0
 
@@ -309,9 +339,12 @@ def _resolves(service: str, host: str) -> bool:
         ("backend", "valkey", True),
         ("caddy", "valkey", False),
         ("frontend", "valkey", False),
+        ("collector", "db", True),
+        ("collector", "valkey", True),
+        ("frontend", "collector", False),
     ],
 )
-def test_only_the_backend_can_find_the_database_and_valkey(service, host, expected):
+def test_only_the_backend_and_the_collector_can_find_the_database_and_valkey(service, host, expected):
     assert _resolves(service, host) is expected
 
 
@@ -334,9 +367,7 @@ def test_the_database_keeps_its_data_inside_the_db_data_volume():
 
 def test_the_server_holds_only_the_api_roles_url():
     # Names and booleans only, so a failure never prints a password.
-    result = _compose("exec", "-T", "backend", "cat", "/proc/1/environ")
-    assert result.returncode == 0, result.stderr
-    variables = dict(item.split("=", 1) for item in result.stdout.split("\0") if "=" in item)
+    variables = _environ_of("backend")
     names = set(variables)
     assert "DATABASE_OWNER_URL" not in names
     serves_as_api_role = variables.get("DATABASE_URL", "").startswith("postgresql+asyncpg://megooitadmin_api:")
@@ -357,6 +388,20 @@ def test_the_api_role_logs_in_and_may_not_update_audit_log():
     update = _psql_as_api_role("UPDATE audit_log SET reason = 'changed'")
     assert update.returncode != 0, update.stdout
     assert "permission denied" in update.stderr
+
+
+def _psql_as_collector(sql: str) -> subprocess.CompletedProcess[str]:
+    return _compose(
+        "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_COLLECTOR_PASSWORD')}", "db",
+        "psql", "-h", "127.0.0.1", "-U", "megooitadmin_collector", "-d", "megooitadmin", "-tAc", sql,
+    )
+
+
+def test_the_backend_sets_the_collector_password_and_does_not_hold_it():
+    login = _psql_as_collector("SELECT current_user")
+    assert login.returncode == 0, login.stderr
+    assert login.stdout.strip() == "megooitadmin_collector"
+    assert "DATABASE_COLLECTOR_URL" not in _environ_of("backend")
 
 
 def test_the_api_role_can_read_metrics_1m():
@@ -429,16 +474,21 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         assert (response.status_code, response.json()) == (401, {"detail": "invalid_credentials"})
 
 
-def _audit_of_server(server_id: str) -> list[tuple[str, str]]:
-    """(action, result) of each audit event of the server, oldest first, read as the database owner."""
-    UUID(server_id)  # only a UUID goes into the SQL
-    sql = f"SELECT action, result FROM audit_log WHERE target_type = 'server' AND target_id = '{server_id}' ORDER BY seq"
+def _owner_sql(sql: str) -> str:
+    """What the SQL prints, read as the database owner: one line per row, columns split by |."""
     result = _compose(
         "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_PASSWORD')}", "db",
         "psql", "-h", "127.0.0.1", "-U", "megooitadmin", "-d", "megooitadmin", "-tA", "-F", "|", "-c", sql,
     )
     assert result.returncode == 0, result.stderr
-    return [tuple(line.split("|")) for line in result.stdout.splitlines() if line]
+    return result.stdout
+
+
+def _audit_of_server(server_id: str) -> list[tuple[str, str]]:
+    """(action, result) of each audit event of the server, oldest first, read as the database owner."""
+    UUID(server_id)  # only a UUID goes into the SQL
+    sql = f"SELECT action, result FROM audit_log WHERE target_type = 'server' AND target_id = '{server_id}' ORDER BY seq"
+    return [tuple(line.split("|")) for line in _owner_sql(sql).splitlines() if line]
 
 
 def test_the_owner_pins_and_tests_the_fake_server_and_a_swapped_key_is_refused(owner):
@@ -469,6 +519,98 @@ def test_the_setup_script_downloads_through_caddy(owner):
     assert response.status_code == 200, response.text
     assert response.text.startswith("#!/bin/sh")
     assert "megoo-setup.sh" in response.headers["content-disposition"]
+
+
+def _wait(check: Callable[[], bool], timeout: float, what: str, every: float = 2) -> None:
+    deadline = time.monotonic() + timeout
+    while not check():
+        if time.monotonic() > deadline:
+            pytest.fail(f"Not within {timeout:.0f} s: {what}")
+        time.sleep(every)
+
+
+def _db_now() -> str:
+    return _owner_sql("SELECT now()").strip()
+
+
+def _newest(server_id: str) -> str:
+    """The time of the server's newest sample, -infinity without one."""
+    UUID(server_id)  # only a UUID goes into the SQL
+    return _owner_sql(f"SELECT coalesce(max(time), '-infinity') FROM metrics WHERE server_id = '{server_id}'").strip()
+
+
+def _newer(server_id: str, t: str) -> bool:
+    """Whether the server has a sample newer than t, a time the database printed."""
+    UUID(server_id)  # only a UUID goes into the SQL
+    return _owner_sql(f"SELECT coalesce(max(time) > '{t}', false) FROM metrics WHERE server_id = '{server_id}'").strip() == "t"
+
+
+def _monitoring(owner: httpx.Client, server_id: str) -> dict | None:
+    return owner.get(f"/api/servers/{server_id}").json()["monitoring"]
+
+
+def _state(owner: httpx.Client, server_id: str) -> str | None:
+    monitoring = _monitoring(owner, server_id)
+    return monitoring and monitoring["state"]
+
+
+SUBSCRIBE_PROBE = """
+import asyncio, sys, uuid
+from app.core.valkey import valkey_client
+from app.metrics.fanout import subscribe
+
+async def main():
+    client = valkey_client()
+    async with subscribe(client, [uuid.UUID(sys.argv[1])]) as samples:
+        await asyncio.wait_for(anext(samples), 20)
+    await client.aclose()
+    print("received")
+
+asyncio.run(main())
+"""
+
+
+def test_the_collector_streams_the_fake_server_and_survives_restarts_and_a_network_drop(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    group = owner.post("/api/server-groups", json={"name": "metrics-lab"}).json()["id"]
+    server = {"name": "fake-server-metrics", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+    server_id = owner.post("/api/servers", json=server).json()["id"]
+    fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+    assert fetched["ok"], fetched
+    assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
+
+    # The collector finds the pinned server within one poll and streams it.
+    _wait(lambda: _newest(server_id) != "-infinity", 60, "a sample of the fake server in metrics")
+    _wait(lambda: _state(owner, server_id) == "reachable", 60, "the fake server is reachable")
+    probe = _compose("exec", "-T", "backend", "python", "-c", SUBSCRIBE_PROBE, server_id)
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == "received"
+
+    t = _db_now()
+    assert _compose_with_fake_server("restart", "fake-server").returncode == 0
+    _wait(lambda: _newer(server_id, t), 90, "a sample after the fake server restarted")
+
+    t = _db_now()
+    assert _compose("restart", "collector").returncode == 0
+    _wait(lambda: _newer(server_id, t), 90, "a sample after the collector restarted")
+
+    container = _compose_with_fake_server("ps", "-q", "fake-server").stdout.strip()
+    assert container
+    network = f"{_env('MEGOO_SERVICES_PROJECT')}_servers"
+    disconnected = subprocess.run(["docker", "network", "disconnect", network, container], capture_output=True, text=True, timeout=60)
+    assert disconnected.returncode == 0, disconnected.stderr
+    try:
+        _wait(lambda: _state(owner, server_id) == "unreachable", 90, "the fake server is unreachable without its network")
+    finally:
+        # Back on its network even when the wait failed, so the checks after this one find it.
+        t = _db_now()
+        connect = ["docker", "network", "connect", "--alias", "fake-server", network, container]
+        reconnected = subprocess.run(connect, capture_output=True, text=True, timeout=60)
+    assert reconnected.returncode == 0, reconnected.stderr
+    _wait(lambda: _state(owner, server_id) == "reachable" and _newer(server_id, t), 150, "samples again once the network is back")
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):

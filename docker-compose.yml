@@ -48,6 +48,8 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://megooitadmin_api:${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
       DATABASE_OWNER_URL: postgresql+asyncpg://megooitadmin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+      # The entrypoint gives the collector's role this password, then unsets it before the server starts.
+      DATABASE_COLLECTOR_URL: postgresql+asyncpg://megooitadmin_collector:${POSTGRES_COLLECTOR_PASSWORD:?POSTGRES_COLLECTOR_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
       AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?AUTH_SECRET_KEY is not set. Run make up or see .env.example}
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
       SESSION_ABSOLUTE_MINUTES: ${SESSION_ABSOLUTE_MINUTES:-720}
@@ -65,6 +67,30 @@ services:
     healthcheck:
       # The image has no curl.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)"]
+      <<: *healthcheck-timing
+
+  collector:
+    # The backend's image with another command: one SSH stream per server, each sample published on Valkey and
+    # written to metrics. Run one collector: a second one would publish every sample twice.
+    image: ghcr.io/mmhy2003/megooitadmin-backend:${MEGOOITADMIN_VERSION:-latest}
+    restart: unless-stopped
+    entrypoint: ["python", "-m", "app.collector"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://megooitadmin_collector:${POSTGRES_COLLECTOR_PASSWORD:?POSTGRES_COLLECTOR_PASSWORD is not set. Run make up or see .env.example}@db:5432/megooitadmin
+      VALKEY_URL: valkey://valkey:6379/0
+    volumes:
+      # The platform's SSH key, read-only: the backend makes it.
+      - ssh_key:/var/lib/megooitadmin/ssh:ro
+    networks: [core, servers]
+    depends_on:
+      # A healthy backend has run the migrations and set this role's password.
+      backend:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      # Passes while the collector read the servers within the last 30 seconds.
+      test: ["CMD", "python", "-m", "app.collector.health"]
       <<: *healthcheck-timing
 
   db:
