@@ -34,6 +34,8 @@ SERVER_KEYS = {
     "updated_at",
     "can_manage",
     "can_connect",
+    "metrics_interval_seconds",
+    "monitoring",
 }
 
 
@@ -75,6 +77,8 @@ async def test_an_admin_registers_a_server_into_their_group(api, clock):
     assert server["can_manage"] is True
     assert server["can_connect"] is True
     assert server["created_at"] and server["updated_at"]
+    assert server["metrics_interval_seconds"] == 5
+    assert server["monitoring"] is None
 
     (created,) = await events("server.created")
     assert (created.actor_id, created.result, created.mfa) == (str(ada.id), "success", True)
@@ -84,6 +88,7 @@ async def test_an_admin_registers_a_server_into_their_group(api, clock):
         "address": {"before": None, "after": "10.0.0.1"},
         "connection_settings": {"before": None, "after": {"username": "megoo"}},
         "group": {"before": None, "after": "staging"},
+        "metrics_interval_seconds": {"before": None, "after": 5},
         "name": {"before": None, "after": "db-01"},
         "os": {"before": None, "after": "linux"},
         "port": {"before": None, "after": 22},

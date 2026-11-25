@@ -18,6 +18,7 @@ MAX_TAGS = 20
 DEFAULT_USERNAME = "megoo"
 Os = Literal["linux", "windows"]
 HostKeyState = Literal["none", "not_pinned", "pinned", "changed"]
+MonitoringState = Literal["reachable", "unreachable", "not_monitored"]
 
 
 def clean_address(value: str) -> str:
@@ -48,6 +49,8 @@ Address = Annotated[str, AfterValidator(clean_address)]
 Port = Annotated[int, Field(ge=1, le=65535)]
 Role = Annotated[str, StringConstraints(strip_whitespace=True, max_length=64)]
 Tags = Annotated[list[str], AfterValidator(clean_tags)]
+# Seconds between two samples of the collector.
+MetricsInterval = Annotated[int, Field(ge=1, le=10)]
 Username = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64, pattern=r"^\S+$")
 ]
@@ -76,6 +79,7 @@ class ServerIn(BaseModel):
     role: Role | None = None
     tags: Tags = []
     connection_settings: ConnectionSettings = ConnectionSettings()
+    metrics_interval_seconds: MetricsInterval = 5
 
     _role = field_validator("role")(_none_if_empty)
 
@@ -91,10 +95,11 @@ class ServerPatch(BaseModel):
     role: Role | None = None
     tags: Tags | None = None
     connection_settings: ConnectionSettings | None = None
+    metrics_interval_seconds: MetricsInterval | None = None
 
     _role = field_validator("role")(_none_if_empty)
 
-    @field_validator("name", "address", "group_id", "os", "port", "tags", "connection_settings")
+    @field_validator("name", "address", "group_id", "os", "port", "tags", "connection_settings", "metrics_interval_seconds")
     @classmethod
     def _not_null(cls, value):
         if value is None:
@@ -106,6 +111,15 @@ class HostKeyOffer(BaseModel):
     fingerprint: str
     type: str
     at: datetime
+
+
+class Monitoring(BaseModel):
+    """What the collector last saw of the server."""
+
+    state: MonitoringState
+    reason: str | None
+    since: datetime
+    last_sample_at: datetime | None
 
 
 class ServerOut(BaseModel):
@@ -127,6 +141,9 @@ class ServerOut(BaseModel):
     host_key_changed_at: datetime | None
     # Only in the state "changed", and only when the presented key could be read.
     host_key_offered: HostKeyOffer | None
+    metrics_interval_seconds: int
+    # None until the collector wrote a state for the server.
+    monitoring: Monitoring | None
     created_at: datetime
     updated_at: datetime
     # Whether the person may edit, move and remove it.

@@ -5,7 +5,7 @@ from auth_helpers import add_grant, events, make_group, make_server, signed_in
 from conftest import owner_session
 from sqlalchemy import func, select, update
 
-from app.inventory.models import Server, ServerTag
+from app.inventory.models import Server, ServerStatus, ServerTag
 from app.ssh import hostkeys
 
 OWNER = "owner@example.com"
@@ -40,12 +40,31 @@ async def test_an_admin_removes_a_server_and_its_tags(api, clock):
         "address": {"before": "10.0.0.1", "after": None},
         "connection_settings": {"before": {"username": "megoo"}, "after": None},
         "group": {"before": "staging", "after": None},
+        "metrics_interval_seconds": {"before": 5, "after": None},
         "name": {"before": "db-01", "after": None},
         "os": {"before": "linux", "after": None},
         "port": {"before": 2222, "after": None},
         "role": {"before": "db", "after": None},
         "tags": {"before": ["eu-west", "web"], "after": None},
     }
+
+
+async def test_removing_a_server_removes_its_monitoring_state(api, clock):
+    staging = await make_group("staging")
+    server = await make_server(staging.id, "db-01")
+    async with owner_session() as session:
+        session.add(ServerStatus(server_id=server.id, state="reachable", last_sample_at=func.now()))
+        await session.commit()
+
+    async with signed_in(api, clock, OWNER, "owner") as (_, owner):
+        response = await owner.delete(f"/api/servers/{server.id}")
+
+    assert response.status_code == 204, response.text
+    async with owner_session() as session:
+        left = await session.scalar(
+            select(func.count()).select_from(ServerStatus).where(ServerStatus.server_id == server.id)
+        )
+    assert left == 0
 
 
 async def test_a_server_without_role_or_tags_records_no_role(api, clock):
