@@ -385,3 +385,70 @@ def test_processes_through_read() -> None:
     assert outcome.status == "ok"
     assert isinstance(outcome.result, parse.ProcessesResult)
     assert outcome.result.by_cpu[0].cpu_percent == 150.0
+
+
+SYSTEMCTL = (FIXTURES / "systemctl_list-units").read_bytes().splitlines()
+
+
+def _unit(name: str, active: str = "active", sub: str = "running", description: str = "A unit") -> bytes:
+    return f"{name} loaded {active} {sub} {description}".encode()
+
+
+def test_services_reads_the_fixture() -> None:
+    result = parse.services(SYSTEMCTL)
+
+    assert (result.total, result.running, result.failed) == (4, 2, 1)
+    assert result.failed_units == (
+        parse.Unit(unit="nginx.service", description="A high performance web server and a reverse proxy server"),
+    )
+
+
+def test_services_a_line_without_a_description_is_counted() -> None:
+    result = parse.services([b"broken.service loaded failed failed"])
+
+    assert (result.total, result.running, result.failed) == (1, 0, 1)
+    assert result.failed_units == (parse.Unit(unit="broken.service", description=""),)
+
+
+def test_services_keeps_50_failed_units_sorted_and_counts_every_one() -> None:
+    lines = [_unit(f"unit-{i:02}.service", "failed", "failed") for i in reversed(range(60))]
+
+    result = parse.services(lines)
+
+    assert [unit.unit for unit in result.failed_units] == [f"unit-{i:02}.service" for i in range(50)]
+    assert (result.total, result.failed) == (60, 60)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [b"garbage", b"cron.service loaded active", _unit("cron.timer"), b"", b"\xff\xfe loaded active running x"],
+    ids=["garbage", "three-fields", "not-a-service", "empty", "bad-utf8"],
+)
+def test_services_a_line_that_is_not_a_service_is_skipped(line: bytes) -> None:
+    result = parse.services([line, _unit("cron.service")])
+
+    assert (result.total, result.running, result.failed) == (1, 1, 0)
+
+
+def test_services_a_failed_unit_with_a_bad_name_is_counted_but_not_listed() -> None:
+    result = parse.services([_unit("bad\x01.service", "failed", "failed")])
+
+    assert (result.total, result.failed, result.failed_units) == (1, 1, ())
+
+
+def test_services_a_bad_description_is_empty() -> None:
+    result = parse.services([_unit("x.service", "failed", "failed", description="bad\x07text")])
+
+    assert result.failed_units == (parse.Unit(unit="x.service", description=""),)
+
+
+def test_services_readings() -> None:
+    assert parse.services(SYSTEMCTL).readings(datetime.now(UTC)) == (Reading(metric="services.failed", value=1),)
+
+
+def test_services_through_read() -> None:
+    outcome = read(parse.services, _done(OK + b"\n".join(SYSTEMCTL) + b"\n"))
+
+    assert outcome.status == "ok"
+    assert isinstance(outcome.result, parse.ServicesResult)
+    assert outcome.result.failed == 1

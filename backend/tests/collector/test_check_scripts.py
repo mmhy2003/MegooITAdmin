@@ -4,7 +4,7 @@ import time
 from collections.abc import Sequence
 
 from app.collector.checks import CHECKS
-from app.collector.checks.parse import MAX_OUTPUT, ContainersResult, Outcome, ProcessesResult, read
+from app.collector.checks.parse import MAX_OUTPUT, ContainersResult, Outcome, ProcessesResult, ServicesResult, read
 from app.ssh.client import connect, run_script
 
 
@@ -94,3 +94,26 @@ async def test_processes_writes_no_file(fake_server):
     assert (await run(fake_server, "processes")).status == "ok"
 
     assert new_files(fake_server) == before
+
+
+async def test_services_reads_the_fixture(fake_server):
+    fake_server.clear_tool_log()
+
+    outcome = await run(fake_server, "services")
+
+    assert outcome.status == "ok"
+    assert isinstance(outcome.result, ServicesResult)
+    assert outcome.result.failed == 1
+    assert fake_server.tool_log() == [
+        "systemctl [list-units] [--type=service] [--all] [--plain] [--no-legend] [--no-pager]"
+    ]
+
+
+async def test_services_without_systemctl(fake_server):
+    with fake_server.hidden("/usr/local/bin/systemctl"):
+        assert await run(fake_server, "services") == Outcome("not_available")
+
+
+async def test_services_failing_tool_is_failed(fake_server):
+    with fake_server.fixture("systemctl_list-units", "", exit=1):
+        assert await run(fake_server, "services") == Outcome("failed")

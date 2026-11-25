@@ -207,3 +207,48 @@ def processes(lines: list[bytes]) -> ProcessesResult:
         by_cpu=tuple(sorted(procs, key=lambda proc: (-proc.cpu_percent, proc.pid))[:TOP]),
         by_memory=tuple(sorted(procs, key=lambda proc: (-proc.memory_bytes, proc.pid))[:TOP]),
     )
+
+
+class Unit(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    unit: str
+    description: str
+
+
+class ServicesResult(CheckResult):
+    total: int
+    running: int
+    failed: int
+    failed_units: tuple[Unit, ...]
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        return (Reading(metric="services.failed", value=self.failed),)
+
+
+MAX_FAILED_UNITS = 50
+
+
+def services(lines: list[bytes]) -> ServicesResult:
+    """systemctl list-units --type=service --all --plain --no-legend: unit, load, active, sub and description."""
+    total = running = failed = 0
+    failed_units: list[Unit] = []
+    for line in lines:
+        fields = line.decode(errors="replace").split(None, 4)
+        if len(fields) < 4 or not fields[0].endswith(".service"):
+            continue
+        total += 1
+        running += fields[3] == "running"
+        if fields[2] != "failed":
+            continue
+        failed += 1
+        unit = clean(fields[0])
+        if unit:
+            description = clean(fields[4]) if len(fields) == 5 else None
+            failed_units.append(Unit(unit=unit, description=description or ""))
+    return ServicesResult(
+        total=total,
+        running=running,
+        failed=failed,
+        failed_units=tuple(sorted(failed_units, key=lambda unit: unit.unit)[:MAX_FAILED_UNITS]),
+    )
