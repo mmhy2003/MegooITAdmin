@@ -33,6 +33,8 @@ const CHANGED: Server = {
   host_key_changed_at: "2026-11-03T00:00:00Z",
   host_key_offered: { fingerprint: OFFERED_KEY, type: "ssh-ed25519", at: "2026-11-03T00:00:00Z" },
   can_connect: true,
+  metrics_interval_seconds: 5,
+  monitoring: null,
 };
 const UNREAD: Server = { ...CHANGED, host_key_offered: null };
 const REVIEWED: Server = { ...CHANGED, host_key_state: "pinned", host_key_changed_at: null, host_key_offered: null };

@@ -48,6 +48,8 @@ function server(id: string, name: string, g: ServerGroup, extra: Partial<Server>
     host_key_changed_at: null,
     host_key_offered: null,
     can_connect: true,
+    metrics_interval_seconds: 5,
+    monitoring: null,
     ...extra,
   };
 }

@@ -45,6 +45,8 @@ const WEB: Server = {
   host_key_changed_at: null,
   host_key_offered: null,
   can_connect: true,
+  metrics_interval_seconds: 5,
+  monitoring: null,
 };
 
 beforeEach(() => {
@@ -90,6 +92,7 @@ describe("ServerDialog", () => {
         group_id: "g-staging",
         os: "linux",
         port: 22,
+        metrics_interval_seconds: 5,
         role: null,
         tags: ["web"],
         connection_settings: { username: "megoo" },

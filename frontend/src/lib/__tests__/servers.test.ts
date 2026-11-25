@@ -6,6 +6,7 @@ import {
   CHECK_LABELS,
   changesOf,
   cleanTag,
+  DEFAULT_INTERVAL,
   DEFAULT_PORT,
   draftOf,
   filtersFrom,
@@ -37,11 +38,19 @@ const SERVER: Server = {
   host_key_changed_at: null,
   host_key_offered: null,
   can_connect: true,
+  metrics_interval_seconds: 5,
+  monitoring: null,
 };
 
 describe("DEFAULT_PORT", () => {
   it("is SSH for Linux and RDP for Windows", () => {
     expect(DEFAULT_PORT).toEqual({ linux: 22, windows: 3389 });
+  });
+});
+
+describe("DEFAULT_INTERVAL", () => {
+  it("starts the interval at DEFAULT_INTERVAL", () => {
+    expect(DEFAULT_INTERVAL).toBe(5);
   });
 });
 
@@ -80,6 +89,7 @@ describe("draftOf", () => {
       group_id: "g",
       os: "linux",
       port: 22,
+      interval: 5,
       role: "",
       tags: [],
       username: "megoo",
@@ -87,12 +97,13 @@ describe("draftOf", () => {
   });
 
   it("copies a server, its missing role as empty", () => {
-    expect(draftOf({ ...SERVER, role: null }, "g")).toEqual({
+    expect(draftOf({ ...SERVER, role: null, metrics_interval_seconds: 3 }, "g")).toEqual({
       name: "web-01",
       address: "web-01.example.com",
       group_id: "g-staging",
       os: "linux",
       port: 22,
+      interval: 3,
       role: "",
       tags: ["eu-west", "nginx"],
       username: "megoo",
@@ -109,6 +120,7 @@ describe("bodyOf", () => {
         group_id: "g",
         os: "windows",
         port: 3389,
+        interval: 7,
         role: "  ",
         tags: ["web", "db"],
         username: " admin ",
@@ -119,6 +131,7 @@ describe("bodyOf", () => {
       group_id: "g",
       os: "windows",
       port: 3389,
+      metrics_interval_seconds: 7,
       role: null,
       tags: ["db", "web"],
       connection_settings: { username: "admin" },
@@ -138,6 +151,10 @@ describe("changesOf", () => {
 
   it("holds only the port after a port change", () => {
     expect(changesOf(SERVER, { ...draftOf(SERVER, "g"), port: 2222 })).toEqual({ port: 2222 });
+  });
+
+  it("holds only the interval after it changed", () => {
+    expect(changesOf(SERVER, { ...draftOf(SERVER, "g"), interval: 10 })).toEqual({ metrics_interval_seconds: 10 });
   });
 
   it("holds the group after a move", () => {
