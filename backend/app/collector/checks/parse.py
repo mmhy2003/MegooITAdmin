@@ -5,6 +5,7 @@ followed by a body, which the check's parser turns into its result. The server's
 bounded and never logged: anything unexpected is the status "failed".
 """
 
+import ipaddress
 import json
 import re
 from collections.abc import Callable
@@ -252,3 +253,43 @@ def services(lines: list[bytes]) -> ServicesResult:
         failed=failed,
         failed_units=tuple(sorted(failed_units, key=lambda unit: unit.unit)[:MAX_FAILED_UNITS]),
     )
+
+
+class Source(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    address: str
+    count: int
+
+
+class LoginsResult(CheckResult):
+    # Only a count and addresses: the user name of a failed sign-in is the attacker's text, and sometimes a password.
+    failed_24h: int
+    top_sources: tuple[Source, ...]
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        return (Reading(metric="logins.failed_24h", value=self.failed_24h),)
+
+
+def _source(line: bytes) -> Source | None:
+    fields = line.decode(errors="replace").split(" ")
+    if len(fields) != 2:
+        return None
+    count = _count(fields[0], 1)
+    try:
+        address = clean(str(ipaddress.ip_address(fields[1])))
+    except ValueError:
+        return None
+    if count is None or not address:
+        return None
+    return Source(address=address, count=count)
+
+
+def logins(lines: list[bytes]) -> LoginsResult:
+    """total N, then one line per source address, most failures first: count address."""
+    fields = lines[0].decode(errors="replace").split(" ") if lines else []
+    total = _count(fields[1], 0) if len(fields) == 2 and fields[0] == "total" else None
+    if total is None:
+        raise ValueError("no total of failed sign-ins")
+    sources = [source for line in lines[1:] if (source := _source(line)) is not None]
+    return LoginsResult(failed_24h=total, top_sources=tuple(sources[:TOP]))

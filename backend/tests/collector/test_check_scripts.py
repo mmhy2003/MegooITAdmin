@@ -4,7 +4,16 @@ import time
 from collections.abc import Sequence
 
 from app.collector.checks import CHECKS
-from app.collector.checks.parse import MAX_OUTPUT, ContainersResult, Outcome, ProcessesResult, ServicesResult, read
+from app.collector.checks.parse import (
+    MAX_OUTPUT,
+    ContainersResult,
+    LoginsResult,
+    Outcome,
+    ProcessesResult,
+    ServicesResult,
+    Source,
+    read,
+)
 from app.ssh.client import connect, run_script
 
 
@@ -117,3 +126,44 @@ async def test_services_without_systemctl(fake_server):
 async def test_services_failing_tool_is_failed(fake_server):
     with fake_server.fixture("systemctl_list-units", "", exit=1):
         assert await run(fake_server, "services") == Outcome("failed")
+
+
+JOURNAL = """\
+Failed password for root from 203.0.113.9 port 50022 ssh2
+Failed password for root from 203.0.113.9 port 50023 ssh2
+Invalid user admin from 198.51.100.7 port 41000
+Failed password for invalid user admin from 198.51.100.7 port 41000 ssh2
+Invalid user x from 192.0.2.1 from 203.0.113.250 port 1
+Accepted publickey for megoo from 10.0.0.5 port 2222 ssh2
+"""
+
+
+async def test_logins_counts_failed_passwords_and_unknown_accounts(fake_server):
+    fake_server.clear_tool_log()
+
+    with fake_server.fixture("journalctl", JOURNAL):
+        outcome = await run(fake_server, "logins")
+
+    assert outcome.status == "ok"
+    assert isinstance(outcome.result, LoginsResult)
+    # The failed password of an unknown account was counted once already, as "Invalid user".
+    assert outcome.result.failed_24h == 4
+    # The address is the one after the last " from ": the earlier one is part of the name the attacker chose.
+    assert sorted(outcome.result.top_sources, key=lambda source: source.address) == [
+        Source(address="198.51.100.7", count=1),
+        Source(address="203.0.113.250", count=1),
+        Source(address="203.0.113.9", count=2),
+    ]
+    assert outcome.result.top_sources[0] == Source(address="203.0.113.9", count=2)
+    assert fake_server.tool_log() == [
+        "journalctl [-q] [--no-pager] [-o] [cat] [--since=-24h] [-t] [sshd] [-t] [sshd-session]"
+    ]
+
+
+async def test_logins_without_a_journal(fake_server):
+    with fake_server.hidden("/usr/local/bin/journalctl"):
+        assert await run(fake_server, "logins") == Outcome("not_available")
+
+
+async def test_logins_with_an_empty_journal(fake_server):
+    assert await run(fake_server, "logins") == Outcome("ok", LoginsResult(failed_24h=0, top_sources=()))

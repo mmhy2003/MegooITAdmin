@@ -452,3 +452,63 @@ def test_services_through_read() -> None:
     assert outcome.status == "ok"
     assert isinstance(outcome.result, parse.ServicesResult)
     assert outcome.result.failed == 1
+
+
+def test_logins_reads_the_total_and_the_sources() -> None:
+    result = parse.logins([b"total 7", b"5 203.0.113.9", b"2 2001:db8::1"])
+
+    assert result.failed_24h == 7
+    assert result.top_sources == (
+        parse.Source(address="203.0.113.9", count=5),
+        parse.Source(address="2001:db8::1", count=2),
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [b"3 not-an-ip", b"0 203.0.113.9", b"-1 203.0.113.9", b"x 203.0.113.9", b"3", b"3 203.0.113.9 extra", b"\xff 1"],
+    ids=["not-an-ip", "zero", "negative", "not-a-count", "no-address", "extra-word", "bad-utf8"],
+)
+def test_logins_a_bad_source_is_skipped(line: bytes) -> None:
+    result = parse.logins([b"total 4", line, b"1 198.51.100.7"])
+
+    assert result.failed_24h == 4
+    assert result.top_sources == (parse.Source(address="198.51.100.7", count=1),)
+
+
+def test_logins_an_address_is_kept_in_its_usual_form() -> None:
+    result = parse.logins([b"total 1", b"1 2001:DB8:0::1"])
+
+    assert result.top_sources == (parse.Source(address="2001:db8::1", count=1),)
+
+
+def test_logins_keeps_the_first_five_sources() -> None:
+    lines = [b"total 80"] + [f"{10 - i} 192.0.2.{i}".encode() for i in range(8)]
+
+    result = parse.logins(lines)
+
+    assert [source.address for source in result.top_sources] == [f"192.0.2.{i}" for i in range(5)]
+
+
+@pytest.mark.parametrize("lines", [[], [b"5 203.0.113.9"], [b"total x"], [b"total -1"], [b"total"]])
+def test_logins_without_a_total_is_an_error(lines: list[bytes]) -> None:
+    with pytest.raises(ValueError):
+        parse.logins(lines)
+
+
+def test_logins_without_a_total_fails_through_read() -> None:
+    assert read(parse.logins, _done(OK + b"5 203.0.113.9\n")) == Outcome("failed")
+
+
+def test_logins_readings() -> None:
+    result = parse.logins([b"total 7"])
+
+    assert result.readings(datetime.now(UTC)) == (Reading(metric="logins.failed_24h", value=7),)
+
+
+def test_logins_through_read() -> None:
+    outcome = read(parse.logins, _done(OK + b"total 7\n5 203.0.113.9\n"))
+
+    assert outcome == Outcome(
+        "ok", parse.LoginsResult(failed_24h=7, top_sources=(parse.Source(address="203.0.113.9", count=5),))
+    )
