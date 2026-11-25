@@ -18,16 +18,24 @@ const SIGN_IN_PAGES = ["/login", "/setup", "/invite"];
  * Calls `/api${path}` from the browser and returns its JSON (undefined on a 204).
  * A body is sent as JSON, with POST unless another method is given. A refusal throws `ApiError`.
  * A signed-out answer outside the sign-in pages also sends the person to sign-in.
+ * `background` marks an automatic re-read: the backend does not count it as activity, so it never keeps an idle
+ * session alive.
  */
-export async function apiFetch<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function apiFetch<T>(
+  path: string,
+  options: { method?: string; body?: unknown; background?: boolean } = {},
+): Promise<T> {
   const { body } = options;
   const hasBody = body !== undefined;
+  const headers: Record<string, string> = {};
+  if (hasBody) headers["content-type"] = "application/json";
+  if (options.background) headers["x-megoo-background"] = "1";
   let response: Response;
   try {
     response = await fetch(`/api${path}`, {
       method: options.method ?? (hasBody ? "POST" : "GET"),
       credentials: "same-origin",
-      headers: hasBody ? { "content-type": "application/json" } : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: hasBody ? JSON.stringify(body) : undefined,
     });
   } catch {

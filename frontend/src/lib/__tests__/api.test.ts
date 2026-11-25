@@ -51,6 +51,32 @@ describe("apiFetch", () => {
     expect((fetchMock.mock.calls[1] as [string, RequestInit])[1].method).toBe("DELETE");
   });
 
+  it("marks a background request with X-Megoo-Background", async () => {
+    answer([]);
+    await apiFetch("/servers", { background: true });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toEqual({ "x-megoo-background": "1" });
+    expect(init.method).toBe("GET");
+  });
+
+  it("sends no background header otherwise", async () => {
+    answer([]);
+    await apiFetch("/servers");
+
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers).toBeUndefined();
+  });
+
+  it("keeps the content type beside the background header", async () => {
+    answer({});
+    await apiFetch("/x", { body: {}, background: true });
+
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers).toEqual({
+      "content-type": "application/json",
+      "x-megoo-background": "1",
+    });
+  });
+
   it("returns undefined on a 204", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
     await expect(apiFetch("/auth/logout", { method: "POST" })).resolves.toBeUndefined();
