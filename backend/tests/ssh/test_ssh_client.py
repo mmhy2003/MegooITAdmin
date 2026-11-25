@@ -1,17 +1,23 @@
+import asyncio
 import socket
+import time
 
 import asyncssh
 import pytest
 
+from app import collector
 from app.ssh.client import (
     CTL,
     HostKeyChanged,
     KeyRefused,
+    ScriptTimeout,
     Setup,
     Unreachable,
     account_of,
     connect,
     fetch_host_key,
+    run_script,
+    script_output,
     setup_of,
     sudo_commands,
 )
@@ -153,3 +159,58 @@ def test_sudo_commands_of_a_header_alone_is_empty():
 async def test_setup_of_each_prepared_account(fake_server, user, expected):
     async with connect(fake_server.host, fake_server.port, user, fake_server.host_key()) as conn:
         assert await setup_of(conn) == expected
+
+
+async def test_run_script_returns_the_output_and_the_exit_status(fake_server):
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        result = await run_script(conn, b'echo "$1"; exit 3', ("db.example.com",), timeout=5, max_output=1000)
+
+    assert result.exit_status == 3
+    assert result.output == b"db.example.com\n"
+    assert result.truncated is False
+
+
+async def test_run_script_refuses_an_argument_outside_the_pattern(fake_server):
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        for bad in ("a;b", "", "a" * 254):
+            with pytest.raises(ValueError) as raised:
+                await run_script(conn, b"echo hi", ("ok", bad), timeout=5, max_output=100)
+            assert "argument 1" in str(raised.value)
+            assert bad == "" or bad not in str(raised.value)
+
+
+async def test_run_script_refuses_before_any_channel_opens():
+    class NoConnection:
+        async def create_process(self, *args, **kwargs):
+            raise AssertionError("a channel was opened")
+
+    with pytest.raises(ValueError):
+        await run_script(NoConnection(), b"echo hi", ("a;b",), timeout=5, max_output=100)
+
+
+async def test_run_script_caps_the_output(fake_server):
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        result = await run_script(conn, b"head -c 3000000 /dev/zero", timeout=10, max_output=1_000_000)
+
+    assert result.truncated is True
+    assert len(result.output) == 1_000_000
+
+
+async def test_run_script_times_out(fake_server):
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        started = time.monotonic()
+        with pytest.raises(ScriptTimeout) as raised:
+            await run_script(conn, b"exec sleep 5", timeout=1, max_output=100)
+
+    assert time.monotonic() - started < 3
+    assert raised.value.reason == "timeout"
+
+
+async def test_run_script_beside_a_running_loop(fake_server):
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        async with asyncio.timeout(15), script_output(conn, collector.script(), 1) as chunks:
+            assert await anext(chunks)
+            result = await run_script(conn, b"echo hi", timeout=5, max_output=100)
+
+    assert result.output == b"hi\n"
+    assert result.exit_status == 0
