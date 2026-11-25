@@ -3,11 +3,13 @@
 import { Pencil, PlugZap, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatTime } from "@/components/profile/profile-page";
 import { ConnectionResult } from "@/components/servers/connection-result";
 import { Field } from "@/components/servers/field";
 import { HostKeyDialog } from "@/components/servers/host-key-dialog";
+import { MonitoringBadge } from "@/components/servers/monitoring-badge";
+import { MonitoringCard } from "@/components/servers/monitoring-card";
 import { PlatformAccessCard } from "@/components/servers/platform-access-card";
 import { RemoveServerDialog } from "@/components/servers/remove-server-dialog";
 import { ReviewHostKeyDialog } from "@/components/servers/review-host-key-dialog";
@@ -16,6 +18,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
@@ -46,30 +49,51 @@ export function ServerPage({ serverId }: { serverId: string }) {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
+  // Each foreground read takes a number; an answer is applied only while its read is still the latest.
+  const reads = useRef(0);
 
-  const reload = useCallback(
-    () =>
-      apiFetch<Server>(`/servers/${serverId}`).then(
-        (found) => {
-          setServer(found);
-          setMissing(false);
-          setError(null);
-        },
-        (e: unknown) => {
-          if (e instanceof ApiError && e.status === 404) {
-            setServer(null);
-            setMissing(true);
-          } else {
-            setError(e instanceof ApiError ? e.detail : "error");
-          }
-        },
-      ),
-    [serverId],
-  );
+  const reload = useCallback(() => {
+    const read = ++reads.current;
+    return apiFetch<Server>(`/servers/${serverId}`).then(
+      (found) => {
+        if (read !== reads.current) return;
+        setServer(found);
+        setMissing(false);
+        setError(null);
+      },
+      (e: unknown) => {
+        if (read !== reads.current) return;
+        if (e instanceof ApiError && e.status === 404) {
+          setServer(null);
+          setMissing(true);
+        } else {
+          setError(e instanceof ApiError ? e.detail : "error");
+        }
+      },
+    );
+  }, [serverId]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  /** The automatic re-read: it takes no number, so a newer read wins, and a failure other than 404 shows nothing. */
+  const refresh = useCallback(() => {
+    const read = reads.current;
+    apiFetch<Server>(`/servers/${serverId}`, { background: true }).then(
+      (found) => {
+        if (reads.current === read) setServer(found);
+      },
+      (e: unknown) => {
+        if (reads.current === read && e instanceof ApiError && e.status === 404) {
+          setServer(null);
+          setMissing(true);
+        }
+      },
+    );
+  }, [serverId]);
+
+  useRefresh(refresh, !editing && !removing && !pinning && !reviewing && !testing);
 
   function edit() {
     Promise.all([apiFetch<ServerGroup[]>("/server-groups"), apiFetch<string[]>("/server-tags")]).then(
@@ -104,6 +128,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
   function keyChanged(changed: Server) {
     setPinning(false);
     setReviewing(false);
+    reads.current += 1;
     setServer(changed);
     setResult(null);
     setTestError(null);
@@ -130,6 +155,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold tracking-tight">{server.name}</h2>
+              <MonitoringBadge monitoring={server.monitoring} />
               <Badge variant="secondary">{OS_LABELS[server.os]}</Badge>
               {server.host_key_state !== "none" && (
                 <Badge variant={STATE_BADGES[server.host_key_state].variant}>
@@ -210,6 +236,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
               Overview
             </button>
           </div>
+          <MonitoringCard server={server} />
           <div className="grid gap-6 md:grid-cols-2">
             <Card>
               <CardHeader>
