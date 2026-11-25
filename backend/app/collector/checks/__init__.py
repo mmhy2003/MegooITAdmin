@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.checks.models import Kind
+from app.collector.checks import parse
 from app.collector.checks.parse import CheckResult
 
 
@@ -25,4 +26,4 @@ def script_of(kind: str) -> bytes:
     return Path(__file__).with_name(f"{kind}.sh").read_bytes()
 
 
-CHECKS: tuple[Check, ...] = ()
+CHECKS: tuple[Check, ...] = (Check("containers", 30, 30, script_of("containers"), parse.containers),)
