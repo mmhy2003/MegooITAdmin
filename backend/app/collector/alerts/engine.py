@@ -112,11 +112,7 @@ class Engine:
         the new name."""
         self._rules = list(rules)
         by_id = {rule.id: rule for rule in self._rules}
-        self._counting = {
-            key: value
-            for key, value in self._counting.items()
-            if key[0] in by_id and by_id[key[0]].revision == value[0]
-        }
+        self._counting = {key: value for key, value in self._counting.items() if self._still_counts(by_id, key, value)}
         transitions: list[Transition] = []
         for key, firing in list(self._firing.items()):
             server = self._servers.get(firing.server_id)
@@ -233,6 +229,19 @@ class Engine:
     def _resolve(self, key: Key, server: ServerInfo, at: datetime) -> Transition:
         firing = self._firing.pop(key)
         return Transition("resolved", firing.alert_id, server, firing.instance, at, None, firing)
+
+    def _still_counts(self, by_id: dict[uuid.UUID, Rule], key: Key, value: tuple[int, datetime]) -> bool:
+        """A count goes on only while its rule, at the same revision, is enabled and applies to the server: a rule
+        switched off and on again, or a server moved out of its scope and back, holds for the full duration again."""
+        rule = by_id.get(key[0])
+        server = self._servers.get(key[1])
+        return (
+            rule is not None
+            and server is not None
+            and rule.enabled
+            and rule.revision == value[0]
+            and rule.applies_to(server)
+        )
 
     def _end(self, key: Key, reason: str, at: datetime) -> Transition:
         firing = self._firing.pop(key)

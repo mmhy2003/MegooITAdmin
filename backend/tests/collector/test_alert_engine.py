@@ -363,6 +363,38 @@ def test_a_new_revision_starts_counting_again():
     assert fired.at == at(110)  # 60 s after the first sample of the new revision
 
 
+def test_a_re_enabled_rule_holds_for_its_full_duration_again():
+    r = rule(duration_seconds=60)
+    e = engine(r)
+    every_10_s(e, [readings(mem=95)] * 5)  # counting since 0 s, up to 40 s
+
+    assert e.set_rules([rule(id=r.id, duration_seconds=60, enabled=False)], at(45)) == []  # the same revision
+    assert e.set_rules([r], at(46)) == []
+    steps = every_10_s(e, [readings(mem=95)] * 7, start=50)
+
+    assert all(t == [] for t in steps[:6])
+    [fired] = steps[6]
+    assert fired.at == at(110)  # 60 s after the first sample once enabled again
+
+
+def test_a_server_moved_out_of_scope_and_back_holds_for_the_full_duration_again():
+    other_group = uuid.uuid4()
+    r = rule(duration_seconds=60, server_group_id=GROUP)
+    e = engine(r)
+    every_10_s(e, [readings(mem=95)] * 5)  # counting since 0 s, up to 40 s
+
+    moved = ServerInfo(id=WEB.id, group_id=other_group, name=WEB.name)
+    assert e.set_servers((moved,), {WEB.id}, at(45)) == []
+    assert e.set_rules([r], at(45)) == []
+    assert e.set_servers((WEB,), {WEB.id}, at(46)) == []
+    assert e.set_rules([r], at(46)) == []
+    steps = every_10_s(e, [readings(mem=95)] * 7, start=50)
+
+    assert all(t == [] for t in steps[:6])
+    [fired] = steps[6]
+    assert fired.at == at(110)
+
+
 def test_a_server_not_monitored_ends_its_alerts():
     db = ServerInfo(id=uuid.uuid4(), group_id=GROUP, name="db-01")
     r = rule(duration_seconds=0)
