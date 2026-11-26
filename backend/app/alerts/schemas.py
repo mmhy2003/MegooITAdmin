@@ -1,4 +1,4 @@
-"""The request and response bodies of /api/alert-rules."""
+"""The request and response bodies of /api/alert-rules, /api/alerts and /api/servers/{id}/alerts."""
 
 from datetime import datetime
 from typing import Annotated, Literal
@@ -66,3 +66,43 @@ class AlertRuleOut(BaseModel):
     firing_count: int
     created_at: datetime
     updated_at: datetime
+
+
+class AlertOut(BaseModel):
+    id: UUID
+    server_id: UUID
+    server_name: str
+    group_id: UUID
+    group_name: str
+    # None once the rule is deleted; the other rule fields are the alert's copy of it.
+    rule_id: UUID | None
+    rule_name: str
+    metric: str
+    comparison: str | None
+    threshold: float | None
+    duration_seconds: int
+    severity: str
+    instance: str
+    state: str
+    end_reason: str | None
+    fired_at: datetime
+    resolved_at: datetime | None
+    value: float | None
+    last_value: float | None
+    peak_value: float | None
+
+
+class AlertEventOut(BaseModel):
+    id: UUID
+    kind: str
+    at: datetime
+    alert: AlertOut
+
+
+class AlertEventsOut(BaseModel):
+    # The events after the person last opened the bell, within the last 30 days.
+    unseen: int
+    # The firing alerts.
+    firing: int
+    # The 10 latest events.
+    events: list[AlertEventOut]

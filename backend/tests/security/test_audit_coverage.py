@@ -11,6 +11,7 @@ from app.main import create_app
 # change to the security suite.
 EXEMPT: dict[str, str] = {
     "POST /api/auth/invite/check": "it only reads; POST keeps the token out of addresses and logs",
+    "POST /api/alerts/seen": "it moves the person's own read mark, which is not a change of the platform",
 }
 
 

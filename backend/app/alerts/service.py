@@ -1,6 +1,8 @@
-"""The alert rules the Owner creates, changes and deletes, between the routes and the tables."""
+"""The alert rules the Owner creates, changes and deletes, and the alerts and events people read, between the routes
+and the tables."""
 
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import HTTPException, Request
@@ -9,13 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.alerts import actions
 from app.alerts.catalog import CATALOG
-from app.alerts.models import Alert, AlertRule
-from app.alerts.schemas import AlertRuleIn, AlertRuleOut, AlertRulePatch
+from app.access.permissions import Access
+from app.alerts.models import Alert, AlertEvent, AlertRule
+from app.alerts.schemas import AlertEventOut, AlertEventsOut, AlertOut, AlertRuleIn, AlertRuleOut, AlertRulePatch
 from app.audit import Event, Target, changes, record
+from app.auth import clock
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
 from app.core.db import flush_unique
-from app.inventory.models import Server, ServerGroup
+from app.inventory.models import Server, ServerGroup, ServerTag
 
 FIELDS = (
     "name",
@@ -222,3 +226,137 @@ async def delete_rules_of(
     for rule in rules:
         await db.delete(rule)
     return events
+
+
+# How far back the closed alerts and the bell's events go, how many closed alerts a page holds, and how many events
+# the bell shows.
+HISTORY = timedelta(days=30)
+PAGE = 50
+LATEST_EVENTS = 10
+ALERT_FIELDS = (
+    "id",
+    "server_id",
+    "rule_id",
+    "rule_name",
+    "metric",
+    "comparison",
+    "threshold",
+    "duration_seconds",
+    "severity",
+    "instance",
+    "state",
+    "end_reason",
+    "fired_at",
+    "resolved_at",
+    "value",
+    "last_value",
+    "peak_value",
+)
+
+
+def _visible(query, access: Access):
+    """The query, kept to the servers the person sees."""
+    visible = access.visible_group_ids()
+    return query if visible is None else query.where(Server.server_group_id.in_(visible))
+
+
+def _alerts_query():
+    return (
+        select(Alert, Server.name, ServerGroup.id, ServerGroup.name)
+        .join(Server, Server.id == Alert.server_id)
+        .join(ServerGroup, ServerGroup.id == Server.server_group_id)
+    )
+
+
+def _alert_out(alert: Alert, server_name: str, group_id: UUID, group_name: str) -> AlertOut:
+    return AlertOut(
+        **{field: getattr(alert, field) for field in ALERT_FIELDS},
+        server_name=server_name,
+        group_id=group_id,
+        group_name=group_name,
+    )
+
+
+def _firing(query):
+    return query.where(Alert.state == "firing").order_by(Alert.fired_at.desc(), Alert.id.desc())
+
+
+def _closed(query, before: datetime | None, limit: int):
+    """The resolved and ended alerts, newest first, older than `before` when given."""
+    query = query.where(Alert.state != "firing")
+    if before is not None:
+        query = query.where(Alert.resolved_at < before)
+    return query.order_by(Alert.resolved_at.desc(), Alert.id.desc()).limit(limit)
+
+
+async def _alerts(db: AsyncSession, query) -> list[AlertOut]:
+    return [_alert_out(*row) for row in (await db.execute(query)).all()]
+
+
+async def list_alerts(
+    db: AsyncSession,
+    access: Access,
+    state: Literal["firing", "closed"],
+    group_id: UUID | None,
+    tags: list[str],
+    before: datetime | None,
+    limit: int,
+) -> list[AlertOut]:
+    """The alerts of the servers the person sees, in one group when asked, carrying every tag asked for: every
+    firing one, newest first, or a page of those closed in the last 30 days, newest first."""
+    query = _visible(_alerts_query(), access)
+    if group_id is not None:
+        query = query.where(Server.server_group_id == group_id)
+    for tag in {tag.strip().lower() for tag in tags}:
+        query = query.where(Server.id.in_(select(ServerTag.server_id).where(ServerTag.tag == tag)))
+    if state == "firing":
+        return await _alerts(db, _firing(query))
+    return await _alerts(db, _closed(query.where(Alert.resolved_at >= clock.now() - HISTORY), before, limit))
+
+
+async def server_alerts(db: AsyncSession, server_id: UUID, before: datetime | None) -> list[AlertOut]:
+    """The server's alerts: without `before`, every firing one then the first page of its whole history; with it,
+    the page of its history older than it."""
+    query = _alerts_query().where(Alert.server_id == server_id)
+    closed = await _alerts(db, _closed(query, before, PAGE))
+    return closed if before is not None else await _alerts(db, _firing(query)) + closed
+
+
+async def read_events(db: AsyncSession, access: Access, user: User) -> AlertEventsOut:
+    """The bell: how many events of the last 30 days on the servers the person sees came after they last opened it,
+    how many of those servers' alerts are firing, and the latest events."""
+    since = clock.now() - HISTORY
+    seen = since if user.alerts_seen_at is None else max(since, user.alerts_seen_at)
+    unseen_query = _visible(
+        select(func.count())
+        .select_from(AlertEvent)
+        .join(Alert, Alert.id == AlertEvent.alert_id)
+        .join(Server, Server.id == Alert.server_id)
+        .where(AlertEvent.at > seen),
+        access,
+    )
+    firing_query = _visible(
+        select(func.count()).select_from(Alert).join(Server, Server.id == Alert.server_id), access
+    ).where(Alert.state == "firing")
+    events_query = (
+        _visible(
+            select(AlertEvent, Alert, Server.name, ServerGroup.id, ServerGroup.name)
+            .join(Alert, Alert.id == AlertEvent.alert_id)
+            .join(Server, Server.id == Alert.server_id)
+            .join(ServerGroup, ServerGroup.id == Server.server_group_id),
+            access,
+        )
+        .where(AlertEvent.at >= since)
+        .order_by(AlertEvent.at.desc(), AlertEvent.id.desc())
+        .limit(LATEST_EVENTS)
+    )
+    events = [
+        AlertEventOut(id=event.id, kind=event.kind, at=event.at, alert=_alert_out(*alert))
+        for event, *alert in (await db.execute(events_query)).all()
+    ]
+    return AlertEventsOut(unseen=await db.scalar(unseen_query), firing=await db.scalar(firing_query), events=events)
+
+
+def mark_seen(user: User) -> None:
+    """The person has seen every event until now."""
+    user.alerts_seen_at = clock.now()

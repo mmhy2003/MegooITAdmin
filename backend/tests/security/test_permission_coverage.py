@@ -21,6 +21,9 @@ ANY_SIGNED_IN: dict[str, str] = {
     "GET /api/ssh/public-key": "the platform's public key, which is not a secret",
     "GET /api/ssh/setup-script": "the setup script, which is in the public repository",
     "GET /api/metrics/overview": "the answer filters itself by the person's access",
+    "GET /api/alerts": "the list filters itself by the person's access",
+    "GET /api/alerts/events": "the events of the alerts of the servers the person sees",
+    "POST /api/alerts/seen": "a person moves their own read mark",
 }
 
 
