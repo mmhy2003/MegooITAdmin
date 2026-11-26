@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.collector.checks.runner import Recorder
 from app.collector.state import StatusBook
 from app.collector.stream import Publisher
 from app.collector.supervisor import Supervisor
@@ -44,11 +45,13 @@ async def serve(stop: asyncio.Event) -> None:
         logger.warning("%s Samples are not published.", error)
         valkey = None
     writer = Writer(SessionLocal)
+    publisher = Publisher(valkey)
     supervisor = Supervisor(
         sessions=SessionLocal,
-        publisher=Publisher(valkey),
+        publisher=publisher,
         writer=writer,
         status=status,
+        recorder=Recorder(SessionLocal, publisher, writer),
         heartbeat=Path(settings.collector_heartbeat_file),
     )
     tasks = [asyncio.create_task(writer.run()), asyncio.create_task(supervisor.run())]

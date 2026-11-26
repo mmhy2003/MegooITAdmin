@@ -1,8 +1,9 @@
 """Reads servers every 10 seconds and keeps one stream per server that can be tried. A server that cannot be tried
-gets not_monitored and no connection attempt."""
+gets not_monitored and no connection attempt. With a recorder, every stream also runs its server's slow checks."""
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
 
@@ -10,6 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.collector.checks import CHECKS, Check
+from app.collector.checks.runner import FIRST_DELAY, Recorder
 from app.collector.state import StatusBook
 from app.collector.stream import MAX_SIGN_INS, Publisher, Stream, Target, Timings
 from app.collector.throttle import Throttle
@@ -44,10 +47,14 @@ class Supervisor:
         poll_every: float = POLL_EVERY,
         heartbeat: Path | None = None,
         max_sign_ins: int = MAX_SIGN_INS,
+        recorder: Recorder | None = None,
+        checks: Sequence[Check] = CHECKS,
+        first_delay: float = FIRST_DELAY,
     ) -> None:
         self.sessions, self.publisher, self.writer, self.status = sessions, publisher, writer, status
         self.timings, self.poll_every, self.heartbeat = timings, poll_every, heartbeat
         self.sign_ins = asyncio.Semaphore(max_sign_ins)  # shared by every stream
+        self.recorder, self.checks, self.first_delay = recorder, checks, first_delay
         self._streams: dict[UUID, tuple[Stream, asyncio.Task[None]]] = {}
         self._stopping: set[asyncio.Task[None]] = set()
         self._warned = Throttle()
@@ -98,6 +105,9 @@ class Supervisor:
             status=self.status,
             timings=self.timings,
             sign_ins=self.sign_ins,
+            recorder=self.recorder,
+            checks=self.checks,
+            first_delay=self.first_delay,
         )
         self._streams[target.server_id] = (stream, asyncio.create_task(stream.run()))
 

@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 import app.collector.__main__ as main_module
+from app.collector.checks.runner import Recorder
 from app.collector.health import healthy
+from app.collector.supervisor import Supervisor
 from app.collector.writer import Writer
 
 BACKEND = Path(__file__).resolve().parents[2]
@@ -80,3 +82,24 @@ def test_the_collector_exits_non_zero_when_serve_fails(monkeypatch):
     with pytest.raises(SystemExit) as exit_:
         main_module.main()
     assert exit_.value.code == 1
+
+
+async def test_serve_gives_the_supervisor_a_recorder_on_its_publisher_and_writer(clean_auth, monkeypatch):
+    built: dict = {}
+
+    class Built(Supervisor):
+        def __init__(self, **kwargs) -> None:
+            built.update(kwargs)
+            super().__init__(**kwargs)
+
+        async def run(self) -> None:
+            raise ValueError("built")
+
+    monkeypatch.setattr(main_module, "Supervisor", Built)
+
+    with pytest.raises(ValueError, match="built"):
+        await asyncio.wait_for(main_module.serve(asyncio.Event()), 20)
+
+    recorder = built["recorder"]
+    assert isinstance(recorder, Recorder)
+    assert (recorder.publisher, recorder.writer) == (built["publisher"], built["writer"])
