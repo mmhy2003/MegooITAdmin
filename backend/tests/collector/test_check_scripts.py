@@ -2,10 +2,12 @@
 
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 
 from app.collector.checks import CHECKS
 from app.collector.checks.parse import (
     MAX_OUTPUT,
+    CertificatesResult,
     ContainersResult,
     LoginsResult,
     Outcome,
@@ -230,3 +232,57 @@ async def test_updates_with_dnf_without_a_cache(fake_server):
 async def test_updates_without_a_package_manager(fake_server):
     with fake_server.hidden(*APT_GET, "/usr/local/bin/dnf"):
         assert await run(fake_server, "updates") == Outcome("not_available")
+
+
+def answers(fake_server, port: int) -> bool:
+    """Whether something listens on this port of the fake server, waiting up to 5 seconds."""
+    for _ in range(50):
+        if fake_server.exec("bash", "-c", f"exec 3<> /dev/tcp/127.0.0.1/{port}").returncode == 0:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+async def test_certificates_finds_a_served_certificate(fake_server):
+    made = fake_server.exec(
+        "sh",
+        "-c",
+        "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj /CN=fake-server -days 10"
+        " -keyout /tmp/test-key.pem -out /tmp/test-cert.pem",
+    )
+    assert made.returncode == 0, made.stderr
+    started = fake_server.exec(
+        "sh",
+        "-c",
+        "openssl s_server -accept 8443 -cert /tmp/test-cert.pem -key /tmp/test-key.pem -quiet"
+        " < /dev/null > /dev/null 2>&1 & echo $!",
+    )
+    server_pid = started.stdout.strip()
+    try:
+        assert answers(fake_server, 8443)
+
+        outcome = await run(fake_server, "certificates", args=("fake-server",))
+
+        assert outcome.status == "ok"
+        assert isinstance(outcome.result, CertificatesResult)
+        (cert,) = outcome.result.certificates
+        assert (cert.port, cert.subject) == (8443, "CN=fake-server")
+        assert timedelta(days=9) < cert.not_after - datetime.now(UTC) <= timedelta(days=10)
+    finally:
+        fake_server.exec("kill", server_pid)
+        fake_server.exec("rm", "-f", "/tmp/test-key.pem", "/tmp/test-cert.pem")
+
+
+async def test_certificates_with_nothing_served(fake_server):
+    assert await run(fake_server, "certificates") == Outcome("ok", CertificatesResult(certificates=()))
+
+
+async def test_certificates_without_openssl(fake_server):
+    with fake_server.hidden("/usr/bin/openssl"):
+        assert await run(fake_server, "certificates") == Outcome("not_available")
+
+
+async def test_certificates_leaves_nothing_behind(fake_server):
+    assert (await run(fake_server, "certificates")).status == "ok"
+
+    assert leftovers(fake_server) == []

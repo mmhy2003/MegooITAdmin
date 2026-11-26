@@ -7,6 +7,7 @@ bounded and never logged: anything unexpected is the status "failed".
 
 import ipaddress
 import json
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -373,3 +374,68 @@ def updates(lines: list[bytes]) -> UpdatesResult:
         reboot_required=reboot,
         lists_refreshed_at=_refreshed(values.get("refreshed")),
     )
+
+
+class Cert(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    port: int
+    subject: str
+    issuer: str
+    not_after: AwareDatetime
+    fingerprint_sha256: str
+
+
+class CertificatesResult(CheckResult):
+    certificates: tuple[Cert, ...]
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        if not self.certificates:
+            return ()
+        days = [(cert.port, math.floor((cert.not_after - now).total_seconds() / 86400)) for cert in self.certificates]
+        readings = [Reading(metric="cert.days_left", instance=str(port), value=left) for port, left in days]
+        readings.append(Reading(metric="cert.days_left", value=min(left for _, left in days)))
+        return tuple(readings)
+
+
+MAX_CERTIFICATES = 16
+_FINGERPRINT = re.compile(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}")
+_CERT_KEYS = {"subject": "subject", "issuer": "issuer", "notafter": "not_after", "sha256 fingerprint": "fingerprint"}
+
+
+def _not_after(text: str) -> datetime | None:
+    # OpenSSL pads a single-digit day with a second space: "Dec  5 12:00:00 2027 GMT".
+    try:
+        return datetime.strptime(" ".join(text.split()), "%b %d %H:%M:%S %Y GMT").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _cert(port: int, fields: dict[str, str]) -> Cert | None:
+    if fields.keys() != set(_CERT_KEYS.values()):
+        return None
+    subject, issuer = clean(fields["subject"]), clean(fields["issuer"])
+    not_after = _not_after(fields["not_after"])
+    fingerprint = fields["fingerprint"].upper()
+    if not subject or not issuer or not_after is None or not _FINGERPRINT.fullmatch(fingerprint):
+        return None
+    return Cert(port=port, subject=subject, issuer=issuer, not_after=not_after, fingerprint_sha256=fingerprint)
+
+
+def certificates(lines: list[bytes]) -> CertificatesResult:
+    """port N, then openssl x509's subject=, issuer=, notAfter= and sha256 Fingerprint= lines, for each port that
+    served a certificate. Lines outside a block, and unknown keys, are ignored."""
+    # A bad port line (port 0, port x) starts a block too, so its lines are not read as the previous port's.
+    blocks: list[tuple[int | None, dict[str, str]]] = []
+    for line in lines:
+        text = line.decode(errors="replace")
+        if text.startswith("port "):
+            number = _count(text[5:], 1)
+            blocks.append((number if number is not None and number <= 65535 else None, {}))
+            continue
+        key, separator, value = text.partition("=")
+        field = _CERT_KEYS.get(key.lower())
+        if blocks and separator and field:
+            blocks[-1][1].setdefault(field, value)
+    kept = [cert for port, fields in blocks if port and (cert := _cert(port, fields)) is not None]
+    return CertificatesResult(certificates=tuple(kept[:MAX_CERTIFICATES]))

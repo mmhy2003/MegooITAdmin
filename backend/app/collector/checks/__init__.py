@@ -32,4 +32,5 @@ CHECKS: tuple[Check, ...] = (
     Check("services", 60, 30, script_of("services"), parse.services),
     Check("logins", 300, 30, script_of("logins"), parse.logins),
     Check("updates", 3600, 60, script_of("updates"), parse.updates),
+    Check("certificates", 21600, 60, script_of("certificates"), parse.certificates, server_name=True),
 )

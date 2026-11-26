@@ -1,12 +1,12 @@
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from app.checks.models import SeenContainer
-from app.collector.checks import parse
+from app.checks.models import KINDS, SeenContainer
+from app.collector.checks import CHECKS, parse
 from app.collector.checks.parse import MAX_LINE, CheckResult, NotAvailable, Outcome, clean, read
 from app.metrics.samples import Reading
 from app.ssh.client import ScriptResult
@@ -613,3 +613,147 @@ def test_updates_through_read() -> None:
 
 def test_updates_dnf_reads_a_reboot_flag_when_there_is_one() -> None:
     assert parse.updates([b"manager dnf", b"exit 0", b"reboot 1"]).reboot_required is True
+
+
+FINGERPRINT = ":".join(["AB"] * 32)
+
+
+def _cert(
+    port: int | str = 443,
+    subject: str = "CN=example.com",
+    issuer: str = "CN=Example CA,O=Example",
+    not_after: str = "Nov 25 12:00:00 2027 GMT",
+    fingerprint: str = FINGERPRINT,
+    fingerprint_key: str = "sha256 Fingerprint",
+) -> list[bytes]:
+    return [
+        f"port {port}".encode(),
+        f"subject={subject}".encode(),
+        f"issuer={issuer}".encode(),
+        f"notAfter={not_after}".encode(),
+        f"{fingerprint_key}={fingerprint}".encode(),
+    ]
+
+
+def test_certificates_reads_a_block() -> None:
+    result = parse.certificates(_cert())
+
+    assert result == parse.CertificatesResult(
+        certificates=(
+            parse.Cert(
+                port=443,
+                subject="CN=example.com",
+                issuer="CN=Example CA,O=Example",
+                not_after=datetime(2027, 11, 25, 12, 0, tzinfo=UTC),
+                fingerprint_sha256=FINGERPRINT,
+            ),
+        )
+    )
+
+
+def test_certificates_reads_a_single_digit_day_as_utc() -> None:
+    (cert,) = parse.certificates(_cert(not_after="Dec  5 12:00:00 2027 GMT")).certificates
+
+    assert cert.not_after == datetime(2027, 12, 5, 12, 0, tzinfo=UTC)
+    assert cert.not_after.utcoffset() == timedelta(0)
+
+
+def test_certificates_reads_the_openssl_1_1_fingerprint_key() -> None:
+    result = parse.certificates(_cert(fingerprint_key="SHA256 Fingerprint"))
+
+    assert [cert.fingerprint_sha256 for cert in result.certificates] == [FINGERPRINT]
+
+
+def test_certificates_keys_are_matched_without_regard_to_case() -> None:
+    lines = [
+        b"port 443",
+        b"Subject=CN=a",
+        b"ISSUER=CN=b",
+        b"notafter=Nov 25 12:00:00 2027 GMT",
+        b"SHA256 FINGERPRINT=" + FINGERPRINT.encode(),
+    ]
+
+    assert [cert.subject for cert in parse.certificates(lines).certificates] == ["CN=a"]
+
+
+def test_certificates_keeps_the_fingerprint_upper_case() -> None:
+    result = parse.certificates(_cert(fingerprint=FINGERPRINT.lower()))
+
+    assert [cert.fingerprint_sha256 for cert in result.certificates] == [FINGERPRINT]
+
+
+@pytest.mark.parametrize("field", ["subject=", "issuer=", "notAfter=", "sha256 Fingerprint="])
+def test_certificates_a_block_without_a_field_is_dropped(field: str) -> None:
+    lines = [line for line in _cert(port=443) if not line.startswith(field.encode())] + _cert(port=8443)
+
+    assert [cert.port for cert in parse.certificates(lines).certificates] == [8443]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"subject": "CN=bad\x1b[31m"},
+        {"issuer": "CN=" + "x" * 300},
+        {"not_after": "tomorrow"},
+        {"fingerprint": "AB:CD"},
+        {"fingerprint": ":".join(["ZZ"] * 32)},
+        {"fingerprint": FINGERPRINT + ":"},
+    ],
+)
+def test_certificates_a_bad_block_is_dropped(fields: dict[str, str]) -> None:
+    lines = _cert(port=443, **fields) + _cert(port=8443)
+
+    assert [cert.port for cert in parse.certificates(lines).certificates] == [8443]
+
+
+@pytest.mark.parametrize("port", ["0", "65536", "x", "-1", "", "443 444"])
+def test_certificates_lines_before_a_good_port_line_are_skipped(port: str) -> None:
+    lines = _cert(port=port) + _cert(port=993)
+
+    assert [cert.port for cert in parse.certificates(lines).certificates] == [993]
+
+
+def test_certificates_keeps_the_first_16() -> None:
+    lines = [line for port in range(1, 21) for line in _cert(port=port)]
+
+    assert [cert.port for cert in parse.certificates(lines).certificates] == list(range(1, 17))
+
+
+def test_certificates_with_none_is_empty() -> None:
+    assert parse.certificates([]) == parse.CertificatesResult(certificates=())
+
+
+def test_certificates_readings_count_whole_days_left() -> None:
+    now = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+    lines = _cert(port=443, not_after="Dec  7 00:00:00 2026 GMT") + _cert(
+        port=8443, not_after="Nov 25 00:00:00 2026 GMT"
+    )
+
+    readings = parse.certificates(lines).readings(now)
+
+    assert readings == (
+        Reading(metric="cert.days_left", instance="443", value=10),
+        Reading(metric="cert.days_left", instance="8443", value=-2),
+        Reading(metric="cert.days_left", instance="", value=-2),
+    )
+
+
+def test_certificates_without_any_have_no_readings() -> None:
+    assert parse.certificates([]).readings(datetime.now(UTC)) == ()
+
+
+def test_certificates_through_read() -> None:
+    outcome = read(parse.certificates, _done(OK + b"\n".join(_cert()) + b"\n"))
+
+    assert outcome == Outcome("ok", parse.certificates(_cert()))
+
+
+def test_checks_are_in_the_api_order() -> None:
+    assert [check.kind for check in CHECKS] == list(KINDS)
+
+
+def test_the_certificates_check_sends_the_server_name() -> None:
+    check = CHECKS[-1]
+
+    assert (check.kind, check.every, check.timeout, check.server_name) == ("certificates", 21600, 60, True)
+    assert check.parse is parse.certificates
