@@ -1,5 +1,6 @@
 from fastapi import APIRouter, FastAPI
 
+from app.alerts.router import rules_router as alert_rules_router
 from app.auth.router import router as auth_router
 from app.checks.router import router as checks_router
 from app.core.config import Settings, get_settings
@@ -43,6 +44,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(checks_router)
     api.include_router(metrics_router)
     api.include_router(metrics_socket_router)
+    api.include_router(alert_rules_router)
     app.include_router(api)
     return app
 
