@@ -118,6 +118,27 @@ server. `<interval>` is the server's sampling interval, 1 to 10 seconds (5 by de
 - To see it on the server: `ps -u megoo -o pid,args`.
 - It needs Linux 3.14 or later, for `MemAvailable` in `/proc/meminfo`.
 
+### Slow checks
+
+The collector also runs six short read-only scripts from `backend/app/collector/checks/`. Each is sent on stdin to
+`sh -s` on a second channel of the same connection, one at a time. Nothing is installed and no file is written,
+and every command is bounded with `timeout`.
+
+| Check | Every | What it runs |
+|---|---|---|
+| Containers | 30 s | `sudo -n /usr/local/sbin/megoo-ctl docker ps`, the only sudo call. `megoo-ctl` stays at version 1, so no server needs the setup script again. |
+| Top processes | 30 s | Reads `/proc/<pid>/stat` twice, one second apart, and runs `ps -e -o pid=,user:32=,rss=,comm=` (names only, never command lines). |
+| Services | 60 s | `systemctl list-units --type=service --all --plain --no-legend --no-pager` |
+| Failed logins | 5 min | `journalctl -q --no-pager -o cat --since=-24h -t sshd -t sshd-session`, counted with awk on the server: only counts and source addresses leave it, never user names. |
+| Pending updates | 60 min | `apt-get -s -o Debug::NoLocking=1 upgrade`, or `dnf check-update -C -q` and `dnf updateinfo -C -q list --security`. dnf answers only from its cache; it never downloads. |
+| Certificates | 6 h | `openssl s_client` to 127.0.0.1 on ports 443, 465, 636, 853, 993, 995, 5671, 6443, 8443, 8883 and 9443, 5 seconds each, with the server's registered host name as SNI. |
+
+- The certificate check needs `openssl` on the server. A check whose tool is missing shows "Not available".
+- Podman containers are not discovered yet.
+- The checks run on a second channel. With `MaxSessions 1` in `sshd_config`, sshd refuses it and every check shows
+  "Could not be checked" while the metrics still work. Leave `MaxSessions` at its default (10), or at least 2.
+- The checks also appear in `ps -u megoo -o pid,args`, as `sh -s`.
+
 ## Run it again
 
 Run the script again, with the same `--from` and `--key`:
