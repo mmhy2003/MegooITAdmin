@@ -23,6 +23,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
     "pyyaml>=6.0.4",
+    "websockets>=17.4",
 ]
 
 [tool.uv]
