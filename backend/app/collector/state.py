@@ -25,7 +25,7 @@ class StatusBook:
         self.sessions = sessions
         self._known: dict[UUID, tuple[str, str | None]] = {}
         self._pending: dict[UUID, tuple[str, str | None, datetime | None]] = {}
-        # Since when each server is in its known state: the row's time, or the collector's own after a write.
+        # Since when each server is in its known state: the row's time, or the collector's own after a change of state.
         self._since: dict[UUID, datetime] = {}
         self._warn = Throttle()
 
@@ -104,8 +104,11 @@ class StatusBook:
         except (SQLAlchemyError, OSError) as exc:
             self._keep_pending(exc)
             return
+        known = self._known.get(server_id)
+        if known is None or known[0] != state:
+            # Only a new state: a new reason, such as another failure while unreachable, keeps the count going.
+            self._since[server_id] = datetime.now(UTC)
         self._known[server_id] = (state, reason)
-        self._since[server_id] = datetime.now(UTC)
         if self._pending.get(server_id) == written:  # unless a newer set() came in meanwhile
             del self._pending[server_id]
 

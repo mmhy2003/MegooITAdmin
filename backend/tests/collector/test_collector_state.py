@@ -164,7 +164,6 @@ async def test_forget_drops_the_known_value(clean_auth, collector_sessions):
     assert book.known_ids() == set()
 
 
-
 async def test_since_comes_from_the_row_and_from_each_write(clean_auth, collector_sessions):
     server_id = await a_server()
     book = StatusBook(collector_sessions)
@@ -181,6 +180,20 @@ async def test_since_comes_from_the_row_and_from_each_write(clean_auth, collecto
 
     restarted.forget(server_id)
     assert restarted.since(server_id) is None
+
+
+async def test_a_new_reason_keeps_since_and_a_new_state_moves_it(clean_auth, collector_sessions):
+    server_id = await a_server()
+    book = StatusBook(collector_sessions)
+    await book.set(server_id, "unreachable", "no_samples")
+    first = book.since(server_id)
+
+    await book.set(server_id, "unreachable", "key_refused")
+    assert book.since(server_id) == first
+
+    await book.set(server_id, "reachable")
+    assert book.since(server_id) > first
+
 
 def test_the_throttle_lets_one_through_per_period():
     now = [100.0]

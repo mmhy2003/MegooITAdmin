@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import insert, select, update
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import DataError, IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.alerts.actions import alert_event
@@ -102,7 +102,7 @@ class AlertBook:
 
     async def _write(self, transition: Transition) -> bool:
         """One transition in one transaction, the audit event last. False when the database refused it for now;
-        True when it is written, or dropped because it never can be."""
+        True when it is written, or dropped because it never can be. Never raises."""
         try:
             async with self.sessions() as session:
                 if not await self._change_alert(session, transition):
@@ -121,12 +121,20 @@ class AlertBook:
         except IntegrityError as exc:
             if getattr(exc.orig, "sqlstate", None) in DROPPED:
                 logger.info("Dropped an alert %s the database cannot take", transition.kind)
-                return True
-            self._keep_pending(exc)
-            return False
+            else:
+                # Any other refused value is a bug, and a retry would refuse it again, holding back every write.
+                logger.error("Dropped an alert %s the database refused: %s", transition.kind, type(exc).__name__)
+            return True
+        except DataError as exc:
+            logger.error("Dropped an alert %s the database refused: %s", transition.kind, type(exc).__name__)
+            return True
         except (SQLAlchemyError, OSError, AuditChainBusy) as exc:
             self._keep_pending(exc)
             return False
+        except Exception:
+            # A bug: dropping this one write keeps the others of the batch, and those waiting behind it.
+            logger.exception("Dropped an alert %s that could not be written", transition.kind)
+            return True
         firing = transition.firing
         if transition.kind == "fired":
             self._written[transition.alert_id] = (firing.last_value, firing.peak_value, self.clock())

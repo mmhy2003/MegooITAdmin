@@ -7,7 +7,9 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 
 from app.alerts.models import Alert, AlertRule
+from app.collector.alerts import book as book_module
 from app.collector.alerts.book import AlertBook
+from app.collector.alerts.engine import Engine
 from app.collector.state import StatusBook
 from app.inventory.models import Server
 from app.metrics.samples import Reading, Sample
@@ -133,6 +135,69 @@ async def test_a_refused_write_is_retried_at_the_next_poll(clean_alerts, collect
     assert [event.kind for event in await events_of(alert.id)] == ["fired", "resolved"]
     [fired], [resolved] = await events("alert.fired"), await events("alert.resolved")
     assert fired.seq < resolved.seq
+
+
+class BadSeverity(Engine):
+    """An engine whose first fire carries a severity the database's check refuses."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.spoiled = False
+
+    def observe(self, *args, **kwargs):
+        transitions = super().observe(*args, **kwargs)
+        if transitions and not self.spoiled:
+            self.spoiled = True
+            first = transitions[0]
+            first.firing.snapshot = (*first.firing.snapshot[:4], "bogus")
+        return transitions
+
+
+async def test_a_write_the_database_can_never_take_is_dropped_and_does_not_block_the_next(
+    clean_alerts, collector_sessions
+):
+    server = await monitored_server()
+    await make_rule()
+    book = AlertBook(collector_sessions, BadSeverity())
+    await book.poll([server], StatusBook(collector_sessions))
+
+    await book.observe(disk(server, T0, 95.0), 1)
+    await book.observe(disk(server, T0 + timedelta(seconds=5), 40.0), 1)
+    await book.observe(disk(server, T0 + timedelta(seconds=10), 96.0), 1)
+
+    assert book.pending == 0
+    [alert] = await alerts_of(server.id)
+    assert (alert.state, alert.fired_at, alert.severity) == ("firing", T0 + timedelta(seconds=10), "critical")
+
+
+async def test_a_bug_in_one_write_loses_only_that_one(clean_alerts, collector_sessions, monkeypatch):
+    server = await monitored_server()
+    await make_rule()
+    book = AlertBook(collector_sessions)
+    await book.poll([server], StatusBook(collector_sessions))
+    real = book_module.alert_event
+    calls = []
+
+    def broken_once(transition):
+        calls.append(transition)
+        if len(calls) == 1:
+            raise RuntimeError("a bug")
+        return real(transition)
+
+    monkeypatch.setattr(book_module, "alert_event", broken_once)
+    two = Sample(
+        time=T0,
+        server_id=server.id,
+        readings=(
+            Reading(metric="disk.used_percent", instance="/", value=95.0),
+            Reading(metric="disk.used_percent", instance="/var", value=96.0),
+        ),
+    )
+
+    await book.observe(two, 1)
+
+    assert book.pending == 0
+    assert [alert.instance for alert in await alerts_of(server.id)] == ["/var"]
 
 
 async def test_a_restart_loads_the_firing_alerts(clean_alerts, collector_sessions):
