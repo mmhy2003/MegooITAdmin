@@ -35,7 +35,16 @@ API_GRANTS: dict[str, frozenset[str]] = {
     "server_status": frozenset({"SELECT"}),
     "server_checks": frozenset({"SELECT"}),
     "containers": frozenset({"SELECT"}),
+    # The Owner manages the rules. The collector writes alerts and their events; the sender marks an event dispatched.
+    "alert_rules": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "alerts": frozenset({"SELECT"}),
+    "alert_events": frozenset({"SELECT"}),
+    "notification_channels": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    "notification_email": frozenset({"SELECT", "UPDATE"}),
+    "notification_deliveries": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
 }
+# The sender claims an event FOR UPDATE and sets its dispatched_at, and changes nothing else of it.
+API_COLUMN_GRANTS = {("alert_events", "dispatched_at", "UPDATE")}
 COLLECTOR_ROLE = "megooitadmin_collector"
 # The collector writes samples, its state table, the check results and the containers it finds, and flags a changed host key with its audit event.
 COLLECTOR_GRANTS: dict[str, frozenset[str]] = {
@@ -47,6 +56,10 @@ COLLECTOR_GRANTS: dict[str, frozenset[str]] = {
     "server_checks": frozenset({"SELECT", "INSERT", "UPDATE"}),
     # Docker no longer lists a removed container: its row goes at the next check.
     "containers": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    # It evaluates the rules, and writes alerts with their events. It never sees the channel tables.
+    "alert_rules": frozenset({"SELECT"}),
+    "alerts": frozenset({"SELECT", "INSERT", "UPDATE"}),
+    "alert_events": frozenset({"INSERT"}),
 }
 COLLECTOR_COLUMN_GRANTS = {
     ("servers", column, "UPDATE") for column in ("host_key_changed_at", "host_key_offered", "host_key_offered_at")
@@ -143,7 +156,7 @@ async def test_the_collector_roles_table_grants_are_the_declared_ones():
 
 async def test_the_column_grants_are_the_declared_ones():
     assert set(await _rows(COLUMN_GRANTS_SQL, COLLECTOR_ROLE)) == COLLECTOR_COLUMN_GRANTS
-    assert await _rows(COLUMN_GRANTS_SQL) == []
+    assert set(await _rows(COLUMN_GRANTS_SQL)) == API_COLUMN_GRANTS
 
 
 async def test_the_collector_role_can_insert_a_metric_and_cannot_read_users():
@@ -220,5 +233,15 @@ async def test_the_api_role_cannot_write_checks_or_containers(insert: str):
         await session.execute(text(f"SET LOCAL ROLE {API_ROLE}"))
         with pytest.raises(DBAPIError) as exc:
             await session.execute(text(insert))
+        await session.rollback()
+    assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE
+
+
+@pytest.mark.parametrize("table", ["notification_channels", "notification_email", "notification_deliveries"])
+async def test_the_collector_cannot_read_the_channel_tables(table: str):
+    async with owner_session() as session:
+        await session.execute(text(f"SET LOCAL ROLE {COLLECTOR_ROLE}"))
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(text(f"SELECT 1 FROM {table}"))
         await session.rollback()
     assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE

@@ -163,6 +163,25 @@ async def clean_auth(empty_audit_log):
 
 
 @pytest.fixture
+async def clean_alerts(clean_auth):
+    from sqlalchemy import text
+
+    # The owner deletes the deliveries, channels, events, alerts and rules (the starter rules too), and puts the
+    # email settings back to their defaults.
+    async with owner_session() as session:
+        for table in ("notification_deliveries", "notification_channels", "alert_events", "alerts", "alert_rules"):
+            await session.execute(text(f"DELETE FROM {table}"))
+        await session.execute(
+            text(
+                "UPDATE notification_email SET enabled = false, host = NULL, port = 587, security = 'starttls',"
+                " username = NULL, password = NULL, from_name = 'MegooITAdmin', from_address = NULL,"
+                " extra_addresses = '{}', min_severity = 'warning'"
+            )
+        )
+        await session.commit()
+
+
+@pytest.fixture
 async def collector_sessions(database_at_head, monkeypatch: pytest.MonkeyPatch):
     """Sessions as megooitadmin_collector, the collector's role. open_connection flags a changed host key through
     them too, as it does in the collector's process."""
