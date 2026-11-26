@@ -1,6 +1,10 @@
-"""The check runner: the Recorder writes an outcome's row and containers, and sends its numbers as metrics."""
+"""The check runner: the timetable, the check loop, and the Recorder that writes an outcome's row and containers and
+sends its numbers as metrics."""
 
+import asyncio
+import contextlib
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -24,7 +28,12 @@ from app.collector.checks.parse import (
     Unit,
     UpdatesResult,
 )
-from app.collector.checks.runner import Recorder
+from app.collector.checks import Check
+from app.collector.checks import runner as runner_module
+from app.collector.checks.runner import Recorder, Timetable, run_check, run_checks, server_name
+from app.collector.stream import Target
+from app.collector.throttle import Throttle
+from app.ssh.client import connect
 from app.collector.writer import Writer
 from auth_helpers import make_group, make_server
 from collector_helpers import parts
@@ -186,3 +195,153 @@ async def test_with_the_database_down_it_warns_once_and_still_buffers_the_readin
     assert len(warnings) == 1
     assert str(server_id) in warnings[0].getMessage()
     assert writer.pending == 2
+
+
+class Echo(CheckResult):
+    lines: list[str]
+
+
+def echo(lines: list[bytes]) -> Echo:
+    return Echo(lines=[line.decode() for line in lines])
+
+
+def _check(kind="services", every=1.0, timeout=5.0, script=b"echo '{\"status\":\"ok\"}'", parse=echo, **kw) -> Check:
+    return Check(kind, every, timeout, script, parse, **kw)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = [0.0]
+
+    def __call__(self) -> float:
+        return self.now[0]
+
+
+def test_every_check_is_due_at_the_start():
+    clock = FakeClock()
+    timetable = Timetable([_check("a", 5), _check("b", 5)], first_delay=0, clock=clock)
+    check, due = timetable.next()
+    assert (check.kind, due) == ("a", 0.0)
+
+
+def test_a_check_that_ran_is_due_again_after_its_interval():
+    timetable = Timetable([_check("a", 5), _check("b", 5)], first_delay=0, clock=FakeClock())
+    timetable.ran("a", 0)
+    check, due = timetable.next()
+    assert (check.kind, due) == ("b", 0.0)
+    timetable.ran("b", 0)
+    assert timetable.next()[0].kind == "a"
+
+
+def test_a_short_interval_comes_back_first():
+    timetable = Timetable([_check("a", 1), _check("b", 5)], first_delay=0, clock=FakeClock())
+    timetable.ran("a", 0)
+    timetable.ran("b", 0)
+    check, due = timetable.next()
+    assert (check.kind, due) == ("a", 1.0)
+
+
+def test_the_first_round_starts_within_the_first_delay():
+    for _ in range(20):
+        timetable = Timetable([_check("a", 5)], first_delay=10, clock=FakeClock())
+        assert 0 <= timetable.next()[1] <= 10
+
+
+@pytest.mark.parametrize(
+    ("address", "name"),
+    [
+        ("10.0.0.1", None),
+        ("2001:db8::1", None),
+        ("Web-01.Example.com", "web-01.example.com"),
+        ("bad_name", None),
+    ],
+)
+def test_server_name(address, name):
+    assert server_name(address) == name
+
+
+class FakeRecorder:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, Outcome, float]] = []
+
+    async def record(self, server_id, kind, outcome, at) -> None:
+        self.records.append((kind, outcome, time.monotonic()))
+
+
+def _target(fake_server) -> Target:
+    return Target(uuid.uuid4(), fake_server.host, fake_server.port, "megoo", fake_server.host_key(), 1)
+
+
+async def _run_for(seconds: float, fake_server, checks, recorder) -> None:
+    target = _target(fake_server)
+    async with connect(target.address, target.port, target.username, target.host_key) as conn:
+        timetable = Timetable(checks, first_delay=0)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(run_checks(conn, target, timetable, recorder), seconds)
+
+
+async def test_a_check_runs_when_due_and_not_before(fake_server):
+    recorder = FakeRecorder()
+    await _run_for(2.5, fake_server, [_check(every=1.0)], recorder)
+    assert len(recorder.records) == 3
+    assert all(outcome == Outcome("ok", Echo(lines=[])) for _, outcome, _ in recorder.records)
+    times = [at for _, _, at in recorder.records]
+    assert all(later - earlier >= 0.9 for earlier, later in zip(times, times[1:], strict=False))
+
+
+class Span(CheckResult):
+    start: float
+    end: float
+
+
+def span(lines: list[bytes]) -> Span:
+    return Span(start=float(lines[0]), end=float(lines[1]))
+
+
+async def test_checks_run_one_at_a_time(fake_server):
+    script = b"echo '{\"status\":\"ok\"}'; date +%s.%N; sleep 1; date +%s.%N"
+    recorder = FakeRecorder()
+    checks = [_check("services", 60, script=script, parse=span), _check("logins", 60, script=script, parse=span)]
+    await _run_for(3.5, fake_server, checks, recorder)
+    assert [kind for kind, _, _ in recorder.records] == ["services", "logins"]
+    first, second = (outcome.result for _, outcome, _ in recorder.records)
+    assert isinstance(first, Span) and isinstance(second, Span)
+    assert second.start >= first.end
+
+
+async def _run_one(fake_server, check: Check, address: str) -> Outcome:
+    async with connect(fake_server.host, fake_server.port, "megoo", fake_server.host_key()) as conn:
+        return await run_check(conn, check, address)
+
+
+async def test_a_timeout_gives_timeout(fake_server):
+    started = time.monotonic()
+    try:
+        outcome = await _run_one(fake_server, _check(timeout=1, script=b"exec sleep 10"), "127.0.0.1")
+    finally:
+        # Closing the channel leaves the sleep running, and the script tests count leftover processes.
+        fake_server.exec("pkill", "-u", "megoo", "-x", "sleep")
+    assert outcome == Outcome("timeout")
+    assert time.monotonic() - started < 3
+    assert "sleep" not in fake_server.exec("ps", "-u", "megoo", "-o", "comm=").stdout.split()
+
+
+async def test_certificates_gets_the_host_name(fake_server):
+    check = _check("certificates", script=b"echo '{\"status\":\"ok\"}'; echo \"$1\"", server_name=True)
+    named = await _run_one(fake_server, check, "fake.example.com")
+    assert named == Outcome("ok", Echo(lines=["fake.example.com"]))
+    unnamed = await _run_one(fake_server, check, "127.0.0.1")
+    assert unnamed == Outcome("ok", Echo(lines=[""]))
+
+
+async def test_an_exception_in_a_parser_gives_failed(fake_server, caplog, monkeypatch):
+    def broken(lines: list[bytes]) -> CheckResult:
+        raise KeyError("a bug")
+
+    monkeypatch.setattr(runner_module, "_bugs", Throttle())
+    check = _check(parse=broken)
+    with caplog.at_level(logging.ERROR, logger=LOGGER):
+        first = await _run_one(fake_server, check, "127.0.0.1")
+        second = await _run_one(fake_server, check, "127.0.0.1")
+    assert (first, second) == (Outcome("failed"), Outcome("failed"))
+    assert len([r for r in caplog.records if r.name == LOGGER]) == 1
