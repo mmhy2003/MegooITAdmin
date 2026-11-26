@@ -2,8 +2,9 @@ import type { ReactNode } from "react";
 import type { SeriesState } from "@/components/servers/performance/use-series";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { type RangeName, type SampleMessage, type Series, type SeriesAnswer, seriesOf } from "@/lib/metrics";
+import { type RangeName, type SampleMessage, type Series, type SeriesAnswer, seriesOf, sumSeries } from "@/lib/metrics";
 
 /** Whether an answer arrived without a single point in any of its series. */
 export function hasNoPoints(answer: SeriesAnswer | null): boolean {
@@ -67,6 +68,40 @@ export function MetricCard({
   );
 }
 
+/** A Select item cannot hold "", so "every device" has its own value. */
+export const ALL_DEVICES = "all";
+
+/** The device a card draws, in its header; `all`, when given, labels the choice of every device, offered first. */
+export function DeviceSelect({
+  label,
+  value,
+  devices,
+  all,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  devices: string[];
+  all?: string;
+  onChange: (device: string) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger aria-label={label} size="sm" className="w-40">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {all && <SelectItem value={ALL_DEVICES}>{all}</SelectItem>}
+        {devices.map((device) => (
+          <SelectItem key={device} value={device}>
+            {device}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 /** What the Performance tab gives each card: `interval` is the server's sample interval in seconds, the step of a
  * live range. */
 export type PerformanceCardProps = {
@@ -85,4 +120,10 @@ export function stepMsOf(answer: SeriesAnswer | null, interval: number): number 
 /** A series of the answer, or an empty one, so a line without data still has its place. */
 export function lineSeries(answer: SeriesAnswer | null, metric: string, instance = ""): Series {
   return seriesOf(answer, metric, instance) ?? { metric, instance, time: [], avg: [], min: [], max: [] };
+}
+
+/** A metric of one device, or summed over every device. */
+export function deviceSeries(answer: SeriesAnswer | null, metric: string, device: string): Series {
+  if (device !== ALL_DEVICES) return lineSeries(answer, metric, device);
+  return sumSeries(answer?.series.filter((s) => s.metric === metric && s.instance !== "") ?? [], metric, "");
 }
