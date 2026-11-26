@@ -2,6 +2,7 @@
 outage kept back is written by retry()."""
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, text
@@ -162,6 +163,24 @@ async def test_forget_drops_the_known_value(clean_auth, collector_sessions):
     assert book.known(server_id) is None
     assert book.known_ids() == set()
 
+
+
+async def test_since_comes_from_the_row_and_from_each_write(clean_auth, collector_sessions):
+    server_id = await a_server()
+    book = StatusBook(collector_sessions)
+    assert book.since(server_id) is None
+
+    before = datetime.now(UTC)
+    await book.set(server_id, "unreachable", "no_samples")
+    after = datetime.now(UTC)
+    assert before <= book.since(server_id) <= after
+
+    restarted = StatusBook(collector_sessions)
+    await restarted.load()
+    assert restarted.since(server_id) == (await row_of(server_id)).since
+
+    restarted.forget(server_id)
+    assert restarted.since(server_id) is None
 
 def test_the_throttle_lets_one_through_per_period():
     now = [100.0]

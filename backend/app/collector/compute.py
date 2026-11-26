@@ -24,6 +24,11 @@ def whole_disk(name: str) -> bool:
     return WHOLE_DISK.fullmatch(name) is not None
 
 
+def cores(raw: Raw) -> int:
+    """The server's CPU cores: its cpuN rows, without the "cpu" total. At least 1."""
+    return max(1, sum(1 for row in raw.cpu if row[0] != "cpu"))
+
+
 def readings(previous: Raw | None, current: Raw) -> tuple[Reading, ...]:
     found = [*_levels(current)]
     if previous is not None and _comparable(previous, current):

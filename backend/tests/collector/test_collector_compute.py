@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.collector.compute import readings
+from app.collector.compute import cores, readings
 from app.collector.parse import Raw
 from app.metrics.samples import Reading
 
@@ -107,3 +107,11 @@ def test_memory_without_mem_available_has_no_available_or_used() -> None:
     assert values[("mem.total_bytes", "")] == 8192000000
     for metric in ("mem.available_bytes", "mem.used_bytes", "mem.used_percent"):
         assert (metric, "") not in values
+
+
+def test_cores_counts_the_cpu_rows_but_the_total() -> None:
+    four = [["cpu", *[0] * 8], *([f"cpu{n}", *[0] * 8] for n in range(4))]
+
+    assert cores(FIRST) == 1
+    assert cores(_second(cpu=four)) == 4
+    assert cores(_second(cpu=[["cpu", *[0] * 8]])) == 1
