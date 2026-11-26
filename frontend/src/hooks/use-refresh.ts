@@ -5,10 +5,10 @@ import { useEffect, useRef } from "react";
 export const REFRESH_EVERY_MS = 15_000;
 
 /**
- * Calls `refresh` every 15 seconds while the tab is visible and `active` is true, and once when the tab becomes
- * visible again. A hidden tab sends nothing.
+ * Calls `refresh` every `everyMs` (15 seconds by default) while the tab is visible and `active` is true, and once when
+ * the tab becomes visible again. A hidden tab sends nothing.
  */
-export function useRefresh(refresh: () => void, active: boolean): void {
+export function useRefresh(refresh: () => void, active: boolean, everyMs: number = REFRESH_EVERY_MS): void {
   const latest = useRef(refresh);
   useEffect(() => {
     latest.current = refresh;
@@ -18,7 +18,7 @@ export function useRefresh(refresh: () => void, active: boolean): void {
     if (!active) return;
     let timer: ReturnType<typeof setInterval> | undefined;
     const start = () => {
-      timer = setInterval(() => latest.current(), REFRESH_EVERY_MS);
+      timer = setInterval(() => latest.current(), everyMs);
     };
     const stop = () => {
       clearInterval(timer);
@@ -37,5 +37,5 @@ export function useRefresh(refresh: () => void, active: boolean): void {
       stop();
       document.removeEventListener("visibilitychange", changed);
     };
-  }, [active]);
+  }, [active, everyMs]);
 }
