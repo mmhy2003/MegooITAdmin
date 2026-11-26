@@ -12,6 +12,7 @@ import type { ConnectionTestResult, Server } from "@/lib/servers";
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
 vi.mock("@/lib/auth/navigate");
 vi.mock("@/hooks/use-refresh", () => ({ useRefresh: vi.fn() }));
+vi.mock("@/components/servers/performance/live-strip", () => ({ LiveStrip: () => <div>live strip</div> }));
 vi.mock("next/dynamic", () => ({
   default: () =>
     function PerformanceTab(p: { range: string; onRange: (range: string) => void }) {
@@ -680,6 +681,42 @@ describe("ServerPage", () => {
     expect(replace).toHaveBeenLastCalledWith("/servers/s-1?tab=performance&range=7d", { scroll: false });
     await user.click(screen.getByRole("button", { name: "pick live" }));
     expect(replace).toHaveBeenLastCalledWith("/servers/s-1?tab=performance", { scroll: false });
+  });
+
+  const REACHABLE = { state: "reachable", reason: null, since: AT, last_sample_at: AT } as const;
+
+  it.each(["reachable", "unreachable"] as const)(
+    "shows the live strip before the Monitoring card for a %s Linux server",
+    async (state) => {
+      mockApi({ ...PINNED, monitoring: { ...REACHABLE, state } });
+      render(<ServerPage serverId="s-1" />);
+
+      const strip = await screen.findByText("live strip");
+      const monitoring = screen.getByRole("heading", { name: "Monitoring" });
+      expect(strip.compareDocumentPosition(monitoring) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    },
+  );
+
+  it.each([
+    ["a Windows server", { ...PINNED, os: "windows", host_key_state: "none", monitoring: REACHABLE }],
+    ["a server that is not monitored", { ...PINNED, monitoring: { ...REACHABLE, state: "not_monitored" } }],
+    ["a server the collector has not looked at", { ...PINNED, monitoring: null }],
+  ] as const)("shows no live strip for %s", async (_, server) => {
+    mockApi(server as Server);
+    render(<ServerPage serverId="s-1" />);
+
+    await screen.findByRole("heading", { name: "Connection" });
+    expect(screen.queryByText("live strip")).not.toBeInTheDocument();
+  });
+
+  it.each(["containers", "performance"])("shows no live strip on ?tab=%s", async (tab) => {
+    setTab(tab);
+    mockApi({ ...PINNED, monitoring: REACHABLE });
+    render(<ServerPage serverId="s-1" />);
+
+    await screen.findByRole("tab", { name: "Containers (4)" });
+    expect(screen.getByRole("tab", { selected: true })).toHaveAttribute("id", `server-tab-${tab}`);
+    expect(screen.queryByText("live strip")).not.toBeInTheDocument();
   });
 
   it("re-reads the checks and containers in the background and updates the cards", async () => {

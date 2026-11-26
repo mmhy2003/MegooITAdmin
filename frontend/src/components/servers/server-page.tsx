@@ -18,6 +18,7 @@ import { Field } from "@/components/servers/field";
 import { HostKeyDialog } from "@/components/servers/host-key-dialog";
 import { MonitoringBadge } from "@/components/servers/monitoring-badge";
 import { MonitoringCard } from "@/components/servers/monitoring-card";
+import { LiveStrip } from "@/components/servers/performance/live-strip";
 import { PlatformAccessCard } from "@/components/servers/platform-access-card";
 import { RemoveServerDialog } from "@/components/servers/remove-server-dialog";
 import { ReviewHostKeyDialog } from "@/components/servers/review-host-key-dialog";
@@ -348,6 +349,10 @@ export function ServerPage({ serverId }: { serverId: string }) {
               )
             ) : (
               <>
+                {linux &&
+                  (server.monitoring?.state === "reachable" || server.monitoring?.state === "unreachable") && (
+                    <LiveStrip server={server} />
+                  )}
                 <MonitoringCard server={server} />
                 {linux && facts && (
                   <div className="grid gap-6 md:grid-cols-2">
