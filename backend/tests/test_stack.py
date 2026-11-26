@@ -613,6 +613,39 @@ def test_the_collector_streams_the_fake_server_and_survives_restarts_and_a_netwo
     _wait(lambda: _state(owner, server_id) == "reachable" and _newer(server_id, t), 150, "samples again once the network is back")
 
 
+def _checks(owner: httpx.Client, server_id: str) -> dict:
+    return owner.get(f"/api/servers/{server_id}/checks").json()
+
+
+def test_the_collector_checks_the_fake_server_and_lists_its_containers(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    group = owner.post("/api/server-groups", json={"name": "checks-lab"}).json()["id"]
+    server = {"name": "fake-server-checks", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+    server_id = owner.post("/api/servers", json=server).json()["id"]
+    fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+    assert fetched["ok"], fetched
+    assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
+
+    # The first round starts soon after the stream and runs one check at a time.
+    _wait(lambda: all(c["status"] == "ok" for c in _checks(owner, server_id)["checks"]), 120, "six ok checks of the fake server")
+    checks = _checks(owner, server_id)
+    assert [c["kind"] for c in checks["checks"]] == ["containers", "processes", "services", "logins", "updates", "certificates"]
+    assert checks["can_view_processes"] is True
+    services = next(c for c in checks["checks"] if c["kind"] == "services")
+    assert services["data"]["failed"] == 1
+
+    containers = owner.get(f"/api/servers/{server_id}/containers").json()
+    assert [(c["compose_project"], c["name"]) for c in containers] == [
+        ("monitoring", "monitoring-grafana-1"),
+        ("shop", "shop-db-1"),
+        ("shop", "shop-web-1"),
+        (None, "hello-adhoc"),
+    ]
+
+
 def test_after_sign_out_pages_redirect_to_login(owner):
     # Last in the file: it ends the session the `owner` fixture holds.
     response = owner.post("/api/auth/logout")
