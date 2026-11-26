@@ -3,7 +3,7 @@ host key and nothing else, and what the signed-in account may do with sudo."""
 
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
@@ -30,6 +30,7 @@ CTL = "/usr/local/sbin/megoo-ctl"
 _SUDO_HEADER = re.compile(r"^User \S+ may run the following commands on ")
 _RUNAS = re.compile(r"^\([^)]*\)\s*")
 _TAGS = re.compile(r"^(?:[A-Z_]+:\s*)+")
+_SCRIPT_ARG = re.compile(r"[A-Za-z0-9.-]{1,253}")  # a host name, a number or a word: nothing a shell reads
 
 
 # A signed-in connection, the type other modules name so that only this one uses asyncssh's connection API.
@@ -50,6 +51,10 @@ class KeyRefused(SshFailure):
 
 class SshError(SshFailure):
     reason = "ssh_error"
+
+
+class ScriptTimeout(SshFailure):
+    reason = "timeout"
 
 
 class AccountCheckFailed(SshFailure):
@@ -211,3 +216,54 @@ async def _chunks(process: asyncssh.SSHClientProcess[bytes]) -> AsyncIterator[by
         if not chunk:
             return
         yield chunk
+
+
+@dataclass(frozen=True)
+class ScriptResult:
+    exit_status: int | None
+    output: bytes
+    truncated: bool  # output reached max_output, and the rest was not read
+
+
+async def run_script(
+    conn: Connection, script: bytes, args: Sequence[str] = (), *, timeout: float, max_output: int
+) -> ScriptResult:
+    """Runs `sh -s [args]` with the script on stdin and its errors discarded, on a channel of its own, and returns at
+    most `max_output` bytes of its output. Raises ScriptTimeout after `timeout` seconds and SshError when the channel
+    cannot start or breaks. Closing the channel does not stop a command the script started, so check scripts bound
+    theirs with `timeout`."""
+    for position, arg in enumerate(args):
+        if not _SCRIPT_ARG.fullmatch(arg):
+            raise ValueError(f"argument {position} is not a host name, a number or a word")
+    try:
+        process = await conn.create_process(" ".join(["sh", "-s", *args]), encoding=None, stderr=asyncssh.DEVNULL)
+    except asyncssh.Error as error:
+        raise SshError() from error
+    timed_out = False
+    try:
+        try:
+            process.stdin.write(script)
+            process.stdin.write_eof()
+            output = b""
+            truncated = False
+            async with asyncio.timeout(timeout):
+                while chunk := await process.stdout.read(SCRIPT_CHUNK):
+                    output += chunk
+                    if len(output) >= max_output:
+                        output, truncated = output[:max_output], True
+                        break
+                if not truncated:
+                    await process.wait()
+        except TimeoutError as error:
+            timed_out = True
+            raise ScriptTimeout() from error
+        except (asyncssh.Error, OSError) as error:
+            raise SshError() from error
+        return ScriptResult(exit_status=process.exit_status, output=output, truncated=truncated)
+    finally:
+        process.close()
+        # The server confirms the close only when the command holding the output ends: after a timeout, that is the
+        # command that ran late, so the channel closes on its own later instead of making the caller wait.
+        if not timed_out:
+            with suppress(asyncssh.Error, OSError, TimeoutError):
+                await asyncio.wait_for(process.wait_closed(), CLOSE_TIMEOUT)

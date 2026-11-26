@@ -1,0 +1,441 @@
+"""A check's output read as a status and a bounded result (the protocol R3).
+
+Line 1 is a JSON status line: {"status":"ok"}, {"status":"not_available"} or {"status":"denied"}. Only "ok" is
+followed by a body, which the check's parser turns into its result. The server's account writes this output, so it is
+bounded and never logged: anything unexpected is the status "failed".
+"""
+
+import ipaddress
+import json
+import math
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict
+
+from app.checks.models import CONTAINER_STATES, SeenContainer, Status
+from app.collector.parse import CONTROL
+from app.metrics.samples import Reading
+from app.ssh.client import ScriptResult
+
+MAX_OUTPUT = 1024 * 1024
+MAX_LINE = 64 * 1024
+MAX_NAME = 255
+MAX_CONTAINERS = 500
+
+_FIRST: tuple[Status, ...] = ("ok", "not_available", "denied")
+
+
+class NotAvailable(Exception):
+    """A parser raises it: the tool cannot answer on this server."""
+
+
+class CheckResult(BaseModel):
+    """What a check found. Each kind adds its fields."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    def data(self) -> dict[str, Any]:
+        """What server_checks keeps."""
+        return self.model_dump(mode="json")
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        """The numbers sent to metrics."""
+        return ()
+
+
+@dataclass(frozen=True)
+class Outcome:
+    status: Status
+    result: CheckResult | None = None  # set only when status == "ok"
+
+
+def clean(text: str) -> str | None:
+    """The text, or None when it is longer than MAX_NAME or holds a control character."""
+    if len(text) > MAX_NAME or CONTROL.search(text):
+        return None
+    return text
+
+
+def _status(line: bytes) -> Status | None:
+    try:
+        first = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(first, dict) or first.keys() != {"status"} or first["status"] not in _FIRST:
+        return None
+    return first["status"]
+
+
+def read(parser: Callable[[list[bytes]], CheckResult], result: ScriptResult) -> Outcome:
+    """The outcome of one run of a check. Never raises for anything the output holds."""
+    if result.truncated or result.exit_status != 0:
+        return Outcome("failed")
+    lines = result.output.split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    if not lines or any(len(line) > MAX_LINE for line in lines):
+        return Outcome("failed")
+    status = _status(lines[0])
+    if status is None:
+        return Outcome("failed")
+    if status != "ok":
+        return Outcome(status)
+    try:
+        return Outcome("ok", parser(lines[1:]))
+    except NotAvailable:
+        return Outcome("not_available")
+    except ValueError:
+        return Outcome("failed")
+
+
+class ContainersResult(CheckResult):
+    containers: tuple[SeenContainer, ...]
+    total: int
+    running: int
+    not_running: int
+
+    def data(self) -> dict[str, Any]:
+        # The containers have a table of their own.
+        return self.model_dump(mode="json", exclude={"containers"})
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        return (
+            Reading(metric="containers.running", value=self.running),
+            Reading(metric="containers.not_running", value=self.not_running),
+        )
+
+
+_CONTAINER_ID = re.compile(r"[0-9a-f]{12,64}")
+_PROJECT = re.compile(r"(?:^|,)com\.docker\.compose\.project=([A-Za-z0-9_.-]{1,255})(?:,|$)")
+_SERVICE = re.compile(r"(?:^|,)com\.docker\.compose\.service=([A-Za-z0-9_.-]{1,255})(?:,|$)")
+
+
+def _label(pattern: re.Pattern[str], labels: object) -> str | None:
+    found = pattern.search(labels) if isinstance(labels, str) else None
+    return found.group(1) if found else None
+
+
+def _seen(row: dict[str, Any]) -> SeenContainer | None:
+    container_id, names, image, state = row.get("ID"), row.get("Names"), row.get("Image"), row.get("State")
+    if not isinstance(container_id, str) or not _CONTAINER_ID.fullmatch(container_id):
+        return None
+    name = clean(names.split(",")[0]) if isinstance(names, str) else None
+    image = clean(image) if isinstance(image, str) else None
+    if not name or not image:
+        return None
+    status = row.get("Status")
+    return SeenContainer(
+        container_id=container_id,
+        name=name,
+        image=image,
+        compose_project=_label(_PROJECT, row.get("Labels")),
+        compose_service=_label(_SERVICE, row.get("Labels")),
+        state=state.lower() if isinstance(state, str) and state.lower() in CONTAINER_STATES else "unknown",
+        status=(clean(status) if isinstance(status, str) else None) or "",
+    )
+
+
+def containers(lines: list[bytes]) -> ContainersResult:
+    """docker ps --all --no-trunc --format '{{json .}}': one JSON object per container."""
+    kept: list[SeenContainer] = []
+    total = running = 0
+    for line in lines:
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError("a line of docker ps is not an object")
+        if not isinstance(row.get("State"), str):
+            continue
+        total += 1
+        running += row["State"].lower() == "running"
+        seen = _seen(row)
+        if seen is not None and len(kept) < MAX_CONTAINERS:
+            kept.append(seen)
+    return ContainersResult(containers=tuple(kept), total=total, running=running, not_running=total - running)
+
+
+class Proc(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pid: int
+    name: str
+    user: str
+    cpu_percent: float
+    memory_bytes: int
+
+
+class ProcessesResult(CheckResult):
+    # Process snapshots are not metrics (PRD §13): only the latest top five are kept, by name.
+    by_cpu: tuple[Proc, ...]
+    by_memory: tuple[Proc, ...]
+
+
+TOP = 5
+
+
+def _hz(line: bytes) -> int:
+    first = json.loads(line)
+    hz = first.get("hz") if isinstance(first, dict) else None
+    if type(hz) is not int or hz <= 0:
+        raise ValueError("no clock ticks per second")
+    return hz
+
+
+def _count(text: str, least: int) -> int | None:
+    return int(text) if text.isascii() and text.isdigit() and int(text) >= least else None
+
+
+def _proc(line: bytes, hz: int) -> Proc | None:
+    fields = line.decode(errors="replace").split("\t")
+    if len(fields) != 5:
+        return None
+    pid, ticks, rss_kb = _count(fields[0], 1), _count(fields[2], 0), _count(fields[3], 0)
+    user, name = clean(fields[1]), clean(fields[4])
+    if pid is None or ticks is None or rss_kb is None or not user or not name:
+        return None
+    return Proc(pid=pid, name=name, user=user, cpu_percent=ticks / hz * 100, memory_bytes=rss_kb * 1024)
+
+
+def processes(lines: list[bytes]) -> ProcessesResult:
+    """{"hz":N}, then pid<TAB>user<TAB>ticks<TAB>rss_kB<TAB>name for each process. Command lines are never read."""
+    if not lines:
+        raise ValueError("no clock ticks per second")
+    hz = _hz(lines[0])
+    procs = [proc for line in lines[1:] if (proc := _proc(line, hz)) is not None]
+    return ProcessesResult(
+        by_cpu=tuple(sorted(procs, key=lambda proc: (-proc.cpu_percent, proc.pid))[:TOP]),
+        by_memory=tuple(sorted(procs, key=lambda proc: (-proc.memory_bytes, proc.pid))[:TOP]),
+    )
+
+
+class Unit(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    unit: str
+    description: str
+
+
+class ServicesResult(CheckResult):
+    total: int
+    running: int
+    failed: int
+    failed_units: tuple[Unit, ...]
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        return (Reading(metric="services.failed", value=self.failed),)
+
+
+MAX_FAILED_UNITS = 50
+
+
+def services(lines: list[bytes]) -> ServicesResult:
+    """systemctl list-units --type=service --all --plain --no-legend: unit, load, active, sub and description."""
+    total = running = failed = 0
+    failed_units: list[Unit] = []
+    for line in lines:
+        fields = line.decode(errors="replace").split(None, 4)
+        if len(fields) < 4 or not fields[0].endswith(".service"):
+            continue
+        total += 1
+        running += fields[3] == "running"
+        if fields[2] != "failed":
+            continue
+        failed += 1
+        unit = clean(fields[0])
+        if unit:
+            description = clean(fields[4]) if len(fields) == 5 else None
+            failed_units.append(Unit(unit=unit, description=description or ""))
+    return ServicesResult(
+        total=total,
+        running=running,
+        failed=failed,
+        failed_units=tuple(sorted(failed_units, key=lambda unit: unit.unit)[:MAX_FAILED_UNITS]),
+    )
+
+
+class Source(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    address: str
+    count: int
+
+
+class LoginsResult(CheckResult):
+    # Only a count and addresses: the user name of a failed sign-in is the attacker's text, and sometimes a password.
+    failed_24h: int
+    top_sources: tuple[Source, ...]
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        return (Reading(metric="logins.failed_24h", value=self.failed_24h),)
+
+
+def _source(line: bytes) -> Source | None:
+    fields = line.decode(errors="replace").split(" ")
+    if len(fields) != 2:
+        return None
+    count = _count(fields[0], 1)
+    try:
+        address = clean(str(ipaddress.ip_address(fields[1])))
+    except ValueError:
+        return None
+    if count is None or not address:
+        return None
+    return Source(address=address, count=count)
+
+
+def logins(lines: list[bytes]) -> LoginsResult:
+    """total N, then one line per source address, most failures first: count address."""
+    fields = lines[0].decode(errors="replace").split(" ") if lines else []
+    total = _count(fields[1], 0) if len(fields) == 2 and fields[0] == "total" else None
+    if total is None:
+        raise ValueError("no total of failed sign-ins")
+    sources = [source for line in lines[1:] if (source := _source(line)) is not None]
+    return LoginsResult(failed_24h=total, top_sources=tuple(sources[:TOP]))
+
+
+class UpdatesResult(CheckResult):
+    manager: Literal["apt", "dnf"]
+    pending: int
+    security: int | None
+    reboot_required: bool | None
+    lists_refreshed_at: AwareDatetime | None
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        readings = [Reading(metric="updates.pending", value=self.pending)]
+        if self.security is not None:
+            readings.append(Reading(metric="updates.security", value=self.security))
+        if self.reboot_required is not None:
+            readings.append(Reading(metric="updates.reboot_required", value=1.0 if self.reboot_required else 0.0))
+        return tuple(readings)
+
+
+def _optional(values: dict[str, str], key: str) -> int | None:
+    """The count of this key, None without one. A bad count is an error."""
+    if key not in values:
+        return None
+    count = _count(values[key], 0)
+    if count is None:
+        raise ValueError(f"a bad {key} count")
+    return count
+
+
+def _required(values: dict[str, str], key: str) -> int:
+    count = _optional(values, key)
+    if count is None:
+        raise ValueError(f"no {key} count")
+    return count
+
+
+def _reboot(values: dict[str, str]) -> bool | None:
+    if "reboot" not in values:
+        return None
+    if values["reboot"] not in ("0", "1"):
+        raise ValueError("a bad reboot flag")
+    return values["reboot"] == "1"
+
+
+def _refreshed(value: str | None) -> datetime | None:
+    seconds = _count(value, 0) if value is not None else None
+    return datetime.fromtimestamp(seconds, UTC) if seconds is not None else None
+
+
+def updates(lines: list[bytes]) -> UpdatesResult:
+    """key value lines: manager, then apt's pending, security and reboot, or dnf's exit, pending and maybe security;
+    refreshed (epoch seconds) for both. Unknown keys are ignored."""
+    values: dict[str, str] = {}
+    for line in lines:
+        key, _, value = line.decode(errors="replace").partition(" ")
+        values.setdefault(key, value)
+    manager = values.get("manager")
+    if manager == "apt":
+        pending, security, reboot = _required(values, "pending"), _required(values, "security"), _reboot(values)
+        if reboot is None:
+            raise ValueError("no reboot flag")
+    elif manager == "dnf":
+        # dnf check-update exits 100 when updates are pending and 0 when none are; anything else (no usable cache
+        # among them) leaves nothing to count.
+        code = values.get("exit")
+        if code == "0":
+            pending = 0
+        elif code == "100":
+            pending = _required(values, "pending")
+        else:
+            raise NotAvailable
+        security, reboot = _optional(values, "security"), _reboot(values)
+    else:
+        raise ValueError("no known package manager")
+    return UpdatesResult(
+        manager=manager,
+        pending=pending,
+        security=security,
+        reboot_required=reboot,
+        lists_refreshed_at=_refreshed(values.get("refreshed")),
+    )
+
+
+class Cert(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    port: int
+    subject: str
+    issuer: str
+    not_after: AwareDatetime
+    fingerprint_sha256: str
+
+
+class CertificatesResult(CheckResult):
+    certificates: tuple[Cert, ...]
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        if not self.certificates:
+            return ()
+        days = [(cert.port, math.floor((cert.not_after - now).total_seconds() / 86400)) for cert in self.certificates]
+        readings = [Reading(metric="cert.days_left", instance=str(port), value=left) for port, left in days]
+        readings.append(Reading(metric="cert.days_left", value=min(left for _, left in days)))
+        return tuple(readings)
+
+
+MAX_CERTIFICATES = 16
+_FINGERPRINT = re.compile(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}")
+_CERT_KEYS = {"subject": "subject", "issuer": "issuer", "notafter": "not_after", "sha256 fingerprint": "fingerprint"}
+
+
+def _not_after(text: str) -> datetime | None:
+    # OpenSSL pads a single-digit day with a second space: "Dec  5 12:00:00 2027 GMT".
+    try:
+        return datetime.strptime(" ".join(text.split()), "%b %d %H:%M:%S %Y GMT").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _cert(port: int, fields: dict[str, str]) -> Cert | None:
+    if fields.keys() != set(_CERT_KEYS.values()):
+        return None
+    subject, issuer = clean(fields["subject"]), clean(fields["issuer"])
+    not_after = _not_after(fields["not_after"])
+    fingerprint = fields["fingerprint"].upper()
+    if not subject or not issuer or not_after is None or not _FINGERPRINT.fullmatch(fingerprint):
+        return None
+    return Cert(port=port, subject=subject, issuer=issuer, not_after=not_after, fingerprint_sha256=fingerprint)
+
+
+def certificates(lines: list[bytes]) -> CertificatesResult:
+    """port N, then openssl x509's subject=, issuer=, notAfter= and sha256 Fingerprint= lines, for each port that
+    served a certificate. Lines outside a block, and unknown keys, are ignored."""
+    # A bad port line (port 0, port x) starts a block too, so its lines are not read as the previous port's.
+    blocks: list[tuple[int | None, dict[str, str]]] = []
+    for line in lines:
+        text = line.decode(errors="replace")
+        if text.startswith("port "):
+            number = _count(text[5:], 1)
+            blocks.append((number if number is not None and number <= 65535 else None, {}))
+            continue
+        key, separator, value = text.partition("=")
+        field = _CERT_KEYS.get(key.lower())
+        if blocks and separator and field:
+            blocks[-1][1].setdefault(field, value)
+    kept = [cert for port, fields in blocks if port and (cert := _cert(port, fields)) is not None]
+    return CertificatesResult(certificates=tuple(kept[:MAX_CERTIFICATES]))

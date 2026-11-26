@@ -105,6 +105,11 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   whether the collector reaches the server: Reachable, Unreachable with the reason and what to do, Not monitored
   (Windows, or a host key not pinned or changed) or Not checked yet. The Owner and Admins of the group set a Linux
   server's sample interval in the Register and Edit dialog.
+- A Linux server's Overview shows Services, Updates, Failed sign-ins, Certificates, Top processes (needs the View
+  processes right) and a Containers summary, each with when it was last checked. The Containers tab lists the
+  Docker containers grouped by Compose project. A result older than three intervals shows in amber. The intervals
+  are fixed: containers and processes 30 seconds, services 1 minute, failed sign-ins 5 minutes, updates 1 hour and
+  certificates 6 hours. See [Slow checks](docs/server-setup.md#slow-checks).
 - Both pages re-read the servers every 15 seconds while the tab is visible. These re-reads carry
   `X-Megoo-Background: 1` and do not count as activity, so a page left open still signs out after
   `session_idle_minutes`.

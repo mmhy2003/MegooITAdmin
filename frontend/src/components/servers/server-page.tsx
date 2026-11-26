@@ -2,9 +2,16 @@
 
 import { Pencil, PlugZap, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatTime } from "@/components/profile/profile-page";
+import { CertificatesCard } from "@/components/servers/checks/certificates-card";
+import { ContainersSummaryCard } from "@/components/servers/checks/containers-summary-card";
+import { ContainersTab } from "@/components/servers/checks/containers-tab";
+import { LoginsCard } from "@/components/servers/checks/logins-card";
+import { ServicesCard } from "@/components/servers/checks/services-card";
+import { TopProcessesCard } from "@/components/servers/checks/top-processes-card";
+import { UpdatesCard } from "@/components/servers/checks/updates-card";
 import { ConnectionResult } from "@/components/servers/connection-result";
 import { Field } from "@/components/servers/field";
 import { HostKeyDialog } from "@/components/servers/host-key-dialog";
@@ -22,10 +29,19 @@ import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
+import { checkOf, type ChecksResponse, type Container } from "@/lib/checks";
 import { OS_LABELS, type ConnectionTestResult, type HostKeyState, type Server } from "@/lib/servers";
 
 /** What the Edit dialog offers: the groups the person manages and the tags in use. */
 type Choices = { groups: ServerGroup[]; tags: string[] };
+
+/** A Linux server's checks and containers, as read together. */
+type Facts = { checks: ChecksResponse; containers: Container[] };
+
+const TAB_CLASSES = {
+  selected: "-mb-px border-b-2 border-primary px-3 py-2 text-sm font-semibold",
+  other: "-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-muted-foreground hover:text-foreground",
+};
 
 /** The badge beside the OS badge for each host key state a Linux server has. */
 const STATE_BADGES: Record<Exclude<HostKeyState, "none">, { label: string; variant: "secondary" | "outline" | "destructive" }> =
@@ -35,10 +51,13 @@ const STATE_BADGES: Record<Exclude<HostKeyState, "none">, { label: string; varia
     changed: { label: "Host key changed", variant: "destructive" },
   };
 
-/** One server's page: its name and badges, and the Overview tab (the other tabs come later). */
+/** One server's page: its name and badges, the Overview tab and, for a Linux server, the Containers tab. */
 export function ServerPage({ serverId }: { serverId: string }) {
   const router = useRouter();
+  const wantsContainers = useSearchParams().get("tab") === "containers";
   const [server, setServer] = useState<Server | null>(null);
+  const [facts, setFacts] = useState<Facts | null>(null);
+  const [now, setNow] = useState(() => new Date());
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [choices, setChoices] = useState<Choices | null>(null);
@@ -52,6 +71,28 @@ export function ServerPage({ serverId }: { serverId: string }) {
   // Each foreground read takes a number; an answer is applied only while its read is still the latest.
   const reads = useRef(0);
 
+  /** Reads a Linux server's checks and containers; the answer counts only while `read` is the latest. */
+  const readFacts = useCallback(
+    (read: number, background: boolean) => {
+      const get = <T,>(path: string) => (background ? apiFetch<T>(path, { background: true }) : apiFetch<T>(path));
+      Promise.all([
+        get<ChecksResponse>(`/servers/${serverId}/checks`),
+        get<Container[]>(`/servers/${serverId}/containers`),
+      ]).then(
+        ([checks, containers]) => {
+          if (read !== reads.current) return;
+          setFacts({ checks, containers });
+          setNow(new Date());
+        },
+        (e: unknown) => {
+          if (read !== reads.current || background) return;
+          setError(e instanceof ApiError ? e.detail : "error");
+        },
+      );
+    },
+    [serverId],
+  );
+
   const reload = useCallback(() => {
     const read = ++reads.current;
     return apiFetch<Server>(`/servers/${serverId}`).then(
@@ -60,6 +101,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
         setServer(found);
         setMissing(false);
         setError(null);
+        if (found.os === "linux") readFacts(read, false);
       },
       (e: unknown) => {
         if (read !== reads.current) return;
@@ -71,7 +113,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
         }
       },
     );
-  }, [serverId]);
+  }, [serverId, readFacts]);
 
   useEffect(() => {
     void reload();
@@ -82,7 +124,9 @@ export function ServerPage({ serverId }: { serverId: string }) {
     const read = reads.current;
     apiFetch<Server>(`/servers/${serverId}`, { background: true }).then(
       (found) => {
-        if (reads.current === read) setServer(found);
+        if (reads.current !== read) return;
+        setServer(found);
+        if (found.os === "linux") readFacts(read, true);
       },
       (e: unknown) => {
         if (reads.current === read && e instanceof ApiError && e.status === 404) {
@@ -91,7 +135,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
         }
       },
     );
-  }, [serverId]);
+  }, [serverId, readFacts]);
 
   useRefresh(refresh, !editing && !removing && !pinning && !reviewing && !testing);
 
@@ -133,6 +177,13 @@ export function ServerPage({ serverId }: { serverId: string }) {
     setResult(null);
     setTestError(null);
   }
+
+  function showTab(containers: boolean) {
+    router.replace(containers ? `/servers/${serverId}?tab=containers` : `/servers/${serverId}`, { scroll: false });
+  }
+
+  const linux = server?.os === "linux";
+  const onContainers = linux && wantsContainers;
 
   if (missing) {
     return (
@@ -230,82 +281,132 @@ export function ServerPage({ serverId }: { serverId: string }) {
             <button
               type="button"
               role="tab"
-              aria-selected="true"
-              className="-mb-px border-b-2 border-primary px-3 py-2 text-sm font-semibold"
+              id="server-tab-overview"
+              aria-selected={!onContainers}
+              aria-controls="server-tab-panel"
+              className={onContainers ? TAB_CLASSES.other : TAB_CLASSES.selected}
+              onClick={() => showTab(false)}
             >
               Overview
             </button>
+            {linux && (
+              <button
+                type="button"
+                role="tab"
+                id="server-tab-containers"
+                aria-selected={onContainers}
+                aria-controls="server-tab-panel"
+                className={onContainers ? TAB_CLASSES.selected : TAB_CLASSES.other}
+                onClick={() => showTab(true)}
+              >
+                {facts ? `Containers (${facts.containers.length})` : "Containers"}
+              </button>
+            )}
           </div>
-          <MonitoringCard server={server} />
-          <div className="grid gap-6 md:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle>
-                  <h3>Connection</h3>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <dl className="space-y-3">
-                  <Field label="Address">
-                    <span className="font-mono">{server.address}</span>
-                  </Field>
-                  <Field label="Port">
-                    <span className="font-mono">{server.port}</span>
-                  </Field>
-                  <Field label="Login account">
-                    <span className="font-mono">{server.connection_settings.username}</span>
-                  </Field>
-                  {server.os !== "windows" && (
-                    <Field label="Host key">
-                      {server.host_key_fingerprint === null ? (
-                        <span className="text-muted-foreground">Not pinned yet</span>
-                      ) : (
-                        <div className="space-y-1">
-                          <span className="block font-mono break-all">{server.host_key_fingerprint}</span>
-                          <span className="block text-sm text-muted-foreground">
-                            {server.host_key_type}
-                            {server.host_key_pinned_at && ` · Pinned ${formatTime(server.host_key_pinned_at)}`}
-                          </span>
-                        </div>
-                      )}
-                    </Field>
-                  )}
-                </dl>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle>
-                  <h3>Details</h3>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <dl className="space-y-3">
-                  <Field label="Server group">{server.group_name}</Field>
-                  <Field label="Operating system">{OS_LABELS[server.os]}</Field>
-                  <Field label="Role">{server.role ?? <span className="text-muted-foreground">None</span>}</Field>
-                  <Field label="Tags">
-                    {server.tags.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {server.tags.map((tag) => (
-                          <Badge key={tag} variant="secondary">
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">None</span>
-                    )}
-                  </Field>
-                  <Field label="Registered">{formatTime(server.created_at)}</Field>
-                  <Field label="Last changed">{formatTime(server.updated_at)}</Field>
-                </dl>
-              </CardContent>
-            </Card>
+          <div
+            role="tabpanel"
+            id="server-tab-panel"
+            aria-labelledby={onContainers ? "server-tab-containers" : "server-tab-overview"}
+            className="space-y-6"
+          >
+            {onContainers ? (
+              facts && (
+                <ContainersTab check={checkOf(facts.checks, "containers")} containers={facts.containers} now={now} />
+              )
+            ) : (
+              <>
+                <MonitoringCard server={server} />
+                {linux && facts && (
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <ServicesCard check={checkOf(facts.checks, "services")} now={now} />
+                    <UpdatesCard check={checkOf(facts.checks, "updates")} now={now} />
+                    <LoginsCard check={checkOf(facts.checks, "logins")} now={now} />
+                    <CertificatesCard check={checkOf(facts.checks, "certificates")} now={now} />
+                    <TopProcessesCard
+                      check={checkOf(facts.checks, "processes")}
+                      now={now}
+                      canView={facts.checks.can_view_processes}
+                      groupName={server.group_name}
+                    />
+                    <ContainersSummaryCard
+                      check={checkOf(facts.checks, "containers")}
+                      now={now}
+                      href={`/servers/${serverId}?tab=containers`}
+                    />
+                  </div>
+                )}
+                <div className="grid gap-6 md:grid-cols-2">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>
+                        <h3>Connection</h3>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <dl className="space-y-3">
+                        <Field label="Address">
+                          <span className="font-mono">{server.address}</span>
+                        </Field>
+                        <Field label="Port">
+                          <span className="font-mono">{server.port}</span>
+                        </Field>
+                        <Field label="Login account">
+                          <span className="font-mono">{server.connection_settings.username}</span>
+                        </Field>
+                        {server.os !== "windows" && (
+                          <Field label="Host key">
+                            {server.host_key_fingerprint === null ? (
+                              <span className="text-muted-foreground">Not pinned yet</span>
+                            ) : (
+                              <div className="space-y-1">
+                                <span className="block font-mono break-all">{server.host_key_fingerprint}</span>
+                                <span className="block text-sm text-muted-foreground">
+                                  {server.host_key_type}
+                                  {server.host_key_pinned_at && ` · Pinned ${formatTime(server.host_key_pinned_at)}`}
+                                </span>
+                              </div>
+                            )}
+                          </Field>
+                        )}
+                      </dl>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>
+                        <h3>Details</h3>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <dl className="space-y-3">
+                        <Field label="Server group">{server.group_name}</Field>
+                        <Field label="Operating system">{OS_LABELS[server.os]}</Field>
+                        <Field label="Role">{server.role ?? <span className="text-muted-foreground">None</span>}</Field>
+                        <Field label="Tags">
+                          {server.tags.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {server.tags.map((tag) => (
+                                <Badge key={tag} variant="secondary">
+                                  {tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">None</span>
+                          )}
+                        </Field>
+                        <Field label="Registered">{formatTime(server.created_at)}</Field>
+                        <Field label="Last changed">{formatTime(server.updated_at)}</Field>
+                      </dl>
+                    </CardContent>
+                  </Card>
+                </div>
+                {server.can_manage && server.os === "linux" && (
+                  <PlatformAccessCard username={server.connection_settings.username} />
+                )}
+              </>
+            )}
           </div>
-          {server.can_manage && server.os === "linux" && (
-            <PlatformAccessCard username={server.connection_settings.username} />
-          )}
           <HostKeyDialog
             server={server}
             open={pinning}

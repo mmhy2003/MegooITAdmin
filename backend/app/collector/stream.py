@@ -1,13 +1,16 @@
 """One server's stream: sign in through open_connection, run the loop on one channel, turn each line into a Sample,
 publish it and buffer it for the writer. A closed channel, or no sample for no_sample_after seconds, closes the
-connection; the next try waits 1, 2, 4 ... up to 60 seconds with jitter, and a sample resets the wait."""
+connection; the next try waits 1, 2, 4 ... up to 60 seconds with jitter, and a sample resets the wait.
+
+With a recorder, the slow checks run on a second channel of the same connection, each when it is due. Their failures
+never end the session: only the loop decides that."""
 
 import asyncio
 import logging
 import random
 import time
-from collections.abc import AsyncIterator, Callable
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -17,6 +20,8 @@ from valkey.exceptions import ValkeyError
 
 from app.audit import Actor
 from app.collector import compute, script
+from app.collector.checks import CHECKS, Check
+from app.collector.checks.runner import FIRST_DELAY, Recorder, Timetable, run_checks
 from app.collector.parse import Lines, parse
 from app.collector.state import StatusBook
 from app.collector.throttle import Throttle
@@ -105,11 +110,17 @@ class Stream:
         status: StatusBook,
         timings: Timings = Timings(),
         sign_ins: asyncio.Semaphore | None = None,
+        recorder: Recorder | None = None,
+        checks: Sequence[Check] = CHECKS,
+        first_delay: float = FIRST_DELAY,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.target, self.publisher, self.writer, self.status, self.timings = target, publisher, writer, status, timings
         self.sign_ins = sign_ins or asyncio.Semaphore(MAX_SIGN_INS)
         self.clock = clock
+        self.recorder = recorder  # None: no check runs
+        # On the stream, not the session: a reconnect does not run a check again before its interval.
+        self.timetable = Timetable(checks, first_delay=first_delay, clock=clock)
         self.failure: str | None = None  # the reason of the last failure, None after a sample
         self.last_sample = clock()  # monotonic; the task's start counts as one
         self.last_sample_at: datetime | None = None
@@ -149,6 +160,10 @@ class Stream:
                     chunks = await stack.enter_async_context(
                         client.script_output(conn, script(), self.target.interval)
                     )
+                if self.recorder is not None:
+                    # The stack closes in reverse, so the checks stop before the channel and the connection.
+                    checks = asyncio.create_task(run_checks(conn, self.target, self.timetable, self.recorder))
+                    stack.push_async_callback(_stop_task, checks)
                 await self._read(chunks)
         except client.HostKeyChanged:
             raise
@@ -214,3 +229,9 @@ class Stream:
                     self.failure or "no_samples",
                     last_sample_at=self.last_sample_at,
                 )
+
+
+async def _stop_task(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with suppress(asyncio.CancelledError, Exception):
+        await task

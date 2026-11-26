@@ -33,15 +33,20 @@ API_GRANTS: dict[str, frozenset[str]] = {
     "metrics_1h": frozenset({"SELECT"}),
     # Written by the collector, read by the server API.
     "server_status": frozenset({"SELECT"}),
+    "server_checks": frozenset({"SELECT"}),
+    "containers": frozenset({"SELECT"}),
 }
 COLLECTOR_ROLE = "megooitadmin_collector"
-# The collector writes samples and its state table, and flags a changed host key with its audit event.
+# The collector writes samples, its state table, the check results and the containers it finds, and flags a changed host key with its audit event.
 COLLECTOR_GRANTS: dict[str, frozenset[str]] = {
     "metrics": frozenset({"INSERT"}),
     "servers": frozenset({"SELECT"}),
     "server_status": frozenset({"SELECT", "INSERT", "UPDATE"}),
     "audit_log": frozenset({"INSERT"}),
     "audit_chain_head": frozenset({"SELECT", "UPDATE"}),
+    "server_checks": frozenset({"SELECT", "INSERT", "UPDATE"}),
+    # Docker no longer lists a removed container: its row goes at the next check.
+    "containers": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
 }
 COLLECTOR_COLUMN_GRANTS = {
     ("servers", column, "UPDATE") for column in ("host_key_changed_at", "host_key_offered", "host_key_offered_at")
@@ -197,3 +202,23 @@ async def test_the_api_role_can_read_server_status():
         await session.execute(text(f"SET LOCAL ROLE {API_ROLE}"))
         assert (await session.execute(text("SELECT count(*) FROM server_status"))).scalar_one() >= 0
         await session.rollback()
+
+
+@pytest.mark.parametrize(
+    "insert",
+    [
+        "INSERT INTO server_checks (server_id, kind, status, checked_at)"
+        " VALUES (gen_random_uuid(), 'services', 'ok', now())",
+        "INSERT INTO containers (server_id, runtime, container_id, name, image, state, status,"
+        " first_seen_at, last_seen_at)"
+        " VALUES (gen_random_uuid(), 'docker', 'c0ffee', 'web', 'nginx', 'running', 'Up', now(), now())",
+    ],
+    ids=["server_checks", "containers"],
+)
+async def test_the_api_role_cannot_write_checks_or_containers(insert: str):
+    async with owner_session() as session:
+        await session.execute(text(f"SET LOCAL ROLE {API_ROLE}"))
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(text(insert))
+        await session.rollback()
+    assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE

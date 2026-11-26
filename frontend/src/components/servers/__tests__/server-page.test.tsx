@@ -1,11 +1,12 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatTime } from "@/components/profile/profile-page";
 import { ServerPage } from "@/components/servers/server-page";
 import { useRefresh } from "@/hooks/use-refresh";
 import { ApiError, apiFetch } from "@/lib/api";
+import type { ChecksResponse, Container } from "@/lib/checks";
 import type { ConnectionTestResult, Server } from "@/lib/servers";
 
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
@@ -66,15 +67,116 @@ const WORKS: ConnectionTestResult = {
   ],
 };
 
-let push: ReturnType<typeof vi.fn>;
+const AT = "2026-11-25T11:59:30Z";
 
-function mockApi(server: Server | ApiError, test: ConnectionTestResult | ApiError = WORKS) {
+/** The six checks of a Linux server: one failed unit, the others with small results. */
+const CHECKS: ChecksResponse = {
+  can_view_processes: true,
+  checks: [
+    {
+      kind: "services",
+      status: "ok",
+      checked_at: AT,
+      every_seconds: 60,
+      data: {
+        total: 42,
+        running: 41,
+        failed: 1,
+        failed_units: [{ unit: "nginx.service", description: "A high performance web server" }],
+      },
+      data_at: AT,
+    },
+    {
+      kind: "updates",
+      status: "ok",
+      checked_at: AT,
+      every_seconds: 3600,
+      data: { manager: "apt", pending: 3, security: 1, reboot_required: false, lists_refreshed_at: AT },
+      data_at: AT,
+    },
+    {
+      kind: "logins",
+      status: "ok",
+      checked_at: AT,
+      every_seconds: 300,
+      data: { failed_24h: 0, top_sources: [] },
+      data_at: AT,
+    },
+    {
+      kind: "certificates",
+      status: "ok",
+      checked_at: AT,
+      every_seconds: 21600,
+      data: { certificates: [] },
+      data_at: AT,
+    },
+    {
+      kind: "processes",
+      status: "ok",
+      checked_at: AT,
+      every_seconds: 30,
+      data: {
+        by_cpu: [{ pid: 101, name: "postgres", user: "postgres", cpu_percent: 12.5, memory_bytes: 104857600 }],
+        by_memory: [{ pid: 101, name: "postgres", user: "postgres", cpu_percent: 12.5, memory_bytes: 104857600 }],
+      },
+      data_at: AT,
+    },
+    {
+      kind: "containers",
+      status: "ok",
+      checked_at: AT,
+      every_seconds: 30,
+      data: { total: 4, running: 2, not_running: 2 },
+      data_at: AT,
+    },
+  ],
+};
+
+function container(fields: Partial<Container> & Pick<Container, "container_id" | "name" | "image" | "state">): Container {
+  return {
+    runtime: "docker",
+    compose_project: null,
+    compose_service: null,
+    status: "Up 3 days",
+    first_seen_at: "2026-11-22T10:00:00Z",
+    last_seen_at: AT,
+    ...fields,
+  };
+}
+
+/** The four containers of the fake server. */
+const CONTAINERS: Container[] = [
+  container({ container_id: "1".repeat(64), name: "shop-web-1", image: "nginx:1.27", compose_project: "shop", state: "running" }),
+  container({ container_id: "2".repeat(64), name: "shop-db-1", image: "postgres:17", compose_project: "shop", state: "running" }),
+  container({
+    container_id: "3".repeat(64),
+    name: "monitoring-grafana-1",
+    image: "grafana/grafana:11.3.0",
+    compose_project: "monitoring",
+    state: "exited",
+  }),
+  container({ container_id: "4".repeat(64), name: "hello-adhoc", image: "busybox:1.37", state: "restarting" }),
+];
+
+let push: ReturnType<typeof vi.fn>;
+let replace: ReturnType<typeof vi.fn>;
+
+function mockApi(
+  server: Server | ApiError,
+  test: ConnectionTestResult | ApiError = WORKS,
+  checks: ChecksResponse | ApiError = CHECKS,
+) {
   vi.mocked(apiFetch).mockImplementation(async (path: string, init?: { method?: string }) => {
     if (init?.method === "DELETE") return undefined;
     if (path === "/servers/s-1") {
       if (server instanceof ApiError) throw server;
       return server;
     }
+    if (path === "/servers/s-1/checks") {
+      if (checks instanceof ApiError) throw checks;
+      return checks;
+    }
+    if (path === "/servers/s-1/containers") return CONTAINERS;
     if (path === "/servers/s-1/connection-test") {
       if (test instanceof ApiError) throw test;
       return test;
@@ -105,10 +207,24 @@ beforeEach(() => {
   vi.mocked(apiFetch).mockReset();
   vi.mocked(useRefresh).mockReset();
   push = vi.fn();
-  vi.mocked(useRouter).mockReturnValue({ push, replace: vi.fn(), refresh: vi.fn() } as unknown as ReturnType<
-    typeof useRouter
-  >);
+  replace = vi.fn();
+  vi.mocked(useRouter).mockReturnValue({ push, replace, refresh: vi.fn() } as unknown as ReturnType<typeof useRouter>);
+  setTab(null);
 });
+
+function setTab(tab: string | null) {
+  vi.mocked(useSearchParams).mockReturnValue(
+    new URLSearchParams(tab ? { tab } : {}) as unknown as ReturnType<typeof useSearchParams>,
+  );
+}
+
+const CARDS = ["Services", "Updates", "Failed sign-ins", "Certificates", "Top processes", "Containers"];
+
+function checkReads() {
+  return vi
+    .mocked(apiFetch)
+    .mock.calls.filter(([path]) => path === "/servers/s-1/checks" || path === "/servers/s-1/containers");
+}
 
 describe("ServerPage", () => {
   it("shows the server's name, badges, Overview tab and its Connection and Details cards", async () => {
@@ -403,5 +519,137 @@ describe("ServerPage", () => {
     await user.click(await screen.findByRole("button", { name: "Test connection" }));
     expect(await screen.findByRole("button", { name: "Testing…" })).toBeDisabled();
     expect(refreshArgs()[1]).toBe(false);
+  });
+
+  it("shows the six check cards on Overview for a Linux server", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+
+    expect(await screen.findByRole("heading", { name: "Services" })).toBeInTheDocument();
+    for (const name of CARDS) expect(screen.getByRole("heading", { name, level: 3 })).toBeInTheDocument();
+    expect(card("Services").getByText("nginx.service")).toBeInTheDocument();
+    expect(card("Containers").getByRole("link", { name: "Show containers" })).toHaveAttribute(
+      "href",
+      "/servers/s-1?tab=containers",
+    );
+    expect(screen.getByRole("tabpanel")).toContainElement(screen.getByRole("heading", { name: "Services" }));
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/checks");
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/containers");
+    const order = screen
+      .getByRole("heading", { name: "Monitoring" })
+      .compareDocumentPosition(screen.getByRole("heading", { name: "Services" }));
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const after = screen
+      .getByRole("heading", { name: "Services" })
+      .compareDocumentPosition(screen.getByRole("heading", { name: "Connection" }));
+    expect(after & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("reads no checks or containers and offers no Containers tab for a Windows server", async () => {
+    setTab("containers");
+    mockApi({ ...DB, os: "windows", port: 3389, host_key_state: "none" });
+    render(<ServerPage serverId="s-1" />);
+
+    await screen.findByRole("heading", { name: "db-01", level: 2 });
+    await refreshNow();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Overview"]);
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    for (const name of CARDS) expect(screen.queryByRole("heading", { name })).not.toBeInTheDocument();
+    expect(card("Connection").getByText("Address")).toBeInTheDocument();
+    expect(checkReads()).toHaveLength(0);
+  });
+
+  it("shows the containers grouped by Compose project on the Containers tab", async () => {
+    setTab("containers");
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+
+    const tab = await screen.findByRole("tab", { name: "Containers (4)" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "false");
+    const panel = within(screen.getByRole("tabpanel"));
+    for (const name of ["monitoring", "shop", "No Compose project"]) {
+      expect(panel.getByRole("heading", { name, level: 3 })).toBeInTheDocument();
+    }
+    for (const name of CARDS.filter((n) => n !== "Containers")) {
+      expect(screen.queryByRole("heading", { name })).not.toBeInTheDocument();
+    }
+    expect(screen.queryByRole("heading", { name: "Connection" })).not.toBeInTheDocument();
+    expect(tab).toHaveAttribute("aria-controls", screen.getByRole("tabpanel").id);
+  });
+
+  it("switches tabs by replacing the address without scrolling", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("tab", { name: "Containers (4)" }));
+    expect(replace).toHaveBeenLastCalledWith("/servers/s-1?tab=containers", { scroll: false });
+    await user.click(screen.getByRole("tab", { name: "Overview" }));
+    expect(replace).toHaveBeenLastCalledWith("/servers/s-1", { scroll: false });
+  });
+
+  it("re-reads the checks and containers in the background and updates the cards", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    expect(await screen.findByText("1 failed")).toBeInTheDocument();
+
+    const services = CHECKS.checks[0];
+    mockApi(PINNED, WORKS, {
+      ...CHECKS,
+      checks: [
+        {
+          ...services,
+          data: {
+            total: 42,
+            running: 40,
+            failed: 2,
+            failed_units: [
+              { unit: "nginx.service", description: "A high performance web server" },
+              { unit: "cron.service", description: "Regular background program processing daemon" },
+            ],
+          },
+        },
+        ...CHECKS.checks.slice(1),
+      ],
+    });
+    await refreshNow();
+
+    expect(await screen.findByText("2 failed")).toBeInTheDocument();
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/checks", { background: true });
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/containers", { background: true });
+  });
+
+  it("pauses the re-read while the Edit dialog is open", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    const user = userEvent.setup();
+
+    await screen.findByRole("heading", { name: "Services" });
+    expect(refreshArgs()[1]).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(refreshArgs()[1]).toBe(false);
+  });
+
+  it("shows an error when the checks cannot be read", async () => {
+    mockApi(PINNED, WORKS, new ApiError(500, "invalid"));
+    render(<ServerPage serverId="s-1" />);
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "db-01", level: 2 })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Services" })).not.toBeInTheDocument();
+  });
+
+  it("shows no error when a background read of the checks fails", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("heading", { name: "Services" });
+
+    mockApi(PINNED, WORKS, new ApiError(500, "invalid"));
+    await refreshNow();
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Services" })).toBeInTheDocument();
   });
 });

@@ -400,5 +400,52 @@ def test_the_database_refuses_an_interval_of_0_and_11_and_a_state_without_its_re
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0009'")
 
 
+
+def _checks_tables() -> list:
+    return _fetch("SELECT to_regclass('server_checks'), to_regclass('containers')")
+
+
+def test_0010_goes_down_and_up_again():
+    command.downgrade(_config(), "0009")
+    try:
+        assert _checks_tables() == [(None, None)]
+    finally:
+        upgrade_to_head()
+    assert _checks_tables() == [("server_checks", "containers")]
+
+
+def test_the_database_refuses_a_bad_kind_status_runtime_and_state():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0010')")
+    try:
+        _execute(
+            "INSERT INTO servers (id, server_group_id, name, address, port, os)"
+            " SELECT gen_random_uuid(), id, 'probe-0010', '10.0.0.10', 22, 'linux' FROM server_groups"
+            " WHERE name = 'Migration probe group 0010'"
+        )
+        for constraint, kind, status, data in (
+            ("server_checks_kind_check", "'x'", "'ok'", "NULL"),
+            ("server_checks_status_check", "'services'", "'x'", "NULL"),
+            ("server_checks_data_check", "'services'", "'ok'", "'{}'::jsonb"),
+        ):
+            with pytest.raises(IntegrityError, match=constraint):
+                _execute(
+                    "INSERT INTO server_checks (server_id, kind, status, checked_at, data)"
+                    f" SELECT id, {kind}, {status}, now(), {data} FROM servers WHERE name = 'probe-0010'"
+                )
+        for constraint, runtime, state in (
+            ("containers_runtime_check", "'podman'", "'running'"),
+            ("containers_state_check", "'docker'", "'x'"),
+        ):
+            with pytest.raises(IntegrityError, match=constraint):
+                _execute(
+                    "INSERT INTO containers (server_id, runtime, container_id, name, image, state, status,"
+                    " first_seen_at, last_seen_at)"
+                    f" SELECT id, {runtime}, 'c0ffee', 'web', 'nginx', {state}, 'Up', now(), now()"
+                    " FROM servers WHERE name = 'probe-0010'"
+                )
+    finally:
+        _execute("DELETE FROM servers WHERE name = 'probe-0010'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0010'")
+
 def test_the_models_match_the_migrations():
     command.check(_config())

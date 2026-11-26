@@ -8,6 +8,8 @@ by the image. All six sign in with this run's platform key.
 import os
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import pytest
@@ -17,8 +19,11 @@ from app.ssh import keys
 
 SETUP = "/usr/local/lib/megoo-setup.sh"
 CTL = "/usr/local/sbin/megoo-ctl"
-# Where the stub docker and systemctl log each call, one line per call: the name, then each argument in brackets.
+# Where the stubs (docker, systemctl, journalctl, apt-get and dnf) log each call, one line per call: the name, then each
+# argument in brackets.
 LOG = "/var/log/fake-tools.log"
+# The stubs' fixtures: <tool>_<first argument> or <tool> is what a call prints, <fixture>.exit its exit status.
+FIXTURES = "/etc/fake-tools"
 ACCOUNTS = ("megoo", "megoo-nologs", "megoo-nosudo", "megoo-wide", "megoo-docker", "megoo-root")
 
 
@@ -54,15 +59,49 @@ class FakeServer:
         return self.exec("sudo", "-n", CTL, *args, user=user)
 
     def clear_tool_log(self) -> None:
-        """Empties the log of the stub docker and systemctl."""
+        """Empties the log of the stub tools."""
         result = self.exec("truncate", "-s", "0", LOG)
         assert result.returncode == 0, result.stderr
 
     def tool_log(self) -> list[str]:
-        """The calls the stub docker and systemctl received since the log was last cleared."""
+        """The calls the stub tools received since the log was last cleared."""
         result = self.exec("cat", LOG)
         assert result.returncode == 0, result.stderr
         return result.stdout.splitlines()
+
+    @contextmanager
+    def fixture(self, name: str, text: str, exit: int = 0) -> Iterator[None]:
+        """Makes the stub fixture <name> print this text and exit with this status, and puts the old one back on
+        leaving."""
+        path = f"{FIXTURES}/{name}"
+        kept = (path, f"{path}.exit")
+        for file in kept:
+            self._root("sh", "-c", 'if [ -e "$1" ]; then mv "$1" "$1.saved"; fi', "sh", file)
+        try:
+            self._root("sh", "-c", 'cat > "$1"', "sh", path, input=text)
+            if exit != 0:
+                self._root("sh", "-c", 'cat > "$1"', "sh", f"{path}.exit", input=f"{exit}\n")
+            yield
+        finally:
+            for file in kept:
+                self._root("sh", "-c", 'rm -f "$1"; if [ -e "$1.saved" ]; then mv "$1.saved" "$1"; fi', "sh", file)
+
+    @contextmanager
+    def hidden(self, *paths: str) -> Iterator[None]:
+        """Moves these files out of the way, and back on leaving."""
+        moved: list[str] = []
+        try:
+            for path in paths:
+                self._root("mv", path, f"{path}.hidden")
+                moved.append(path)
+            yield
+        finally:
+            for path in moved:
+                self._root("mv", f"{path}.hidden", path)
+
+    def _root(self, *args: str, input: str | None = None) -> None:
+        result = self.exec(*args, input=input)
+        assert result.returncode == 0, result.stderr
 
     def host_key(self) -> str:
         """The Ed25519 host key sshd serves, as "ssh-ed25519 AAAA…" without a comment."""
