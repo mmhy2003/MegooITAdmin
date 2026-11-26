@@ -1,6 +1,7 @@
 "use client";
 
 import { Pencil, PlugZap, Trash2 } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,11 +26,13 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 import { checkOf, type ChecksResponse, type Container } from "@/lib/checks";
+import { rangeFrom, type RangeName } from "@/lib/metrics";
 import { OS_LABELS, type ConnectionTestResult, type HostKeyState, type Server } from "@/lib/servers";
 
 /** What the Edit dialog offers: the groups the person manages and the tags in use. */
@@ -37,6 +40,14 @@ type Choices = { groups: ServerGroup[]; tags: string[] };
 
 /** A Linux server's checks and containers, as read together. */
 type Facts = { checks: ChecksResponse; containers: Container[] };
+
+type Tab = "overview" | "performance" | "containers";
+
+// The charts and Recharts load only when the Performance tab opens, never with Overview.
+const PerformanceTab = dynamic(() => import("@/components/servers/performance/performance-tab"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-64" />,
+});
 
 const TAB_CLASSES = {
   selected: "-mb-px border-b-2 border-primary px-3 py-2 text-sm font-semibold",
@@ -51,10 +62,12 @@ const STATE_BADGES: Record<Exclude<HostKeyState, "none">, { label: string; varia
     changed: { label: "Host key changed", variant: "destructive" },
   };
 
-/** One server's page: its name and badges, the Overview tab and, for a Linux server, the Containers tab. */
+/** One server's page: its name and badges, the Overview tab and, for a Linux server, Performance and Containers. */
 export function ServerPage({ serverId }: { serverId: string }) {
   const router = useRouter();
-  const wantsContainers = useSearchParams().get("tab") === "containers";
+  const params = useSearchParams();
+  const wanted = params.get("tab");
+  const range = rangeFrom(params);
   const [server, setServer] = useState<Server | null>(null);
   const [facts, setFacts] = useState<Facts | null>(null);
   const [now, setNow] = useState(() => new Date());
@@ -178,12 +191,17 @@ export function ServerPage({ serverId }: { serverId: string }) {
     setTestError(null);
   }
 
-  function showTab(containers: boolean) {
-    router.replace(containers ? `/servers/${serverId}?tab=containers` : `/servers/${serverId}`, { scroll: false });
+  function showTab(to: Tab) {
+    router.replace(`/servers/${serverId}` + (to === "overview" ? "" : `?tab=${to}`), { scroll: false });
+  }
+
+  function showRange(to: RangeName) {
+    router.replace(`/servers/${serverId}?tab=performance` + (to === "live" ? "" : `&range=${to}`), { scroll: false });
   }
 
   const linux = server?.os === "linux";
-  const onContainers = linux && wantsContainers;
+  // A Windows server has only Overview, whatever the address asks for.
+  const tab: Tab = linux && (wanted === "containers" || wanted === "performance") ? wanted : "overview";
 
   if (missing) {
     return (
@@ -282,34 +300,49 @@ export function ServerPage({ serverId }: { serverId: string }) {
               type="button"
               role="tab"
               id="server-tab-overview"
-              aria-selected={!onContainers}
+              aria-selected={tab === "overview"}
               aria-controls="server-tab-panel"
-              className={onContainers ? TAB_CLASSES.other : TAB_CLASSES.selected}
-              onClick={() => showTab(false)}
+              className={tab === "overview" ? TAB_CLASSES.selected : TAB_CLASSES.other}
+              onClick={() => showTab("overview")}
             >
               Overview
             </button>
             {linux && (
-              <button
-                type="button"
-                role="tab"
-                id="server-tab-containers"
-                aria-selected={onContainers}
-                aria-controls="server-tab-panel"
-                className={onContainers ? TAB_CLASSES.selected : TAB_CLASSES.other}
-                onClick={() => showTab(true)}
-              >
-                {facts ? `Containers (${facts.containers.length})` : "Containers"}
-              </button>
+              <>
+                <button
+                  type="button"
+                  role="tab"
+                  id="server-tab-performance"
+                  aria-selected={tab === "performance"}
+                  aria-controls="server-tab-panel"
+                  className={tab === "performance" ? TAB_CLASSES.selected : TAB_CLASSES.other}
+                  onClick={() => showTab("performance")}
+                >
+                  Performance
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="server-tab-containers"
+                  aria-selected={tab === "containers"}
+                  aria-controls="server-tab-panel"
+                  className={tab === "containers" ? TAB_CLASSES.selected : TAB_CLASSES.other}
+                  onClick={() => showTab("containers")}
+                >
+                  {facts ? `Containers (${facts.containers.length})` : "Containers"}
+                </button>
+              </>
             )}
           </div>
           <div
             role="tabpanel"
             id="server-tab-panel"
-            aria-labelledby={onContainers ? "server-tab-containers" : "server-tab-overview"}
+            aria-labelledby={`server-tab-${tab}`}
             className="space-y-6"
           >
-            {onContainers ? (
+            {tab === "performance" ? (
+              <PerformanceTab server={server} range={range} onRange={showRange} />
+            ) : tab === "containers" ? (
               facts && (
                 <ContainersTab check={checkOf(facts.checks, "containers")} containers={facts.containers} now={now} />
               )
