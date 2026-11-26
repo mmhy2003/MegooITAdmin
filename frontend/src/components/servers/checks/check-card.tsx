@@ -28,6 +28,7 @@ export function CheckCard({
   now,
   okBadge,
   footnote,
+  always = false,
   children,
 }: {
   title: string;
@@ -35,6 +36,8 @@ export function CheckCard({
   now: Date;
   okBadge?: ReactNode;
   footnote?: string;
+  /** Show the children even when there is no data to show. */
+  always?: boolean;
   children?: ReactNode;
 }) {
   const { status } = check;
@@ -56,7 +59,7 @@ export function CheckCard({
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-3">
-        {hasData && children}
+        {(hasData || always) && children}
         {status !== "ok" && (
           <div className="space-y-1">
             <p>{status === "not_available" ? NOT_AVAILABLE[check.kind] : STATE_TEXTS[status].text}</p>

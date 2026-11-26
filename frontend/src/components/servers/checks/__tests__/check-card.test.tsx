@@ -80,4 +80,13 @@ describe("CheckCard", () => {
     renderCard(SERVICES, "Names that were tried are not kept.");
     expect(screen.getByText("Names that were tried are not kept.")).toBeInTheDocument();
   });
+
+  it("shows its children without data when always is set", () => {
+    render(
+      <CheckCard title="Top processes" check={{ ...SERVICES, data: null, data_at: null }} now={now} always>
+        <p>Always here</p>
+      </CheckCard>,
+    );
+    expect(screen.getByText("Always here")).toBeInTheDocument();
+  });
 });
