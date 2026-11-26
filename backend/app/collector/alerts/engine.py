@@ -87,15 +87,49 @@ class Engine:
         self._firing: dict[Key, Firing] = {}
         self._last_sample: dict[uuid.UUID, datetime] = {}
 
+    def load_firing(self, firing: Iterable[Firing]) -> None:
+        """The alerts still firing in the database, at start: they resolve and end like the engine's own."""
+        for alert in firing:
+            self._firing[_key_of(alert)] = alert
+
     def set_servers(
         self, servers: Iterable[ServerInfo], monitored: Collection[uuid.UUID], at: datetime
     ) -> list[Transition]:
+        """Forgets the servers that are gone, with their alerts (the database removes the rows with the server), and
+        ends the alerts of the servers that are not monitored."""
         self._servers = {server.id: server for server in servers}
-        return []
+        self._firing = {key: firing for key, firing in self._firing.items() if key[1] in self._servers}
+        self._last_sample = {sid: last for sid, last in self._last_sample.items() if sid in self._servers}
+
+        resting = {sid for sid in self._servers if sid not in monitored}
+        self._counting = {
+            key: value for key, value in self._counting.items() if key[1] in self._servers and key[1] not in resting
+        }
+        return [self._end(key, "server_not_monitored", at) for key in list(self._firing) if key[1] in resting]
 
     def set_rules(self, rules: Iterable[Rule], at: datetime) -> list[Transition]:
+        """Ends the alerts whose rule is gone, switched off or changed. A rename changes nothing: the next fires carry
+        the new name."""
         self._rules = list(rules)
-        return []
+        by_id = {rule.id: rule for rule in self._rules}
+        self._counting = {
+            key: value
+            for key, value in self._counting.items()
+            if key[0] in by_id and by_id[key[0]].revision == value[0]
+        }
+        transitions: list[Transition] = []
+        for key, firing in list(self._firing.items()):
+            server = self._servers.get(firing.server_id)
+            if server is None:
+                continue  # set_servers forgets it
+            rule = by_id.get(firing.rule_id) if firing.rule_id is not None else None
+            if rule is None:
+                transitions.append(self._end(key, "rule_deleted", at))
+            elif not rule.enabled:
+                transitions.append(self._end(key, "rule_disabled", at))
+            elif rule.snapshot() != firing.snapshot or not rule.applies_to(server):
+                transitions.append(self._end(key, "rule_changed", at))
+        return transitions
 
     def observe(self, server_id: uuid.UUID, readings: Sequence[Reading], cores: int, at: datetime) -> list[Transition]:
         server = self._servers.get(server_id)
@@ -106,7 +140,12 @@ class Engine:
         if previous is not None and (at - previous).total_seconds() > GAP:
             self._counting = {key: value for key, value in self._counting.items() if key[1] != server_id}
 
-        transitions: list[Transition] = []
+        # A sample says the server is back: its unreachable alerts resolve, with no value.
+        transitions = [
+            self._resolve(key, server, at)
+            for key, firing in list(self._firing.items())
+            if key[1] == server_id and firing.snapshot[0] == "unreachable"
+        ]
         for rule in self._rules:
             if not rule.enabled or rule.metric == "unreachable" or not rule.applies_to(server):
                 continue
@@ -121,6 +160,21 @@ class Engine:
                 values = {"": whole[0] / max(cores, 1) if spec.per_core else whole[0]}
             for instance, value in values.items():
                 transitions += self._check(rule, server, instance, value, at)
+        return transitions
+
+    def unreachable(self, server_id: uuid.UUID, since: datetime, at: datetime) -> list[Transition]:
+        """The server has been unreachable since `since`: each unreachable rule fires once its duration has passed."""
+        server = self._servers.get(server_id)
+        if server is None:
+            return []
+        transitions: list[Transition] = []
+        for rule in self._rules:
+            if not rule.enabled or rule.metric != "unreachable" or not rule.applies_to(server):
+                continue
+            key = (rule.id, server.id, "")
+            if key in self._firing or (at - since).total_seconds() < rule.duration_seconds:
+                continue
+            transitions.append(self._fire(key, rule, server, None, at))
         return transitions
 
     def firing(self) -> list[Firing]:
@@ -147,11 +201,14 @@ class Engine:
         if (at - counting[1]).total_seconds() < rule.duration_seconds:
             return []
         del self._counting[key]
+        return [self._fire(key, rule, server, value, at)]
+
+    def _fire(self, key: Key, rule: Rule, server: ServerInfo, value: float | None, at: datetime) -> Transition:
         firing = self._firing[key] = Firing(
             alert_id=uuid.uuid4(),
             rule_id=rule.id,
             server_id=server.id,
-            instance=instance,
+            instance=key[2],
             snapshot=rule.snapshot(),
             rule_name=rule.name,
             fired_at=at,
@@ -160,7 +217,7 @@ class Engine:
             peak_value=value,
         )
         # A copy: the engine's own Firing goes on changing with later samples.
-        return [Transition("fired", firing.alert_id, server, instance, at, rule, dataclasses.replace(firing))]
+        return Transition("fired", firing.alert_id, server, key[2], at, rule, dataclasses.replace(firing))
 
     def _vanished(self, rule: Rule, server: ServerInfo, present: Collection[str], at: datetime) -> list[Transition]:
         """A filesystem missing from the sample stops counting, and its firing alert resolves with its values kept."""
@@ -176,3 +233,14 @@ class Engine:
     def _resolve(self, key: Key, server: ServerInfo, at: datetime) -> Transition:
         firing = self._firing.pop(key)
         return Transition("resolved", firing.alert_id, server, firing.instance, at, None, firing)
+
+    def _end(self, key: Key, reason: str, at: datetime) -> Transition:
+        firing = self._firing.pop(key)
+        server = self._servers[firing.server_id]
+        return Transition("ended", firing.alert_id, server, firing.instance, at, None, firing, reason)
+
+
+def _key_of(firing: Firing) -> Key:
+    """A loaded alert whose rule was deleted has no rule_id: its own id stands in, so that two of them on the same
+    server and instance stay apart. It never matches a rule, and set_rules ends it."""
+    return (firing.rule_id if firing.rule_id is not None else firing.alert_id, firing.server_id, firing.instance)

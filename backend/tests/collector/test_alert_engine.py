@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from app.collector.alerts.engine import Engine, Rule, ServerInfo
+from app.collector.alerts.engine import Engine, Firing, Rule, ServerInfo
 from app.metrics.samples import Reading
 
 T0 = datetime(2026, 11, 26, 12, tzinfo=UTC)
@@ -221,4 +221,233 @@ def test_an_unknown_server_is_ignored():
     e = engine(rule(duration_seconds=0))
 
     assert e.observe(uuid.uuid4(), readings(mem=99), 1, at(0)) == []
+    assert e.firing() == []
+
+
+def unreachable_rule(**kw) -> Rule:
+    return rule(**({"name": "Server unreachable", "metric": "unreachable", "comparison": None, "threshold": None,
+                    "duration_seconds": 300, "severity": "critical"} | kw))
+
+
+def fire(e: Engine, r: Rule, value: float = 95, *, server: ServerInfo = WEB, start: float = 0):
+    """Fires r on server with one sample (r has duration 0) and gives the fired transition."""
+    [fired] = e.observe(server.id, readings(mem=value), 1, at(start))
+    assert fired.kind == "fired" and fired.rule == r
+    return fired
+
+
+def test_unreachable_fires_after_its_duration_from_the_status_time():
+    r = unreachable_rule(duration_seconds=300)
+    e = engine(r)
+    since = at(30)
+
+    assert e.unreachable(WEB.id, since, at(300)) == []
+    assert e.unreachable(WEB.id, since, at(329)) == []
+    [fired] = e.unreachable(WEB.id, since, at(330))
+    assert e.unreachable(WEB.id, since, at(340)) == []  # already firing
+
+    assert fired.kind == "fired"
+    assert fired.at == at(330)
+    assert fired.rule == r
+    assert fired.server == WEB
+    assert fired.instance == ""
+    assert (fired.firing.value, fired.firing.last_value, fired.firing.peak_value) == (None, None, None)
+    assert fired.firing.snapshot == ("unreachable", None, None, 300, "critical")
+    assert e.firing() == [fired.firing]
+
+    assert engine(unreachable_rule(enabled=False)).unreachable(WEB.id, since, at(1000)) == []
+    assert engine(unreachable_rule(server_id=uuid.uuid4())).unreachable(WEB.id, since, at(1000)) == []
+    assert engine(rule(duration_seconds=0)).unreachable(WEB.id, since, at(1000)) == []  # a metric rule
+    assert engine(unreachable_rule()).unreachable(uuid.uuid4(), since, at(1000)) == []  # an unknown server
+
+
+def test_a_sample_resolves_an_unreachable_alert():
+    e = engine(unreachable_rule(duration_seconds=0), rule(duration_seconds=60))
+    [fired] = e.unreachable(WEB.id, at(0), at(0))
+
+    [resolved] = e.observe(WEB.id, readings(mem=99), 1, at(10))
+
+    assert resolved.kind == "resolved"
+    assert resolved.alert_id == fired.alert_id
+    assert resolved.at == at(10)
+    assert (resolved.firing.value, resolved.firing.last_value, resolved.firing.peak_value) == (None, None, None)
+    assert e.firing() == []
+
+
+def test_a_changed_rule_ends_its_alert():
+    r = rule(duration_seconds=0)
+    e = engine(r)
+    fired = fire(e, r)
+    e.observe(WEB.id, readings(mem=97), 1, at(10))
+
+    [ended] = e.set_rules([rule(id=r.id, threshold=95.0, duration_seconds=0, revision=2)], at(15))
+
+    assert ended.kind == "ended"
+    assert ended.end_reason == "rule_changed"
+    assert ended.alert_id == fired.alert_id
+    assert ended.at == at(15)
+    assert ended.server == WEB
+    assert ended.rule is None
+    assert (ended.firing.value, ended.firing.last_value, ended.firing.peak_value) == (95, 97, 97)
+    assert e.firing() == []
+
+    for change in ({"severity": "critical"}, {"duration_seconds": 30}, {"comparison": "below", "threshold": 99.0}):
+        r = rule(duration_seconds=0)
+        e = engine(r)
+        fire(e, r)
+        [ended] = e.set_rules([rule(**({"id": r.id, "duration_seconds": 0, "revision": 2} | change))], at(15))
+        assert ended.end_reason == "rule_changed", change
+
+
+def test_a_rule_scoped_away_from_the_server_ends_its_alert():
+    r = rule(duration_seconds=0)
+    e = engine(r)
+    fired = fire(e, r)
+
+    [ended] = e.set_rules([rule(id=r.id, duration_seconds=0, server_group_id=uuid.uuid4(), revision=2)], at(15))
+
+    assert ended.kind == "ended"
+    assert ended.end_reason == "rule_changed"
+    assert ended.alert_id == fired.alert_id
+
+
+def test_a_disabled_rule_ends_its_alert():
+    r = rule(duration_seconds=0)
+    e = engine(r)
+    fired = fire(e, r)
+
+    [ended] = e.set_rules([rule(id=r.id, duration_seconds=0, enabled=False, revision=2)], at(15))
+
+    assert (ended.kind, ended.end_reason, ended.alert_id) == ("ended", "rule_disabled", fired.alert_id)
+    assert e.firing() == []
+
+
+def test_a_deleted_rule_ends_its_alert():
+    r = rule(duration_seconds=0)
+    kept = rule(name="kept", duration_seconds=0)
+    e = engine(r, kept)
+    fired = [t for t in e.observe(WEB.id, readings(mem=95), 1, at(0)) if t.rule == r][0]
+
+    [ended] = e.set_rules([kept], at(15))
+
+    assert (ended.kind, ended.end_reason, ended.alert_id) == ("ended", "rule_deleted", fired.alert_id)
+    assert [f.rule_id for f in e.firing()] == [kept.id]
+
+
+def test_a_renamed_rule_ends_nothing_and_later_fires_carry_the_new_name():
+    r = rule(duration_seconds=0)
+    e = engine(r)
+    fired = fire(e, r)
+    renamed = rule(id=r.id, name="RAM almost full", duration_seconds=0, revision=2)
+
+    assert e.set_rules([renamed], at(15)) == []
+    assert [f.rule_name for f in e.firing()] == ["Memory almost full"]
+
+    [resolved] = e.observe(WEB.id, readings(mem=50), 1, at(20))
+    assert resolved.alert_id == fired.alert_id
+    [again] = e.observe(WEB.id, readings(mem=95), 1, at(30))
+    assert again.firing.rule_name == "RAM almost full"
+    assert again.rule == renamed
+
+
+def test_a_new_revision_starts_counting_again():
+    r = rule(duration_seconds=60)
+    e = engine(r)
+    every_10_s(e, [readings(mem=95)] * 5)  # counting since 0 s, up to 40 s
+
+    assert e.set_rules([rule(id=r.id, name="Renamed", duration_seconds=60, revision=2)], at(45)) == []
+    steps = every_10_s(e, [readings(mem=95)] * 7, start=50)
+
+    assert all(t == [] for t in steps[:6])
+    [fired] = steps[6]
+    assert fired.at == at(110)  # 60 s after the first sample of the new revision
+
+
+def test_a_server_not_monitored_ends_its_alerts():
+    db = ServerInfo(id=uuid.uuid4(), group_id=GROUP, name="db-01")
+    r = rule(duration_seconds=0)
+    slow = rule(name="slow", metric="cpu.used_percent", duration_seconds=60)
+    e = engine(r, slow, servers=(WEB, db))
+    on_web = fire(e, r)
+    e.observe(WEB.id, readings(cpu=99), 1, at(0))  # counting on WEB
+    on_db = [t for t in e.observe(db.id, readings(mem=95, cpu=99), 1, at(0)) if t.rule == r][0]
+
+    [ended] = e.set_servers((WEB, db), {db.id}, at(15))
+
+    assert (ended.kind, ended.end_reason, ended.alert_id) == ("ended", "server_not_monitored", on_web.alert_id)
+    assert ended.server == WEB
+    assert ended.at == at(15)
+    assert [f.alert_id for f in e.firing()] == [on_db.alert_id]
+
+    # Monitored again: WEB's counting started over, db's goes on.
+    assert e.set_servers((WEB, db), {WEB.id, db.id}, at(20)) == []
+    assert e.observe(WEB.id, readings(cpu=99), 1, at(30)) == []
+    assert e.observe(db.id, readings(mem=95, cpu=99), 1, at(30)) == []
+    assert e.observe(WEB.id, readings(cpu=99), 1, at(60)) == []  # counting since 30 s
+    assert [t.rule for t in e.observe(db.id, readings(mem=95, cpu=99), 1, at(60))] == [slow]
+
+
+def test_a_removed_server_is_forgotten_without_transitions():
+    db = ServerInfo(id=uuid.uuid4(), group_id=GROUP, name="db-01")
+    r = rule(duration_seconds=0)
+    e = engine(r, servers=(WEB, db))
+    fire(e, r)
+    on_db = fire(e, r, server=db)
+
+    assert e.set_servers((db,), {db.id}, at(15)) == []
+
+    assert [f.alert_id for f in e.firing()] == [on_db.alert_id]
+    assert e.observe(WEB.id, readings(mem=50), 1, at(20)) == []  # no longer known
+
+
+def loaded(r: Rule | None, **kw) -> Firing:
+    values = {
+        "alert_id": uuid.uuid4(),
+        "rule_id": r.id if r else None,
+        "server_id": WEB.id,
+        "instance": "",
+        "snapshot": r.snapshot() if r else ("mem.used_percent", "above", 90.0, 0, "warning"),
+        "rule_name": r.name if r else "Gone",
+        "fired_at": T0 - timedelta(hours=1),
+        "value": 93.0,
+        "last_value": 96.0,
+        "peak_value": 98.0,
+    }
+    return Firing(**(values | kw))
+
+
+def test_loaded_firing_alerts_resolve_normally():
+    r = rule(duration_seconds=0)
+    root = rule(name="disk", metric="disk.used_percent", duration_seconds=0)
+    down = unreachable_rule()
+    mem, slash = loaded(r), loaded(root, instance="/")
+    down_firing = loaded(down, value=None, last_value=None, peak_value=None)
+    e = Engine()
+    e.load_firing([mem, slash, down_firing])
+    assert e.set_servers((WEB,), {WEB.id}, T0) == []
+    assert e.set_rules([r, root, down], T0) == []
+    assert e.unreachable(WEB.id, T0 - timedelta(hours=1), T0) == []  # firing already: no second alert
+
+    [back] = e.observe(WEB.id, readings(mem=99) + disk(root=95), 1, at(0))  # firing already: no new metric alert
+    assert (back.kind, back.alert_id) == ("resolved", down_firing.alert_id)
+    steps = e.observe(WEB.id, readings(mem=40) + disk(root=10), 1, at(10))
+
+    assert {(t.kind, t.alert_id) for t in steps} == {("resolved", mem.alert_id), ("resolved", slash.alert_id)}
+    [mem_resolved] = [t.firing for t in steps if t.alert_id == mem.alert_id]
+    assert (mem_resolved.value, mem_resolved.last_value, mem_resolved.peak_value) == (93.0, 40, 99)
+    assert e.firing() == []
+
+
+def test_a_loaded_alert_without_a_rule_ends_as_deleted():
+    one, two = loaded(None), loaded(None)  # two deleted rules' alerts on the same server and instance
+    e = Engine()
+    e.load_firing([one, two])
+    e.set_servers((WEB,), {WEB.id}, T0)
+
+    ended = e.set_rules([], at(5))
+
+    assert {(t.kind, t.end_reason, t.alert_id) for t in ended} == {
+        ("ended", "rule_deleted", one.alert_id),
+        ("ended", "rule_deleted", two.alert_id),
+    }
     assert e.firing() == []
