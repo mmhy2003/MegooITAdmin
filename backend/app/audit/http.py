@@ -4,7 +4,8 @@ import ipaddress
 import re
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, Request, params
+from fastapi import Depends, params
+from starlette.requests import HTTPConnection
 
 from app.audit.events import ACTION_PATTERN, Source
 from app.audit.writer import AUDIT_ACTIONS
@@ -35,13 +36,13 @@ def audited(*actions: str) -> params.Depends:
     return Depends(audit_guard, scope="function")
 
 
-def source_of(request: Request, *, auth_method: str | None = None, mfa: bool | None = None) -> Source:
-    """Where a request came from. Uvicorn's --proxy-headers already set request.client from X-Forwarded-For.
-    A host that is not an IP address (Starlette's TestClient sends "testclient") gives ip=None."""
+def source_of(connection: HTTPConnection, *, auth_method: str | None = None, mfa: bool | None = None) -> Source:
+    """Where a request or a socket came from. Uvicorn's --proxy-headers already set connection.client from
+    X-Forwarded-For. A host that is not an IP address (Starlette's TestClient sends "testclient") gives ip=None."""
     ip = None
-    if request.client is not None:
+    if connection.client is not None:
         try:
-            ip = str(ipaddress.ip_address(request.client.host))
+            ip = str(ipaddress.ip_address(connection.client.host))
         except ValueError:
             ip = None
-    return Source(ip=ip, user_agent=request.headers.get("user-agent"), auth_method=auth_method, mfa=mfa)
+    return Source(ip=ip, user_agent=connection.headers.get("user-agent"), auth_method=auth_method, mfa=mfa)
