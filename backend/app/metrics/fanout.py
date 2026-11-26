@@ -10,13 +10,13 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from datetime import UTC
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel
 from valkey.asyncio import Valkey
 from valkey.asyncio.client import PubSub
 
+from app.metrics.overview import iso
 from app.metrics.samples import Reading, Sample
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ def encode(sample: Sample) -> str:
         {
             "v": 1,
             "server_id": str(sample.server_id),
-            "time": sample.time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "time": iso(sample.time),
             "readings": [[r.metric, r.instance, r.value] for r in sample.readings],
         },
         separators=(",", ":"),
