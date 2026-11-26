@@ -36,6 +36,8 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   or Docker is rootless).
 - **TLS.** Caddy serves plain HTTP. Put a TLS proxy in front of it on a private address: Caddy trusts the
   `X-Forwarded-*` headers only from private addresses.
+- **WebSockets.** A proxy in front of Caddy must pass the `Host` header unchanged and allow WebSocket upgrades on
+  `/api/ws/`. The backend refuses a socket whose `Origin` names another host.
 - **A second copy.** `make up STACK=dev` starts the project `megooitadmin-dev` on `127.0.0.1:8080`, beside the
   real one, with throwaway values. It builds the images from this checkout (`docker-compose.build.yml`) under the
   local names `megooitadmin-backend:dev` and `megooitadmin-frontend:dev`. Pass the same `STACK=dev` to `down`,
@@ -110,9 +112,28 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   Docker containers grouped by Compose project. A result older than three intervals shows in amber. The intervals
   are fixed: containers and processes 30 seconds, services 1 minute, failed sign-ins 5 minutes, updates 1 hour and
   certificates 6 hours. See [Slow checks](docs/server-setup.md#slow-checks).
+- A Linux server's Overview starts with a live strip, hidden while the server is not monitored. The Performance
+  tab shows CPU (user, system, I/O wait, steal, per core), memory and swap, load, network, disk I/O and
+  filesystems. Live covers the last 15 minutes sample by sample. 1 hour, 6 hours, 24 hours, 7 days, 30 days and
+  1 year read the samples or the 1-minute or 1-hour rollups, and a light band shows the lowest and highest value of
+  each step. Times show in the browser's time zone, and 1-day steps are cut at midnight UTC.
 - Both pages re-read the servers every 15 seconds while the tab is visible. These re-reads carry
   `X-Megoo-Background: 1` and do not count as activity, so a page left open still signs out after
-  `session_idle_minutes`.
+  `session_idle_minutes`. The live socket and the 60-second re-read of the charts never count as activity either: a
+  Dashboard or Performance tab left open signs out after `SESSION_IDLE_MINUTES`, so a wall screen needs a higher
+  value.
 - Back up the `ssh_key` Docker volume: it holds the platform's private key, and a lost key means a new one has to
   go on every server.
 - Windows servers connect from Phase 2.
+
+### Dashboard
+
+- The Dashboard lists every server the person sees, as cards or a table (Cards/Table switch; `?view=table` keeps
+  the table in the address), narrowed by the group and tag filters of the Servers page.
+- A summary counts the servers by state. Servers with a problem come first: unreachable, then reachable, then not
+  monitored or not checked yet, by name.
+- Each Linux server shows CPU, memory, its fullest filesystem, load (1 minute) and network, updated live over one
+  WebSocket for the servers on screen. CPU and memory carry a 5-minute sparkline.
+- A percentage turns amber with ▲ from 80% and pink from 90%. This is a visual hint only; alert rules come later.
+- An unreachable server keeps its last values for 5 minutes, greyed, with the reason.
+- Firing alerts join the Dashboard with alert rules.
