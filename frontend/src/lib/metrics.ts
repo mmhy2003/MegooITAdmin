@@ -138,3 +138,187 @@ export function fleetCounts(servers: Server[]): {
   }
   return counts;
 }
+
+/** The slot a time falls in, counted from the trend's start. */
+function slotOf(start: number, timeMs: number): number {
+  return Math.floor((timeMs - start) / TREND_STEP_MS);
+}
+
+/** Sixty empty slots whose last one holds `endMs`. */
+export function emptyTrend(endMs: number): Trend {
+  const start = endMs - (endMs % TREND_STEP_MS) - (TREND_SLOTS - 1) * TREND_STEP_MS;
+  return { start, cpu: Array(TREND_SLOTS).fill(null), mem: Array(TREND_SLOTS).fill(null) };
+}
+
+/** The trend of GET /api/metrics/overview, with its start in milliseconds. */
+export function trendOf(read: ServerOverviewRead["trend"]): Trend {
+  return { start: Date.parse(read.start), cpu: [...read.cpu], mem: [...read.mem] };
+}
+
+function shifted(values: (number | null)[], by: number): (number | null)[] {
+  return [...values.slice(Math.min(by, TREND_SLOTS)), ...Array(Math.min(by, TREND_SLOTS)).fill(null)];
+}
+
+/** Puts a sample into its slot, moving the window on when the slot is past the last one. A null keeps the slot's
+ * value, and a time before the window is ignored. */
+export function pushTrend(trend: Trend, timeMs: number, cpu: number | null, mem: number | null): Trend {
+  const slot = slotOf(trend.start, timeMs);
+  if (slot < 0) return trend;
+  const by = Math.max(0, slot - (TREND_SLOTS - 1));
+  const next = {
+    start: trend.start + by * TREND_STEP_MS,
+    cpu: shifted(trend.cpu, by),
+    mem: shifted(trend.mem, by),
+  };
+  const at = slot - by;
+  if (cpu !== null) next.cpu[at] = cpu;
+  if (mem !== null) next.mem[at] = mem;
+  return next;
+}
+
+/** A server of GET /api/metrics/overview as the cards keep it. */
+export function vitalsOf(read: ServerOverviewRead): Vitals {
+  const { trend, ...overview } = read;
+  return { overview, trend: trendOf(trend) };
+}
+
+/** The next overview, where each value it lacks keeps the previous one. */
+export function mergeOverview(previous: Overview | null, next: Overview): Overview {
+  if (previous === null) return next;
+  return {
+    server_id: next.server_id,
+    time: next.time ?? previous.time,
+    cpu: next.cpu ?? previous.cpu,
+    mem: next.mem ?? previous.mem,
+    load: next.load ?? previous.load,
+    disk: next.disk ?? previous.disk,
+    rx: next.rx ?? previous.rx,
+    tx: next.tx ?? previous.tx,
+  };
+}
+
+/** A live overview message merged into a server's vitals; without vitals the trend starts empty. */
+export function applyMessage(previous: Vitals | undefined, message: OverviewMessage): Vitals {
+  const { server_id, time, cpu, mem, load, disk, rx, tx } = message;
+  const timeMs = Date.parse(time);
+  const trend = previous?.trend ?? emptyTrend(timeMs);
+  return {
+    overview: mergeOverview(previous?.overview ?? null, { server_id, time, cpu, mem, load, disk, rx, tx }),
+    trend: pushTrend(trend, timeMs, message.cpu, message.mem),
+  };
+}
+
+/** True when there is no time, or it is older than STALE_AFTER_MS. */
+export function isStale(time: string | null, nowMs: number): boolean {
+  return time === null || nowMs - Date.parse(time) > STALE_AFTER_MS;
+}
+
+function windowed(series: Series, fromMs: number): Series {
+  const first = series.time.findIndex((t) => Date.parse(t) >= fromMs);
+  const from = first === -1 ? series.time.length : first;
+  if (from === 0) return series;
+  return {
+    ...series,
+    time: series.time.slice(from),
+    avg: series.avg.slice(from),
+    min: series.min.slice(from),
+    max: series.max.slice(from),
+  };
+}
+
+/** A live sample appended to the live series of the given metrics; a new instance starts a series after the others.
+ * Points older than the sample's time minus `windowMs` are dropped. */
+export function appendSample(series: Series[], sample: SampleMessage, metrics: string[], windowMs: number): Series[] {
+  const next = series.map((s) => ({ ...s, time: [...s.time], avg: [...s.avg], min: [...s.min], max: [...s.max] }));
+  for (const [metric, instance, value] of sample.readings) {
+    if (!metrics.includes(metric)) continue;
+    let target = next.find((s) => s.metric === metric && s.instance === instance);
+    if (target === undefined) {
+      target = { metric, instance, time: [], avg: [], min: [], max: [] };
+      next.push(target);
+    }
+    target.time.push(sample.time);
+    target.avg.push(value);
+    target.min.push(null);
+    target.max.push(null);
+  }
+  const fromMs = Date.parse(sample.time) - windowMs;
+  return next.map((s) => windowed(s, fromMs));
+}
+
+/** One series that adds up the averages of all of them at every time any of them has. */
+export function sumSeries(series: Series[], metric: string, instance: string): Series {
+  const sums = new Map<number, { time: string; value: number }>();
+  for (const s of series) {
+    s.time.forEach((time, i) => {
+      const t = Date.parse(time);
+      const sum = sums.get(t);
+      if (sum === undefined) sums.set(t, { time, value: s.avg[i] });
+      else sum.value += s.avg[i];
+    });
+  }
+  const points = [...sums.entries()].sort(([a], [b]) => a - b).map(([, point]) => point);
+  return {
+    metric,
+    instance,
+    time: points.map((p) => p.time),
+    avg: points.map((p) => p.value),
+    min: points.map(() => null),
+    max: points.map(() => null),
+  };
+}
+
+/** The rows of a chart: one per time of any line, sorted. Where two times are more than three steps apart, a row
+ * with every key null sits between them so the lines break. */
+export function chartRows(lines: ChartLine[], stepMs: number): ChartRow[] {
+  const keys = lines.flatMap((line) => (line.band ? [line.key, `${line.key}_band`] : [line.key]));
+  const rows = new Map<number, ChartRow>();
+  const rowAt = (t: number): ChartRow => {
+    let row = rows.get(t);
+    if (row === undefined) {
+      row = { t } as ChartRow;
+      for (const key of keys) row[key] = null;
+      rows.set(t, row);
+    }
+    return row;
+  };
+  for (const { key, series, band } of lines) {
+    series.time.forEach((time, i) => {
+      const row = rowAt(Date.parse(time));
+      row[key] = series.avg[i];
+      const min = series.min[i];
+      const max = series.max[i];
+      if (band && min !== null && max !== null) row[`${key}_band`] = [min, max];
+    });
+  }
+  const sorted = [...rows.values()].sort((a, b) => a.t - b.t);
+  const result: ChartRow[] = [];
+  sorted.forEach((row, i) => {
+    const before = sorted[i - 1];
+    if (before !== undefined && row.t - before.t > 3 * stepMs) {
+      const gap = { t: (before.t + row.t) / 2 } as ChartRow;
+      for (const key of keys) gap[key] = null;
+      result.push(gap);
+    }
+    result.push(row);
+  });
+  return result;
+}
+
+/** The newest average of a series, or null. */
+export function lastValue(series: Series | undefined): number | null {
+  return series?.avg.at(-1) ?? null;
+}
+
+/** The series of a metric and instance in an answer. */
+export function seriesOf(answer: SeriesAnswer | null, metric: string, instance = ""): Series | undefined {
+  return answer?.series.find((s) => s.metric === metric && s.instance === instance);
+}
+
+/** The instances of a metric in an answer, sorted, without the empty one. */
+export function instancesOf(answer: SeriesAnswer | null, metric: string): string[] {
+  return (answer?.series ?? [])
+    .filter((s) => s.metric === metric && s.instance !== "")
+    .map((s) => s.instance)
+    .sort();
+}
