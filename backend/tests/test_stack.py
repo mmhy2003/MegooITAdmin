@@ -1,7 +1,6 @@
 """Checks of the whole Compose stack, through Caddy. They start nothing themselves: the stack service set has
 built the stack from this checkout through docker-compose.build.yml and waited until every service was healthy."""
 
-import base64
 import json
 import os
 import re
@@ -16,6 +15,9 @@ import httpx
 import pyotp
 import pytest
 import yaml
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.sync.client import connect
+from websockets.typing import Origin
 
 pytestmark = pytest.mark.stack
 
@@ -144,19 +146,6 @@ def test_caddy_passes_the_upstream_proxys_forwarded_proto_on():
     response = _get("/api/health/", headers={"X-Forwarded-Proto": "https"})
     assert response.status_code == 307
     assert response.headers["location"].startswith("https://")
-
-
-def test_a_websocket_upgrade_reaches_the_backend():
-    # No socket route exists yet, so the backend refuses the handshake (403) where a plain GET gets 404.
-    # That 403 proves the upgrade headers came through Caddy. Phase 1's first socket replaces this check.
-    handshake = {
-        "Connection": "Upgrade",
-        "Upgrade": "websocket",
-        "Sec-WebSocket-Version": "13",
-        "Sec-WebSocket-Key": base64.b64encode(os.urandom(16)).decode(),
-    }
-    assert _get("/api/ws/check").status_code == 404
-    assert _get("/api/ws/check", headers=handshake).status_code == 403
 
 
 def test_the_stack_has_exactly_its_six_services():
@@ -644,6 +633,53 @@ def test_the_collector_checks_the_fake_server_and_lists_its_containers(owner):
         ("shop", "shop-web-1"),
         (None, "hello-adhoc"),
     ]
+
+
+def _socket_url() -> str:
+    return _env("STACK_URL").replace("http", "ws", 1) + "/api/ws/metrics"
+
+
+def test_ten_servers_stream_live_through_caddy(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    group = owner.post("/api/server-groups", json={"name": "fleet"}).json()["id"]
+    ids = []
+    for n in range(1, 11):
+        server = {"name": f"fleet-{n:02}", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+        server_id = owner.post("/api/servers", json=server).json()["id"]
+        fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+        assert fetched["ok"], fetched
+        pinned = owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]})
+        assert pinned.status_code == 200, pinned.text
+        ids.append(server_id)
+    _wait(lambda: all(_state(owner, id_) == "reachable" for id_ in ids), 180, "ten fleet servers reachable")
+
+    origin = Origin(_env("STACK_URL"))
+    cookie = {"Cookie": f"megoo_session={owner.cookies.get('megoo_session')}"}
+    with connect(_socket_url(), origin=origin, additional_headers=cookie, open_timeout=10) as socket:
+        socket.send(json.dumps({"type": "subscribe", "view": "overview", "server_ids": ids}))
+        assert json.loads(socket.recv(timeout=10)) == {"type": "subscribed", "server_ids": sorted(ids), "denied": []}
+        waiting = set(ids)
+        deadline = time.monotonic() + 60
+        while waiting:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                pytest.fail(f"No overview within 60 s from {len(waiting)} of the ten servers")
+            message = json.loads(socket.recv(timeout=left))
+            assert message["type"] == "overview", message
+            assert message["time"] is not None, message
+            waiting.discard(message["server_id"])
+
+    with pytest.raises(InvalidStatus) as refused:
+        connect(_socket_url(), origin=Origin("http://evil.example"), additional_headers=cookie, open_timeout=10)
+    assert refused.value.response.status_code == 403
+
+    with connect(_socket_url(), origin=origin, open_timeout=10) as socket:
+        with pytest.raises(ConnectionClosed) as closed:
+            socket.recv(timeout=10)
+    assert closed.value.rcvd.code == 4401
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):

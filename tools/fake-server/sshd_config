@@ -4,3 +4,6 @@ PubkeyAuthentication yes
 PermitRootLogin prohibit-password
 AllowUsers megoo megoo-nologs megoo-nosudo megoo-wide megoo-docker megoo-root
 LogLevel INFO
+# The stack test points 13 servers at this one sshd, and the collector signs them in at once: the default 10:30:100
+# starts dropping unauthenticated connections at 10.
+MaxStartups 50:30:100
