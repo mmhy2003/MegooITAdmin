@@ -65,6 +65,12 @@ describe("the Cyberpunk theme tokens", () => {
   it("define every ink shade in light mode", () => {
     for (const ink of ["cyan-ink", "green-ink", "pink-ink", "amber-ink"]) expect(light[ink]).toMatch(/^#[0-9a-f]{6}$/);
   });
+  it("give the third chart line the theme's violet", () => {
+    expect(light["chart-3"]).toBe(light.violet);
+    // The dark violet (#c084fc, L 0.72) is too light for a chart line on #17191f: the dataviz palette validator
+    // wants L 0.48–0.67 in dark mode. The line takes the next step of the same ramp.
+    expect(dark["chart-3"]).toBe("#a855f7");
+  });
   it("map shadcn's and the sidebar's variables onto them", () => expect(aliases).toMatchObject(ALIASES));
   it("switch dark mode with data-theme, not a .dark class", () => {
     expect(css).not.toMatch(/\.dark\s*\{/);

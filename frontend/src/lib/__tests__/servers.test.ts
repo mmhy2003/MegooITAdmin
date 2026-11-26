@@ -187,16 +187,22 @@ describe("filtersFrom", () => {
 
 describe("addressOf", () => {
   it("is the bare page without filters", () => {
-    expect(addressOf({ group: null, tags: [] })).toBe("/servers");
+    expect(addressOf("/servers", { group: null, tags: [] })).toBe("/servers");
+    expect(addressOf("/", { group: null, tags: [] })).toBe("/");
   });
 
   it("holds the group", () => {
-    expect(addressOf({ group: "g1", tags: [] })).toBe("/servers?group=g1");
+    expect(addressOf("/servers", { group: "g1", tags: [] })).toBe("/servers?group=g1");
   });
 
   it("holds the group and every tag", () => {
-    expect(addressOf({ group: "g1", tags: ["web", "db"] })).toBe("/servers?group=g1&tag=web&tag=db");
-    expect(addressOf({ group: null, tags: ["web"] })).toBe("/servers?tag=web");
+    expect(addressOf("/servers", { group: "g1", tags: ["web", "db"] })).toBe("/servers?group=g1&tag=web&tag=db");
+    expect(addressOf("/servers", { group: null, tags: ["web"] })).toBe("/servers?tag=web");
+  });
+
+  it("appends the other parameters after the group and the tags", () => {
+    expect(addressOf("/", { group: "g", tags: ["web"] }, { view: "table" })).toBe("/?group=g&tag=web&view=table");
+    expect(addressOf("/", { group: null, tags: [] }, { view: "table" })).toBe("/?view=table");
   });
 });
 

@@ -20,6 +20,7 @@ ANY_SIGNED_IN: dict[str, str] = {
     "GET /api/server-tags": "the tags of the servers the person sees",
     "GET /api/ssh/public-key": "the platform's public key, which is not a secret",
     "GET /api/ssh/setup-script": "the setup script, which is in the public repository",
+    "GET /api/metrics/overview": "the answer filters itself by the person's access",
 }
 
 

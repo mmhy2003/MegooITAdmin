@@ -209,17 +209,18 @@ export function filtersFrom(params: URLSearchParams): ServerFilters {
   return { group: params.get("group") || null, tags };
 }
 
-function withQuery(path: string, groupKey: string, filters: ServerFilters): string {
+function withQuery(path: string, groupKey: string, filters: ServerFilters, extra: Record<string, string> = {}): string {
   const params = new URLSearchParams();
   if (filters.group !== null) params.set(groupKey, filters.group);
   for (const tag of filters.tags) params.append("tag", tag);
+  for (const [key, value] of Object.entries(extra)) params.set(key, value);
   const query = params.toString();
   return query === "" ? path : `${path}?${query}`;
 }
 
-/** The address of the Servers page showing these filters. */
-export function addressOf(filters: ServerFilters): string {
-  return withQuery("/servers", "group", filters);
+/** The address of the Dashboard or the Servers page showing these filters, then `params`. */
+export function addressOf(page: "/" | "/servers", filters: ServerFilters, params: Record<string, string> = {}): string {
+  return withQuery(page, "group", filters, params);
 }
 
 /** The API path listing the servers that match these filters. */

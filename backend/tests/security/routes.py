@@ -11,7 +11,7 @@ from typing import Any, Literal
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.dependencies.utils import get_parameterless_sub_dependant
-from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
+from fastapi.routing import APIRoute, APIWebSocketRoute, RouteContext, iter_route_contexts
 from starlette.routing import Route
 
 from app.auth.deps import current_session, current_user
@@ -41,13 +41,22 @@ def unaudited_routes(app: FastAPI, exempt: Mapping[str, str]) -> list[str]:
     )
 
 
-def unknown_routes(app: FastAPI) -> list[str]:
-    """Routes the check cannot see into: anything but an APIRoute or a read-only starlette Route (the docs)."""
+def socket_routes(app: FastAPI) -> list[RouteContext]:
+    """Every APIWebSocketRoute of the app, with its full path."""
+    return [
+        context for context in iter_route_contexts(app.routes) if isinstance(context.original_route, APIWebSocketRoute)
+    ]
+
+
+def unknown_routes(app: FastAPI, sockets: Mapping[str, str] = {}) -> list[str]:
+    """Routes the check cannot see into: anything but an APIRoute, a read-only starlette Route (the docs) or a
+    WebSocket route pinned in `sockets` (the socket-coverage suite checks those)."""
     return [
         f"{type(route).__name__} {context.path or '?'}"
         for context in iter_route_contexts(app.routes)
         if not isinstance(route := context.original_route, APIRoute)
         and not (isinstance(route, Route) and route.methods is not None and route.methods <= READ_ONLY)
+        and not (isinstance(route, APIWebSocketRoute) and context.path in sockets)
     ]
 
 

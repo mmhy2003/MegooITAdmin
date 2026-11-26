@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, FastAPI, WebSocket
 from routes import api_routes, declared_actions, unaudited_routes, unknown_routes
+from test_socket_coverage import SOCKETS
 
 from app.audit import audited
 from app.main import create_app
@@ -22,10 +23,10 @@ def test_every_state_changing_route_declares_its_audit_actions():
 
 
 def test_the_app_has_no_route_the_check_does_not_understand():
-    unknown = unknown_routes(create_app())
+    unknown = unknown_routes(create_app(), SOCKETS)
     assert unknown == [], (
-        f"{', '.join(unknown)}: the audit guard covers HTTP routes only. "
-        "Extend this check before adding a WebSocket route or a mount"
+        f"{', '.join(unknown)}: the audit guard covers HTTP routes only. Pin a WebSocket route in SOCKETS of "
+        "test_socket_coverage.py, and extend this check before adding a mount"
     )
 
 

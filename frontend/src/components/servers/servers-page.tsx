@@ -82,7 +82,7 @@ export function ServersPage() {
   }, [reload]);
 
   function choose(next: Filters) {
-    router.replace(addressOf(next));
+    router.replace(addressOf("/servers", next));
   }
 
   function saved() {

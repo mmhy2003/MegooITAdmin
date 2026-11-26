@@ -40,6 +40,15 @@ describe("useRefresh", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
+  it("calls refresh at the given interval", () => {
+    const refresh = vi.fn();
+    renderHook(() => useRefresh(refresh, true, 60_000));
+    advance(15_000);
+    expect(refresh).not.toHaveBeenCalled();
+    advance(45_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("sends nothing while the tab is hidden", () => {
     const refresh = vi.fn();
     renderHook(() => useRefresh(refresh, true));
