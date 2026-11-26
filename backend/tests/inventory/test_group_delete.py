@@ -1,15 +1,19 @@
 from uuid import uuid4
 
+import pytest
+from alerts_helpers import make_rule
 from auth_helpers import actions, add_grant, events, make_group, make_server, make_user, sign_in
 from sqlalchemy import func, select
 
 from app.access.models import RoleGrant
+from app.alerts.models import AlertRule
 from app.access.permissions import GRANT_FIELDS, Permission
 from app.auth.models import User
 from app.core.db import SessionLocal
 from app.inventory.models import Server, ServerGroup
+from conftest import owner_session
 
-GROUP_EVENTS = ("user.grant_removed", "server_group.deleted")
+GROUP_EVENTS = ("user.grant_removed", "alert_rule.deleted", "server_group.deleted")
 
 
 async def owner(api, clock) -> User:
@@ -77,6 +81,44 @@ async def test_deleting_an_empty_group_records_only_the_deletion(api, clock):
     assert response.status_code == 204, response.text
     assert not await group_exists(staging.id)
     assert await group_events() == ["server_group.deleted"]
+
+
+@pytest.mark.usefixtures("clean_alerts")
+async def test_deleting_a_group_deletes_its_rules_with_their_events(api, clock):
+    the_owner = await owner(api, clock)
+    staging = await make_group("staging")
+    production = await make_group("production")
+    disk = await make_rule(name="Staging disk", server_group_id=staging.id, threshold=80.5, duration_seconds=600)
+    memory = await make_rule(name="Staging memory", metric="mem.used_percent", server_group_id=staging.id)
+    everywhere = await make_rule(name="Everywhere")
+    elsewhere = await make_rule(name="Production disk", server_group_id=production.id)
+
+    response = await api.delete(f"/api/server-groups/{staging.id}")
+
+    assert response.status_code == 204, response.text
+    async with owner_session() as session:
+        left = set((await session.scalars(select(AlertRule.id))).all())
+    assert left == {everywhere.id, elsewhere.id}
+    assert await group_events() == ["alert_rule.deleted", "alert_rule.deleted", "server_group.deleted"]
+    deleted = await events("alert_rule.deleted")
+    assert {e.target_id: e.target_name for e in deleted} == {
+        str(disk.id): "Staging disk",
+        str(memory.id): "Staging memory",
+    }
+    for event in deleted:
+        assert (event.actor_id, event.result, event.mfa) == (str(the_owner.id), "success", True)
+        assert event.target_type == "alert_rule"
+    by_rule = {e.target_id: e.change for e in deleted}
+    assert by_rule[str(disk.id)] == {
+        "name": {"before": "Staging disk", "after": None},
+        "metric": {"before": "disk.used_percent", "after": None},
+        "comparison": {"before": "above", "after": None},
+        "threshold": {"before": "80.5", "after": None},
+        "duration_seconds": {"before": 600, "after": None},
+        "severity": {"before": "critical", "after": None},
+        "server_group_id": {"before": str(staging.id), "after": None},
+        "enabled": {"before": True, "after": None},
+    }
 
 
 async def test_a_group_that_holds_a_server_cannot_be_deleted(api, clock):

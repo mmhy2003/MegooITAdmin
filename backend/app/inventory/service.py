@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access.models import RoleGrant
 from app.access.permissions import Access
+from app.alerts.service import delete_rules_of
 from app.audit import Target, changes, record
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
@@ -156,6 +157,7 @@ async def delete_group(db: AsyncSession, request: Request, owner: User, group_id
         grant_event(request, owner, user, user_actions.USER_GRANT_REMOVED, group, grant.fields(), None)
         for grant, user in grants
     ]
+    events += await delete_rules_of(db, request, owner, group_id=group.id)
     deleted = auth_event(
         request,
         actions.SERVER_GROUP_DELETED,

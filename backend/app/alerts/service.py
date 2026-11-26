@@ -11,7 +11,7 @@ from app.alerts import actions
 from app.alerts.catalog import CATALOG
 from app.alerts.models import Alert, AlertRule
 from app.alerts.schemas import AlertRuleIn, AlertRuleOut, AlertRulePatch
-from app.audit import Target, changes, record
+from app.audit import Event, Target, changes, record
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
 from app.core.db import flush_unique
@@ -188,19 +188,37 @@ async def update_rule(
     return out
 
 
+def _deleted(request: Request, user: User, rule: AlertRule) -> Event:
+    return auth_event(
+        request,
+        actions.ALERT_RULE_DELETED,
+        actor_of(user),
+        mfa=True,
+        target=_target(rule),
+        change=changes(_fields(rule), {}),
+    )
+
+
 async def delete_rule(db: AsyncSession, request: Request, owner: User, rule_id: UUID) -> None:
     """Deletes the rule. Its alerts keep their copy of it; the collector ends those still firing."""
     rule = await db.scalar(select(AlertRule).where(AlertRule.id == rule_id).with_for_update())
     if rule is None:
         raise HTTPException(404, "not_found")
-    deleted = auth_event(
-        request,
-        actions.ALERT_RULE_DELETED,
-        actor_of(owner),
-        mfa=True,
-        target=_target(rule),
-        change=changes(_fields(rule), {}),
-    )
+    deleted = _deleted(request, owner, rule)
     await db.delete(rule)
     await db.flush()
     await record(db, deleted)
+
+
+async def delete_rules_of(
+    db: AsyncSession, request: Request, user: User, *, group_id: UUID | None = None, server_id: UUID | None = None
+) -> list[Event]:
+    """Deletes the rules scoped to the group or the server that is being deleted, by name, and gives their
+    deletion events for the caller to record before its own."""
+    scope = AlertRule.server_group_id == group_id if group_id is not None else AlertRule.server_id == server_id
+    query = select(AlertRule).where(scope).order_by(func.lower(AlertRule.name), AlertRule.id).with_for_update()
+    rules = list((await db.scalars(query)).all())
+    events = [_deleted(request, user, rule) for rule in rules]
+    for rule in rules:
+        await db.delete(rule)
+    return events
