@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     # The platform's SSH private key: one Ed25519 key, made by the entrypoint at the first start (Phase 3 moves it
     # into the vault).
     ssh_key_file: str = "/var/lib/megooitadmin/ssh/id_ed25519"
+    # The backend's sender task, which delivers alert messages by email, to webhooks and to Telegram. The tests turn
+    # it off.
+    notification_sender: bool = True
+    # Lets a webhook use http://. On in the dev, e2e and stack stacks only, whose sinks have no TLS.
+    webhook_allow_http: bool = False
 
     @field_validator("auth_secret_key")
     @classmethod

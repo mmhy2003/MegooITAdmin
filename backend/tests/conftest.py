@@ -54,6 +54,8 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ["VALKEY_URL"] = _required("TEST_VALKEY_URL")
     os.environ["DB_NULL_POOL"] = "true"
     os.environ["AUTH_SECRET_KEY"] = TEST_AUTH_SECRET_KEY
+    # The tests that need the sender run it themselves.
+    os.environ["NOTIFICATION_SENDER"] = "false"
     # Each run makes its own platform key in a fresh directory, never the image's path.
     os.environ["SSH_KEY_FILE"] = str(Path(tempfile.mkdtemp(prefix="megooitadmin-ssh-")) / "id_ed25519")
 
