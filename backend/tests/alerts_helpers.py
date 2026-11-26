@@ -1,13 +1,17 @@
-"""Shared helpers of the alert tests: rules, and the alerts and events the collector wrote, all as the owner."""
+"""Shared helpers of the alert tests: rules, the alerts and events the collector wrote, notification channels and
+the email settings, all as the owner."""
 
+import json
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.alerts.models import Alert, AlertEvent, AlertRule
+from app.notify.crypto import EMAIL_ROW, seal
+from app.notify.models import NotificationChannel, NotificationEmail
 from conftest import owner_session
 
 RULE_DEFAULTS: dict[str, Any] = {
@@ -101,3 +105,24 @@ async def events_of(alert_id: uuid.UUID) -> list[AlertEvent]:
     async with owner_session() as session:
         query = select(AlertEvent).where(AlertEvent.alert_id == alert_id).order_by(AlertEvent.at)
         return list((await session.scalars(query)).all())
+
+
+async def make_channel(kind: str, secret: dict[str, str], **fields: Any) -> NotificationChannel:
+    """A channel with its secret ({"url": ...}, or {"bot_token": ..., "chat_id": ...}) sealed to its row."""
+    channel_id = uuid.uuid4()
+    values = {"name": f"{kind} {channel_id.hex[:6]}", "hint": "test", **fields}
+    async with owner_session() as session:
+        secret_blob = seal(json.dumps(secret), channel_id.bytes)
+        channel = NotificationChannel(id=channel_id, kind=kind, secret=secret_blob, **values)
+        session.add(channel)
+        await session.commit()
+        return channel
+
+
+async def set_email(**fields: Any) -> None:
+    """Changes the email settings. A plain `password` is sealed to the email row."""
+    if fields.get("password") is not None:
+        fields["password"] = seal(fields["password"], EMAIL_ROW)
+    async with owner_session() as session:
+        await session.execute(update(NotificationEmail).where(NotificationEmail.id == 1).values(**fields))
+        await session.commit()
