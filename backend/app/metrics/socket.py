@@ -190,7 +190,7 @@ async def _serve(socket: _Socket) -> int | None:
                 group.create_task(task(socket))
     except* _Closed as closed:
         code = closed.exceptions[0].code
-    except* ValkeyError as failed:
+    except* (ValkeyError, OSError) as failed:
         logger.warning("Closed a metrics socket, Valkey failed: %s", failed.exceptions[0])
         code = VALKEY_CLOSE
     return code
