@@ -12,10 +12,14 @@ from pathlib import Path
 import pytest
 
 import app.collector.__main__ as main_module
+from app.collector.alerts.book import AlertBook
 from app.collector.checks.runner import Recorder
 from app.collector.health import healthy
 from app.collector.supervisor import Supervisor
+from app.collector.state import StatusBook
 from app.collector.writer import Writer
+from alerts_helpers import alerts_of, make_rule
+from test_alert_book import T0, disk, monitored_server
 
 BACKEND = Path(__file__).resolve().parents[2]
 
@@ -103,3 +107,40 @@ async def test_serve_gives_the_supervisor_a_recorder_on_its_publisher_and_writer
     recorder = built["recorder"]
     assert isinstance(recorder, Recorder)
     assert (recorder.publisher, recorder.writer) == (built["publisher"], built["writer"])
+
+
+async def test_main_waits_for_the_database_and_loads_firing_alerts(clean_alerts, collector_sessions, monkeypatch):
+    server = await monitored_server()
+    await make_rule()
+    first = AlertBook(collector_sessions)
+    await first.poll([server], StatusBook(collector_sessions))
+    await first.observe(disk(server, T0, 95.0), 1)
+    [firing] = await alerts_of(server.id)
+    built: dict = {}
+    loads = 0
+
+    async def load(self) -> None:
+        nonlocal loads
+        loads += 1
+        if loads == 1:
+            raise OSError("the database is starting")  # serve waits 5 s, then tries again
+        await real_load(self)
+
+    class Built(Supervisor):
+        def __init__(self, **kwargs) -> None:
+            built.update(kwargs)
+            super().__init__(**kwargs)
+
+        async def run(self) -> None:
+            raise ValueError("built")
+
+    real_load = AlertBook.load
+    monkeypatch.setattr(AlertBook, "load", load)
+    monkeypatch.setattr(main_module, "Supervisor", Built)
+
+    with pytest.raises(ValueError, match="built"):
+        await asyncio.wait_for(main_module.serve(asyncio.Event()), 20)
+
+    assert loads == 2
+    assert [alert.alert_id for alert in built["alerts"].engine.firing()] == [firing.id]
+

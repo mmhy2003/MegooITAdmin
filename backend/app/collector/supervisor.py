@@ -5,6 +5,7 @@ import asyncio
 import logging
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import select
@@ -18,6 +19,9 @@ from app.collector.stream import MAX_SIGN_INS, Publisher, Stream, Target, Timing
 from app.collector.throttle import Throttle
 from app.collector.writer import Writer
 from app.inventory.models import Server
+
+if TYPE_CHECKING:  # the book imports refusal_of from here
+    from app.collector.alerts.book import AlertBook
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +54,13 @@ class Supervisor:
         recorder: Recorder | None = None,
         checks: Sequence[Check] = CHECKS,
         first_delay: float = FIRST_DELAY,
+        alerts: "AlertBook | None" = None,
     ) -> None:
         self.sessions, self.publisher, self.writer, self.status = sessions, publisher, writer, status
         self.timings, self.poll_every, self.heartbeat = timings, poll_every, heartbeat
         self.sign_ins = asyncio.Semaphore(max_sign_ins)  # shared by every stream
         self.recorder, self.checks, self.first_delay = recorder, checks, first_delay
+        self.alerts = alerts  # None: no rule is checked
         self._streams: dict[UUID, tuple[Stream, asyncio.Task[None]]] = {}
         self._stopping: set[asyncio.Task[None]] = set()
         self._warned = Throttle()
@@ -94,6 +100,8 @@ class Supervisor:
         for server_id in self.status.known_ids() - ids:
             self.status.forget(server_id)
         await self.status.retry()
+        if self.alerts is not None:
+            await self.alerts.poll(rows, self.status)
         if self.heartbeat is not None:
             self.heartbeat.touch()
 
@@ -108,6 +116,7 @@ class Supervisor:
             recorder=self.recorder,
             checks=self.checks,
             first_delay=self.first_delay,
+            alerts=self.alerts,
         )
         self._streams[target.server_id] = (stream, asyncio.create_task(stream.run()))
 

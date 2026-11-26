@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.collector.alerts.book import AlertBook
 from app.collector.checks.runner import Recorder
 from app.collector.state import StatusBook
 from app.collector.stream import Publisher
@@ -29,9 +30,11 @@ async def serve(stop: asyncio.Event) -> None:
     Raises when the writer or the supervisor ends before (RuntimeError when it returned)."""
     settings = get_settings()
     status = StatusBook(SessionLocal)
+    alerts = AlertBook(SessionLocal)
     while not stop.is_set():  # wait for the database, without giving up
         try:
             await status.load()
+            await alerts.load()
             break
         except (SQLAlchemyError, OSError) as error:
             logger.warning("Waiting for the database: %s", error)
@@ -53,6 +56,7 @@ async def serve(stop: asyncio.Event) -> None:
         status=status,
         recorder=Recorder(SessionLocal, publisher, writer),
         heartbeat=Path(settings.collector_heartbeat_file),
+        alerts=alerts,
     )
     tasks = [asyncio.create_task(writer.run()), asyncio.create_task(supervisor.run())]
     stopped = asyncio.create_task(stop.wait())

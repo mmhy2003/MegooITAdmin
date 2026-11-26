@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from valkey.asyncio import Valkey
@@ -32,6 +33,9 @@ from app.metrics.fanout import publish
 from app.metrics.samples import Sample
 from app.ssh import client
 from app.ssh.keys import KeyFileError
+
+if TYPE_CHECKING:  # the book imports the supervisor, which imports this module
+    from app.collector.alerts.book import AlertBook
 
 logger = logging.getLogger(__name__)
 ACTOR = Actor.system("collector")
@@ -114,11 +118,13 @@ class Stream:
         checks: Sequence[Check] = CHECKS,
         first_delay: float = FIRST_DELAY,
         clock: Callable[[], float] = time.monotonic,
+        alerts: "AlertBook | None" = None,
     ) -> None:
         self.target, self.publisher, self.writer, self.status, self.timings = target, publisher, writer, status, timings
         self.sign_ins = sign_ins or asyncio.Semaphore(MAX_SIGN_INS)
         self.clock = clock
         self.recorder = recorder  # None: no check runs
+        self.alerts = alerts  # None: no rule is checked
         # On the stream, not the session: a reconnect does not run a check again before its interval.
         self.timetable = Timetable(checks, first_delay=first_delay, clock=clock)
         self.failure: str | None = None  # the reason of the last failure, None after a sample
@@ -194,7 +200,7 @@ class Stream:
                         )
                         previous = raw
                         deadline.reschedule(loop.time() + self.timings.no_sample_after)
-                        await self._got(sample)
+                        await self._got(sample, compute.cores(raw))
                         got = True
                     for _ in range(lines.too_long - skipped):
                         self._bad_line()
@@ -212,11 +218,13 @@ class Stream:
                 "Dropped %d lines from server %s that were not samples", self.bad_lines, self.target.server_id
             )
 
-    async def _got(self, sample: Sample) -> None:
+    async def _got(self, sample: Sample, cores: int) -> None:
         self.samples += 1
         self.last_sample, self.last_sample_at, self.failure = self.clock(), sample.time, None
         await self.publisher.publish(sample)
         self.writer.add(sample)
+        if self.alerts is not None:
+            await self.alerts.observe(sample, cores)
         await self.status.set(self.target.server_id, "reachable", None, last_sample_at=sample.time)
 
     async def _watch(self) -> None:
