@@ -10,10 +10,10 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from app.checks.models import CONTAINER_STATES, SeenContainer, Status
 from app.collector.parse import CONTROL
@@ -293,3 +293,83 @@ def logins(lines: list[bytes]) -> LoginsResult:
         raise ValueError("no total of failed sign-ins")
     sources = [source for line in lines[1:] if (source := _source(line)) is not None]
     return LoginsResult(failed_24h=total, top_sources=tuple(sources[:TOP]))
+
+
+class UpdatesResult(CheckResult):
+    manager: Literal["apt", "dnf"]
+    pending: int
+    security: int | None
+    reboot_required: bool | None
+    lists_refreshed_at: AwareDatetime | None
+
+    def readings(self, now: datetime) -> tuple[Reading, ...]:
+        readings = [Reading(metric="updates.pending", value=self.pending)]
+        if self.security is not None:
+            readings.append(Reading(metric="updates.security", value=self.security))
+        if self.reboot_required is not None:
+            readings.append(Reading(metric="updates.reboot_required", value=1.0 if self.reboot_required else 0.0))
+        return tuple(readings)
+
+
+def _optional(values: dict[str, str], key: str) -> int | None:
+    """The count of this key, None without one. A bad count is an error."""
+    if key not in values:
+        return None
+    count = _count(values[key], 0)
+    if count is None:
+        raise ValueError(f"a bad {key} count")
+    return count
+
+
+def _required(values: dict[str, str], key: str) -> int:
+    count = _optional(values, key)
+    if count is None:
+        raise ValueError(f"no {key} count")
+    return count
+
+
+def _reboot(values: dict[str, str]) -> bool | None:
+    if "reboot" not in values:
+        return None
+    if values["reboot"] not in ("0", "1"):
+        raise ValueError("a bad reboot flag")
+    return values["reboot"] == "1"
+
+
+def _refreshed(value: str | None) -> datetime | None:
+    seconds = _count(value, 0) if value is not None else None
+    return datetime.fromtimestamp(seconds, UTC) if seconds is not None else None
+
+
+def updates(lines: list[bytes]) -> UpdatesResult:
+    """key value lines: manager, then apt's pending, security and reboot, or dnf's exit, pending and maybe security;
+    refreshed (epoch seconds) for both. Unknown keys are ignored."""
+    values: dict[str, str] = {}
+    for line in lines:
+        key, _, value = line.decode(errors="replace").partition(" ")
+        values.setdefault(key, value)
+    manager = values.get("manager")
+    if manager == "apt":
+        pending, security, reboot = _required(values, "pending"), _required(values, "security"), _reboot(values)
+        if reboot is None:
+            raise ValueError("no reboot flag")
+    elif manager == "dnf":
+        # dnf check-update exits 100 when updates are pending and 0 when none are; anything else (no usable cache
+        # among them) leaves nothing to count.
+        code = values.get("exit")
+        if code == "0":
+            pending = 0
+        elif code == "100":
+            pending = _required(values, "pending")
+        else:
+            raise NotAvailable
+        security, reboot = _optional(values, "security"), _reboot(values)
+    else:
+        raise ValueError("no known package manager")
+    return UpdatesResult(
+        manager=manager,
+        pending=pending,
+        security=security,
+        reboot_required=reboot,
+        lists_refreshed_at=_refreshed(values.get("refreshed")),
+    )

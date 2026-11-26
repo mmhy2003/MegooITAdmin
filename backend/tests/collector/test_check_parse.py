@@ -512,3 +512,104 @@ def test_logins_through_read() -> None:
     assert outcome == Outcome(
         "ok", parse.LoginsResult(failed_24h=7, top_sources=(parse.Source(address="203.0.113.9", count=5),))
     )
+
+
+APT = [b"manager apt", b"pending 2", b"security 1", b"reboot 0", b"refreshed 1764100000"]
+
+
+def test_updates_reads_an_apt_body() -> None:
+    result = parse.updates(APT)
+
+    assert result == parse.UpdatesResult(
+        manager="apt",
+        pending=2,
+        security=1,
+        reboot_required=False,
+        lists_refreshed_at=datetime.fromtimestamp(1764100000, UTC),
+    )
+
+
+@pytest.mark.parametrize("missing", [b"pending 2", b"security 1", b"reboot 0"])
+def test_updates_apt_needs_pending_security_and_reboot(missing: bytes) -> None:
+    with pytest.raises(ValueError):
+        parse.updates([line for line in APT if line != missing])
+
+
+@pytest.mark.parametrize("line", [b"pending x", b"security -1", b"reboot 2", b"reboot yes"])
+def test_updates_apt_bad_values_are_errors(line: bytes) -> None:
+    key = line.split(b" ")[0]
+    with pytest.raises(ValueError):
+        parse.updates([kept for kept in APT if not kept.startswith(key + b" ")] + [line])
+
+
+@pytest.mark.parametrize("lines", [[], [b"manager yum", b"pending 1"], [b"pending 1"]])
+def test_updates_needs_a_known_manager(lines: list[bytes]) -> None:
+    with pytest.raises(ValueError):
+        parse.updates(lines)
+
+
+def test_updates_ignores_unknown_keys() -> None:
+    assert parse.updates([*APT, b"colour blue", b"oddline"]) == parse.updates(APT)
+
+
+def test_updates_reads_a_dnf_body_with_updates() -> None:
+    result = parse.updates([b"manager dnf", b"exit 100", b"pending 3", b"security 1"])
+
+    assert result == parse.UpdatesResult(
+        manager="dnf", pending=3, security=1, reboot_required=None, lists_refreshed_at=None
+    )
+
+
+def test_updates_dnf_exit_0_has_nothing_pending() -> None:
+    result = parse.updates([b"manager dnf", b"exit 0", b"pending 0", b"security 0"])
+
+    assert result.pending == 0
+
+
+def test_updates_dnf_exit_100_needs_a_pending_count() -> None:
+    with pytest.raises(ValueError):
+        parse.updates([b"manager dnf", b"exit 100"])
+
+
+def test_updates_dnf_another_exit_is_not_available() -> None:
+    with pytest.raises(NotAvailable):
+        parse.updates([b"manager dnf", b"exit 1", b"pending 0"])
+
+
+def test_updates_dnf_another_exit_is_not_available_through_read() -> None:
+    assert read(parse.updates, _done(OK + b"manager dnf\nexit 1\npending 0\n")) == Outcome("not_available")
+
+
+def test_updates_dnf_without_security_has_no_security_reading() -> None:
+    result = parse.updates([b"manager dnf", b"exit 100", b"pending 3"])
+
+    assert result.security is None
+    assert result.readings(datetime.now(UTC)) == (Reading(metric="updates.pending", value=3),)
+
+
+@pytest.mark.parametrize("value", [b"x", b"", b"1.5"])
+def test_updates_a_bad_refreshed_time_is_none(value: bytes) -> None:
+    lines = [line for line in APT if not line.startswith(b"refreshed")] + [b"refreshed " + value]
+
+    assert parse.updates(lines).lists_refreshed_at is None
+
+
+def test_updates_readings() -> None:
+    result = parse.updates([b"manager apt", b"pending 4", b"security 2", b"reboot 1"])
+
+    assert result.reboot_required is True
+    assert result.readings(datetime.now(UTC)) == (
+        Reading(metric="updates.pending", value=4),
+        Reading(metric="updates.security", value=2),
+        Reading(metric="updates.reboot_required", value=1.0),
+    )
+
+
+def test_updates_through_read() -> None:
+    outcome = read(parse.updates, _done(OK + b"\n".join(APT) + b"\n"))
+
+    assert outcome == Outcome("ok", parse.updates(APT))
+
+
+def test_updates_dnf_reads_a_reboot_flag_when_there_is_one() -> None:
+    assert parse.updates([b"manager dnf", b"exit 0", b"reboot 1"]).reboot_required is True

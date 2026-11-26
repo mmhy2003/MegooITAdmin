@@ -12,6 +12,7 @@ from app.collector.checks.parse import (
     ProcessesResult,
     ServicesResult,
     Source,
+    UpdatesResult,
     read,
 )
 from app.ssh.client import connect, run_script
@@ -167,3 +168,65 @@ async def test_logins_without_a_journal(fake_server):
 
 async def test_logins_with_an_empty_journal(fake_server):
     assert await run(fake_server, "logins") == Outcome("ok", LoginsResult(failed_24h=0, top_sources=()))
+
+
+APT_UPGRADE = """\
+Inst openssl [3.5.1-1] (3.5.4-1 Debian-Security:13/stable-security [amd64])
+Inst tzdata [2025a-1] (2025b-0+deb13u1 Debian:13.2/stable [all])
+Conf openssl (3.5.4-1 Debian-Security:13/stable-security [amd64])
+"""
+APT_GET = ("/usr/local/bin/apt-get", "/usr/bin/apt-get")
+DNF_CHECK_UPDATE = "openssl.x86_64  1:3.2.2-6.el9  baseos\ncurl.x86_64  7.76.1-31.el9  baseos\n"
+DNF_UPDATEINFO = "RHSA-2025:1234 Important/Sec. openssl-1:3.2.2-6.el9.x86_64\n"
+
+
+async def test_updates_with_apt(fake_server):
+    fake_server.clear_tool_log()
+
+    with fake_server.fixture("apt-get", APT_UPGRADE):
+        outcome = await run(fake_server, "updates")
+        assert fake_server.exec("touch", "/var/run/reboot-required").returncode == 0
+        try:
+            rebooting = await run(fake_server, "updates")
+        finally:
+            fake_server.exec("rm", "-f", "/var/run/reboot-required")
+
+    assert outcome.status == "ok"
+    assert isinstance(outcome.result, UpdatesResult)
+    assert (outcome.result.manager, outcome.result.pending, outcome.result.security) == ("apt", 2, 1)
+    assert outcome.result.reboot_required is False
+    assert outcome.result.lists_refreshed_at is not None
+    assert isinstance(rebooting.result, UpdatesResult)
+    assert rebooting.result.reboot_required is True
+    assert fake_server.tool_log()[0] == "apt-get [-s] [-o] [Debug::NoLocking=1] [upgrade]"
+
+
+async def test_updates_with_dnf(fake_server):
+    fake_server.clear_tool_log()
+
+    with (
+        fake_server.hidden(*APT_GET),
+        fake_server.fixture("dnf_check-update", DNF_CHECK_UPDATE, exit=100),
+        fake_server.fixture("dnf_updateinfo", DNF_UPDATEINFO),
+    ):
+        outcome = await run(fake_server, "updates")
+
+    assert outcome.status == "ok"
+    assert isinstance(outcome.result, UpdatesResult)
+    assert (outcome.result.manager, outcome.result.pending, outcome.result.security) == ("dnf", 2, 1)
+    assert outcome.result.reboot_required is None
+    assert fake_server.tool_log()[0] == "dnf [check-update] [-C] [-q]"
+
+
+async def test_updates_with_dnf_without_a_cache(fake_server):
+    with (
+        fake_server.hidden(*APT_GET),
+        fake_server.fixture("dnf_check-update", "", exit=1),
+        fake_server.fixture("dnf_updateinfo", DNF_UPDATEINFO),
+    ):
+        assert await run(fake_server, "updates") == Outcome("not_available")
+
+
+async def test_updates_without_a_package_manager(fake_server):
+    with fake_server.hidden(*APT_GET, "/usr/local/bin/dnf"):
+        assert await run(fake_server, "updates") == Outcome("not_available")
