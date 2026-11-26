@@ -8,7 +8,7 @@ from app.auth.socket import SocketSession, open_socket, signed_in_socket
 from app.main import create_app
 
 # Every WebSocket route of the app, with what it carries. Adding one is a visible change to the security suite.
-SOCKETS: dict[str, str] = {}
+SOCKETS: dict[str, str] = {"/api/ws/metrics": "live samples of the servers the person sees"}
 
 
 def without_handshake(app: FastAPI) -> list[str]:
