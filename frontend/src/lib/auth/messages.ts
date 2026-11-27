@@ -59,6 +59,10 @@ export const DELIVERY_ERRORS: Record<string, string> = {
   smtp_failed: "The mail server refused the message.",
   http_status: "The address answered with an error.",
   redirect_refused: "The address answered with a redirect, which is not followed.",
+  // A saved address is checked again when a message is sent, and the email settings may have changed meanwhile.
+  bad_url: MESSAGES.bad_url,
+  webhook_url_https: MESSAGES.webhook_url_https,
+  email_not_set_up: MESSAGES.email_not_set_up,
   undecryptable: "The saved secret cannot be read any more. Enter it again.",
 };
 

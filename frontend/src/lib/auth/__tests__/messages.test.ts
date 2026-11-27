@@ -87,6 +87,9 @@ describe("deliveryErrorText", () => {
     "smtp_failed",
     "http_status",
     "redirect_refused",
+    "bad_url",
+    "webhook_url_https",
+    "email_not_set_up",
     "undecryptable",
   ];
 
@@ -96,6 +99,10 @@ describe("deliveryErrorText", () => {
 
   it("gives each code another text", () => {
     expect(new Set(codes.map(deliveryErrorText)).size).toBe(codes.length);
+  });
+
+  it.each(["bad_url", "webhook_url_https", "email_not_set_up"])("says %s as an answer to a request does", (code) => {
+    expect(deliveryErrorText(code)).toBe(messageFor(code));
   });
 
   it("tells an undecryptable secret apart from a sign-in's", () => {
