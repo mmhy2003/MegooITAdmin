@@ -17,13 +17,15 @@ describe("FleetSummary", () => {
       server("i", null),
       server("j", null),
     ];
-    render(<FleetSummary servers={servers} />);
+    render(<FleetSummary servers={servers} firing={3} />);
     const tile = (label: string) => screen.getByText(label, { selector: "dt" }).parentElement!;
     expect(tile("Servers")).toHaveTextContent("10");
     expect(tile("Reachable")).toHaveTextContent("5");
     expect(tile("Unreachable")).toHaveTextContent("2");
     expect(tile("Not monitored")).toHaveTextContent("1");
     expect(tile("Not checked yet")).toHaveTextContent("2");
+    expect(tile("Firing alerts")).toHaveTextContent("3");
+    expect(screen.getAllByText(/./, { selector: "dt" })).toHaveLength(6);
   });
 });
 
@@ -52,6 +54,16 @@ describe("ServerCard", () => {
     expect(screen.getByText("61%")).toBeInTheDocument();
     expect(screen.getByText("1.25")).toBeInTheDocument();
     expect(container.querySelector("[data-server-id]")).toHaveAttribute("data-server-id", "id-web-01");
+  });
+
+  it("marks a server with its firing alerts, and none without", () => {
+    const s = server("web-01", "reachable");
+    const { rerender } = render(<ServerCard server={s} vitals={vitals(s.id)} now={NOW} track={track} alerts={1} />);
+    expect(screen.getByText("1 alert")).toHaveAttribute("data-variant", "destructive");
+    rerender(<ServerCard server={s} vitals={vitals(s.id)} now={NOW} track={track} alerts={4} />);
+    expect(screen.getByText("4 alerts")).toHaveAttribute("data-variant", "destructive");
+    rerender(<ServerCard server={s} vitals={vitals(s.id)} now={NOW} track={track} />);
+    expect(screen.queryByText(/alerts?$/)).not.toBeInTheDocument();
   });
 
   it("hands its element to track", () => {
@@ -129,5 +141,24 @@ describe("ServerRows", () => {
     expect(within(rows[0]).getByText("17%")).toBeInTheDocument();
     expect(within(rows[2]).getAllByText("—")).toHaveLength(5);
     expect(tracked).toHaveBeenCalledTimes(3);
+  });
+
+  it("marks the rows of servers with firing alerts", () => {
+    const up = server("web-01", "reachable");
+    const other = server("web-02", "reachable");
+    const many = server("web-03", "reachable");
+    render(
+      <ServerRows
+        servers={[up, other, many]}
+        vitalsOf={{}}
+        now={NOW}
+        track={() => {}}
+        alerts={{ [up.id]: 1, [many.id]: 2 }}
+      />,
+    );
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(within(rows[0]).getByText("1 alert")).toHaveAttribute("data-variant", "destructive");
+    expect(within(rows[1]).queryByText(/alerts?$/)).not.toBeInTheDocument();
+    expect(within(rows[2]).getByText("2 alerts")).toBeInTheDocument();
   });
 });

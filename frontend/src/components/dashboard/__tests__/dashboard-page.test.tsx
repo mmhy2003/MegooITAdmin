@@ -7,6 +7,7 @@ import { installIntersectionObserver } from "@/__tests__/helpers/intersection-ob
 import { DashboardPage } from "@/components/dashboard/dashboard-page";
 import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
+import type { Alert } from "@/lib/alerts";
 import { apiFetch } from "@/lib/api";
 import { emptyTrend, type OverviewRead, type ServerOverviewRead } from "@/lib/metrics";
 import type { Server } from "@/lib/servers";
@@ -52,14 +53,43 @@ function idsOf(path: string): string[] {
   return new URLSearchParams(path.split("?")[1]).getAll("server_id");
 }
 
+/** A firing alert of the disk rule on `/` of the server `id`, named after the id so its link is not the card's. */
+function firingOn(id: string, alertId: string): Alert {
+  return {
+    id: alertId,
+    server_id: id,
+    server_name: id,
+    group_id: "g",
+    group_name: "Production",
+    rule_id: "r",
+    rule_name: "Filesystem almost full",
+    metric: "disk.used_percent",
+    comparison: "above",
+    threshold: 90,
+    duration_seconds: 600,
+    severity: "critical",
+    instance: "/",
+    state: "firing",
+    end_reason: null,
+    fired_at: "2026-11-27T10:00:00Z",
+    resolved_at: null,
+    value: 93.25,
+    last_value: 93.25,
+    peak_value: 93.25,
+  };
+}
+
 function mockApi({
   groups = [GROUP],
   servers = [] as Server[],
   overview = (ids: string[]): OverviewRead => ({ servers: [], denied: ids }),
+  firing = [] as Alert[],
+  closed = [] as Alert[],
 } = {}) {
   vi.mocked(apiFetch).mockImplementation(async (path: string) => {
     if (path === "/server-groups") return groups;
     if (path === "/server-tags") return [];
+    if (path.startsWith("/alerts?")) return path.includes("state=firing") ? firing : closed;
     if (path.startsWith("/metrics/overview?")) return overview(idsOf(path));
     if (path.startsWith("/servers")) return servers;
     throw new Error(`unexpected ${path}`);
@@ -85,6 +115,10 @@ function subscribes(ws: FakeWebSocket) {
 
 function overviewCalls() {
   return vi.mocked(apiFetch).mock.calls.filter(([path]) => path.startsWith("/metrics/overview?"));
+}
+
+function alertCalls() {
+  return vi.mocked(apiFetch).mock.calls.filter(([path]) => path.startsWith("/alerts?"));
 }
 
 function listCalls() {
@@ -278,6 +312,7 @@ describe("DashboardPage", () => {
     vi.mocked(apiFetch).mockImplementation(async (path: string) => {
       if (path === "/server-groups") return [GROUP];
       if (path === "/server-tags") return [];
+      if (path.startsWith("/alerts?")) return [];
       if (path.startsWith("/metrics/overview?")) return new Promise((resolve) => (answer = resolve));
       return [a];
     });
@@ -313,6 +348,7 @@ describe("DashboardPage", () => {
     await waitFor(() => expect(overviewCalls()).toHaveLength(1));
     await act(async () => vi.mocked(useRefresh).mock.lastCall![0]());
     expect(listCalls().at(-1)).toEqual(["/servers", { background: true }]);
+    expect(alertCalls().at(-1)).toEqual(["/alerts?state=firing", { background: true }]);
     expect(overviewCalls().at(-1)).toEqual([`/metrics/overview?server_id=${a.id}`, { background: true }]);
   });
 
@@ -331,5 +367,47 @@ describe("DashboardPage", () => {
     query("group=g");
     render(<DashboardPage />);
     expect(await screen.findByText("No servers match these filters.")).toBeInTheDocument();
+  });
+
+  it("counts the firing alerts, lists them under the summary and marks their servers", async () => {
+    const [a, b, c] = TEN;
+    mockApi({
+      servers: [a, b, c],
+      firing: [firingOn(a.id, "x-1"), firingOn(a.id, "x-2"), firingOn(c.id, "x-3")],
+    });
+    const { unmount } = render(<DashboardPage />);
+    await screen.findByRole("link", { name: b.name });
+    expect(alertCalls()[0]).toEqual(["/alerts?state=firing"]);
+    const tile = screen.getByText("Firing alerts", { selector: "dt" }).parentElement!;
+    expect(tile).toHaveTextContent("3");
+
+    const alerts = screen.getByRole("heading", { name: "Alerts" }).closest("[data-slot=card]")!;
+    const dashboard = screen.getByRole("heading", { name: "Dashboard" }).closest("[data-slot=card]")!;
+    expect(dashboard.nextElementSibling).toBe(alerts);
+    expect(within(alerts as HTMLElement).getByRole("tab", { name: "Firing (3)" })).toBeInTheDocument();
+    expect(alerts.querySelectorAll("[data-alert-id]")).toHaveLength(3);
+
+    expect(within(card(a.name)).getByText("2 alerts")).toBeInTheDocument();
+    expect(within(card(c.name)).getByText("1 alert")).toBeInTheDocument();
+    expect(within(card(b.name)).queryByText(/alerts?$/)).not.toBeInTheDocument();
+    unmount();
+
+    query("view=table");
+    render(<DashboardPage />);
+    await screen.findByRole("link", { name: a.name });
+    expect(card(a.name).tagName).toBe("TR");
+    expect(within(card(a.name)).getByText("2 alerts")).toBeInTheDocument();
+  });
+
+  it("reads the firing alerts and their history of the filtered servers", async () => {
+    mockApi({ servers: [server("web-01", "reachable")], closed: [] });
+    query("group=g&tag=web");
+    render(<DashboardPage />);
+    await screen.findByRole("link", { name: "web-01" });
+    expect(alertCalls()[0]).toEqual(["/alerts?group_id=g&tag=web&state=firing"]);
+    expect(screen.getByText("No alerts are firing.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "History" }));
+    expect(await screen.findByText("No alerts in the last 30 days.")).toBeInTheDocument();
+    expect(alertCalls().at(-1)).toEqual(["/alerts?group_id=g&tag=web&state=closed"]);
   });
 });
