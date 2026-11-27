@@ -11,8 +11,10 @@ Backend to browser:
     {"type":"skipped","source":id,"count":n} where the worker's cap dropped lines.
     {"type":"ended","source":id,"reason":...} (+ "status" for exited): the source is closed for this socket. Besides
         the worker's reasons: "idle" when the person did nothing in the log view for LOG_STREAM_IDLE_MINUTES (every
-        source ends, the socket stays open), and "not_found", "forbidden" or "not_allowed" when the recheck finds the
-        server gone or hidden, View logs lost, or the file's pattern removed.
+        source ends, the socket stays open), "not_found", "forbidden" or "not_allowed" when the recheck finds the
+        server gone or hidden, View logs lost, or the file's pattern removed, "worker_unavailable" when no worker
+        answers the open within 5 seconds or says it is alive within 15 seconds (every source ends), and
+        "worker_restarted" when another run of the worker says it is alive (every source ends).
     {"type":"error","detail":"invalid_message"} for a message that is neither. The socket stays open.
 Close codes:
     4401 not signed in, at the handshake or at a recheck every 30 seconds; 1013 the browser reads too slowly (a
@@ -24,9 +26,9 @@ channel, and waits for Valkey's confirmation, before it asks: the lines that arr
 after the answer's backlog only those with a higher seq are sent, so the browser sees no gap and no line twice.
 
 Per socket: one Valkey subscription and a bounded queue, and tasks in one TaskGroup: the reader (client messages),
-the pump (Valkey to the queue), the sender (the queue to the browser), the recheck and the watch (idle). When one
-ends, the others are cancelled and the socket closes; its remaining sources are recorded closed with "signed_out"
-after 4401 and "left" otherwise. Each subscribe and recheck opens a short database session.
+the pump (Valkey to the queue), the sender (the queue to the browser), the recheck and the watch (idle, and a worker
+that no longer says it is alive). When one ends, the others are cancelled and the socket closes; its remaining
+sources are recorded closed with "signed_out" after 4401 and "left" otherwise. Each subscribe and recheck opens a short database session.
 """
 
 import asyncio
@@ -62,6 +64,7 @@ from app.logs.protocol import (
     REQUESTS,
     TO_VIEWER,
     WORKER,
+    Alive,
     Ended,
     Lines,
     Opened,
@@ -406,8 +409,12 @@ async def _subscribe(socket: _Socket, asked: SubscribeIn) -> None:
 
         answered: list[tuple[_Open, Opened]] = []
         refused: list[tuple[_Open, list[Event]]] = []
+        unanswered: list[str] = []
         for open_ in accepted:
-            if socket.opens.get(open_.key) is not open_ or not open_.reply.done():
+            if socket.opens.get(open_.key) is not open_:
+                continue
+            if not open_.reply.done():
+                unanswered.append(open_.key)
                 continue
             reply = open_.reply.result()
             if isinstance(reply, Refused):
@@ -435,6 +442,9 @@ async def _subscribe(socket: _Socket, asked: SubscribeIn) -> None:
                 ends.append((open_.key, ended))
         for key, ended in ends:
             await _end(socket, key, ended.reason, ended.status)
+        # No worker heard the request, or it did not answer in time.
+        for key in unanswered:
+            await _end(socket, key, "worker_unavailable")
 
 
 async def _reader(socket: _Socket) -> None:
@@ -478,6 +488,16 @@ async def _on_source(socket: _Socket, key: str, message: Lines | Skipped | Ended
         await _end(socket, key, ended.reason, ended.status)
 
 
+async def _alive(socket: _Socket, alive: Alive) -> None:
+    """The worker says it is alive. Another run than the one that opened the sources has none of them: they end."""
+    socket.last_alive = time.monotonic()
+    if socket.run_id is None:
+        socket.run_id = alive.run_id
+    elif alive.run_id != socket.run_id:
+        socket.run_id = alive.run_id
+        await _end_together(socket, socket.opens, "worker_restarted")
+
+
 async def _pump(socket: _Socket) -> None:
     viewer = viewer_channel(socket.socket_id)
     while True:
@@ -488,10 +508,12 @@ async def _pump(socket: _Socket) -> None:
         if message["type"] == "subscribe":
             socket.channels.confirmed(channel)
             continue
-        if message["type"] != "message" or channel == WORKER:
+        if message["type"] != "message":
             continue
         try:
-            if channel == viewer:
+            if channel == WORKER:
+                await _alive(socket, Alive.model_validate_json(message["data"]))
+            elif channel == viewer:
                 _answered(socket, TO_VIEWER.validate_json(message["data"]))
             elif channel.startswith(SOURCE_PREFIX):
                 await _on_source(socket, channel.removeprefix(SOURCE_PREFIX), ON_SOURCE.validate_json(message["data"]))
@@ -556,8 +578,11 @@ async def _watch(socket: _Socket) -> None:
         if not socket.opens:
             continue
         async with socket.lock:
-            if socket.opens and time.monotonic() - socket.last_active >= idle_after():
+            now = time.monotonic()
+            if socket.opens and now - socket.last_active >= idle_after():
                 await _end_together(socket, socket.opens, "idle")
+            elif socket.opens and now - socket.last_alive >= ALIVE_TIMEOUT:
+                await _end_together(socket, socket.opens, "worker_unavailable")
 
 
 async def _serve(socket: _Socket) -> int | None:
