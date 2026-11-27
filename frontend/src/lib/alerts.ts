@@ -118,6 +118,12 @@ export const METRICS: Record<AlertMetric, MetricSpec> = {
 
 export const SEVERITY_LABEL: Record<Severity, string> = { warning: "Warning", critical: "Critical" };
 
+/** What email or a channel sends, by its `min_severity`. */
+export const SEVERITY_FILTER_LABEL: Record<Severity, string> = {
+  warning: "Warning and Critical",
+  critical: "Critical only",
+};
+
 export const END_REASON_TEXT: Record<EndReason, string> = {
   rule_changed: "the rule was changed",
   rule_disabled: "the rule was switched off",
