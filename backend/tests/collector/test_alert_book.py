@@ -1,6 +1,7 @@
 """The alert book on the real database, as the collector's role: each transition is an alerts row, an alert_events row
 and an audit event in one transaction; what the database refused waits for the next poll."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
@@ -39,6 +40,28 @@ class FailingSessions:
             self.failures -= 1
             raise OperationalError("connect", {}, OSError("the database is down"))
         return self.sessions()
+
+
+class HeldSessions:
+    """The collector's sessions, but once armed, the next session's commit waits until `release` is set, as if the
+    audit chain were busy."""
+
+    def __init__(self, sessions) -> None:
+        self.sessions, self.armed, self.held, self.release = sessions, False, asyncio.Event(), asyncio.Event()
+
+    def __call__(self):
+        session = self.sessions()
+        if self.armed:
+            self.armed = False
+            commit = session.commit
+
+            async def held_commit() -> None:
+                self.held.set()
+                await self.release.wait()
+                await commit()
+
+            session.commit = held_commit
+        return session
 
 
 async def monitored_server(name: str = "db-01") -> Server:
@@ -135,6 +158,50 @@ async def test_a_refused_write_is_retried_at_the_next_poll(clean_alerts, collect
     assert [event.kind for event in await events_of(alert.id)] == ["fired", "resolved"]
     [fired], [resolved] = await events("alert.fired"), await events("alert.resolved")
     assert fired.seq < resolved.seq
+
+
+async def test_a_resolve_that_arrives_while_its_fire_is_being_written_waits_for_it(clean_alerts, collector_sessions):
+    server = await monitored_server()
+    await make_rule()
+    sessions = HeldSessions(collector_sessions)
+    book = AlertBook(sessions)
+    await book.poll([server], StatusBook(collector_sessions))
+
+    sessions.armed = True
+    fire = asyncio.create_task(book.observe(disk(server, T0, 95.0), 1))
+    await asyncio.wait_for(sessions.held.wait(), 5)
+    resolve = asyncio.create_task(book.observe(disk(server, T0 + timedelta(seconds=5), 40.0), 1))
+    await asyncio.sleep(0.2)
+    sessions.release.set()
+    await asyncio.wait_for(asyncio.gather(fire, resolve), 10)
+
+    [alert] = await alerts_of(server.id)
+    assert (alert.state, alert.resolved_at) == ("resolved", T0 + timedelta(seconds=5))
+    assert [event.kind for event in await events_of(alert.id)] == ["fired", "resolved"]
+
+
+async def test_an_end_from_the_poll_while_the_fire_is_being_written_waits_for_it(clean_alerts, collector_sessions):
+    server = await monitored_server()
+    rule = await make_rule()
+    sessions = HeldSessions(collector_sessions)
+    clock = Clock(T0 + timedelta(seconds=10))
+    book = AlertBook(sessions, clock=clock)
+    await book.poll([server], StatusBook(collector_sessions))
+    async with owner_session() as session:
+        await session.execute(update(AlertRule).where(AlertRule.id == rule.id).values(enabled=False))
+        await session.commit()
+
+    sessions.armed = True
+    fire = asyncio.create_task(book.observe(disk(server, T0, 95.0), 1))
+    await asyncio.wait_for(sessions.held.wait(), 5)
+    poll = asyncio.create_task(book.poll([server], StatusBook(collector_sessions)))
+    await asyncio.sleep(0.2)
+    sessions.release.set()
+    await asyncio.wait_for(asyncio.gather(fire, poll), 10)
+
+    [alert] = await alerts_of(server.id)
+    assert (alert.state, alert.end_reason) == ("ended", "rule_disabled")
+    assert [event.kind for event in await events_of(alert.id)] == ["fired", "ended"]
 
 
 class BadSeverity(Engine):

@@ -2,6 +2,7 @@
 alert_events row and its audit event in one transaction. A write the database refused waits, in order and with its real
 times, until the next poll."""
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Sequence
@@ -43,6 +44,9 @@ class AlertBook:
         # The last_value and peak_value written for each firing alert, and when.
         self._written: dict[uuid.UUID, tuple[float | None, float | None, datetime]] = {}
         self._warn = Throttle()
+        # The streams and the poll write from their own tasks: one write at a time, in the order the engine gave them,
+        # so a resolve or an end never runs while its fire is still being written.
+        self._writing = asyncio.Lock()
 
     @property
     def pending(self) -> int:
@@ -87,18 +91,20 @@ class AlertBook:
         await self._retry()
 
     async def _write_all(self, transitions: Sequence[Transition]) -> None:
-        for transition in transitions:
-            if self._pending:
-                # Behind what waits: a resolve never goes in before its fire.
-                self._pending.append(transition)
-            elif not await self._write(transition):
-                self._pending.append(transition)
+        async with self._writing:
+            for transition in transitions:
+                if self._pending:
+                    # Behind what waits: a resolve never goes in before its fire.
+                    self._pending.append(transition)
+                elif not await self._write(transition):
+                    self._pending.append(transition)
 
     async def _retry(self) -> None:
-        while self._pending:
-            if not await self._write(self._pending[0]):
-                return
-            self._pending.pop(0)
+        async with self._writing:
+            while self._pending:
+                if not await self._write(self._pending[0]):
+                    return
+                self._pending.pop(0)
 
     async def _write(self, transition: Transition) -> bool:
         """One transition in one transaction, the audit event last. False when the database refused it for now;
@@ -183,6 +189,10 @@ class AlertBook:
 
     async def _write_values(self, now: datetime) -> None:
         """The newest and the worst value of each firing alert, at most once a minute. Not audited: no transition."""
+        async with self._writing:
+            await self._write_values_held(now)
+
+    async def _write_values_held(self, now: datetime) -> None:
         firing = {alert.alert_id: alert for alert in self.engine.firing()}
         self._written = {alert_id: written for alert_id, written in self._written.items() if alert_id in firing}
         for alert_id, (last_value, peak_value, at) in list(self._written.items()):
