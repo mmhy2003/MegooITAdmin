@@ -9,19 +9,24 @@ Backend to browser:
         a source is its key. denied keeps the asked order.
     {"type":"lines","source":id,"lines":[...],"backlog":true} once per source, then the same without backlog.
     {"type":"skipped","source":id,"count":n} where the worker's cap dropped lines.
-    {"type":"ended","source":id,"reason":...} (+ "status" for exited): the source is closed for this socket.
+    {"type":"ended","source":id,"reason":...} (+ "status" for exited): the source is closed for this socket. Besides
+        the worker's reasons: "idle" when the person did nothing in the log view for LOG_STREAM_IDLE_MINUTES (every
+        source ends, the socket stays open), and "not_found", "forbidden" or "not_allowed" when the recheck finds the
+        server gone or hidden, View logs lost, or the file's pattern removed.
     {"type":"error","detail":"invalid_message"} for a message that is neither. The socket stays open.
 Close codes:
-    4401 not signed in; 1013 the browser reads too slowly (a queue of 1,000 messages is full); 1011 Valkey cannot be
-    reached, or an audit event cannot be recorded. A foreign Origin is refused with 403.
+    4401 not signed in, at the handshake or at a recheck every 30 seconds; 1013 the browser reads too slowly (a
+    queue of 1,000 messages is full); 1011 Valkey cannot be reached, or an audit event cannot be recorded. A foreign
+    Origin is refused with 403.
 
 The socket asks the worker on REQUESTS and gets its answer on its own viewer channel. It subscribes to a source's
 channel, and waits for Valkey's confirmation, before it asks: the lines that arrive before the answer are held, and
 after the answer's backlog only those with a higher seq are sent, so the browser sees no gap and no line twice.
 
 Per socket: one Valkey subscription and a bounded queue, and tasks in one TaskGroup: the reader (client messages),
-the pump (Valkey to the queue) and the sender (the queue to the browser). When one ends, the others are cancelled
-and the socket closes. Each subscribe opens a short database session.
+the pump (Valkey to the queue), the sender (the queue to the browser), the recheck and the watch (idle). When one
+ends, the others are cancelled and the socket closes; its remaining sources are recorded closed with "signed_out"
+after 4401 and "left" otherwise. Each subscribe and recheck opens a short database session.
 """
 
 import asyncio
@@ -45,7 +50,7 @@ from app.access.permissions import Permission
 from app.access.servers import record_hidden
 from app.audit import Event, Result, Target, record_alone, source_of
 from app.auth.service import actor_of
-from app.auth.socket import SocketSession, signed_in_socket
+from app.auth.socket import NOT_SIGNED_IN_CLOSE, SocketSession, recheck, signed_in_socket
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.core.valkey import valkey_client
@@ -180,6 +185,9 @@ class _Socket:
     run_id: str | None = None
     last_active: float = field(default_factory=time.monotonic)
     last_alive: float = field(default_factory=time.monotonic)
+    # The logs.stream_closed events of sources already removed, until they are recorded: a socket that closes while
+    # one is being recorded records the rest when it closes.
+    unrecorded: list[Event] = field(default_factory=list)
     # A subscribe reads and replaces the open sources while the pump runs.
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -239,20 +247,31 @@ def _described(opens: list[_Open]) -> list[dict]:
     return [describe(open_.source) for open_ in sorted(opens, key=lambda open_: open_.key)]
 
 
-async def stream_closed(socket: _Socket, opens: Iterable[_Open], reason: str, duration: float | None = None) -> None:
-    """One logs.stream_closed per server for these sources closing together."""
+def stream_closed(socket: _Socket, opens: Iterable[_Open], reason: str, duration: int | None = None) -> list[Event]:
+    """One logs.stream_closed per server for these sources closing together, kept in socket.unrecorded. Call it with
+    no await since the sources left socket.opens, so that no closing source goes unrecorded."""
     now = time.monotonic()
+    events = []
     for together in _by_server(opens).values():
         first = together[0]
-        seconds = duration if duration is not None else round(now - min(o.opened_at for o in together), 1)
+        # Whole seconds: an audit event holds no floats.
+        seconds = duration if duration is not None else round(now - min(o.opened_at for o in together))
         detail = {"sources": _described(together), "duration_seconds": seconds, "reason": reason}
-        await _record(_event(socket, LOGS_STREAM_CLOSED, (first.server_id, first.server_name, first.group_id), detail))
+        events.append(_event(socket, LOGS_STREAM_CLOSED, (first.server_id, first.server_name, first.group_id), detail))
+    socket.unrecorded.extend(events)
+    return events
 
 
-async def _close_opens(socket: _Socket, opens: list[_Open], reason: str, duration: float | None = None) -> None:
-    """Unsubscribes these sources, already removed from the socket, and records them closed."""
+async def _record_closed(socket: _Socket, events: list[Event]) -> None:
+    for event in events:
+        await _record(event)
+        socket.unrecorded = [other for other in socket.unrecorded if other is not event]
+
+
+async def _close_opens(socket: _Socket, opens: list[_Open], events: list[Event]) -> None:
+    """Unsubscribes these sources, already removed from the socket, and records their stream_closed events."""
     await socket.channels.unsubscribe(source_channel(open_.key) for open_ in opens)
-    await stream_closed(socket, opens, reason, duration)
+    await _record_closed(socket, events)
 
 
 async def _end(socket: _Socket, key: str, reason: str, status: int | None = None) -> None:
@@ -260,11 +279,22 @@ async def _end(socket: _Socket, key: str, reason: str, status: int | None = None
     open_ = socket.opens.pop(key, None)
     if open_ is None:
         return
+    events = stream_closed(socket, [open_], reason)
     message = {"type": "ended", "source": key, "reason": reason}
     if status is not None:
         message["status"] = status
     socket.enqueue(message)
-    await _close_opens(socket, [open_], reason)
+    await _close_opens(socket, [open_], events)
+
+
+async def _end_together(socket: _Socket, keys: Iterable[str], reason: str) -> None:
+    """Tells the browser that these sources ended and closes them, one stream_closed per server."""
+    opens = [socket.opens.pop(key) for key in list(keys) if key in socket.opens]
+    events = stream_closed(socket, opens, reason)
+    for open_ in opens:
+        socket.enqueue({"type": "ended", "source": open_.key, "reason": reason})
+    if opens:
+        await _close_opens(socket, opens, events)
 
 
 def _translate(socket: _Socket, open_: _Open, message: Lines | Skipped | Ended) -> Ended | None:
@@ -354,7 +384,7 @@ async def _subscribe(socket: _Socket, asked: SubscribeIn) -> None:
         wanted = {source_key(source): source for source in asked.sources}
         left = [socket.opens.pop(key) for key in list(socket.opens) if key not in wanted]
         if left:
-            await _close_opens(socket, left, "left")
+            await _close_opens(socket, left, stream_closed(socket, left, "left"))
         accepted, denied = await _check(socket, {k: s for k, s in wanted.items() if k not in socket.opens})
 
         # Recorded before anything is asked of the worker: if it cannot be recorded, nothing opens.
@@ -375,7 +405,7 @@ async def _subscribe(socket: _Socket, asked: SubscribeIn) -> None:
             await asyncio.wait(asked_worker, timeout=OPEN_TIMEOUT)
 
         answered: list[tuple[_Open, Opened]] = []
-        refused: list[_Open] = []
+        refused: list[tuple[_Open, list[Event]]] = []
         for open_ in accepted:
             if socket.opens.get(open_.key) is not open_ or not open_.reply.done():
                 continue
@@ -383,12 +413,11 @@ async def _subscribe(socket: _Socket, asked: SubscribeIn) -> None:
             if isinstance(reply, Refused):
                 del socket.opens[open_.key]
                 denied[open_.key] = reply.reason
-                refused.append(open_)
+                refused.append((open_, stream_closed(socket, [open_], reply.reason, duration=0)))
             else:
                 answered.append((open_, reply))
-        for open_ in refused:
-            await socket.channels.unsubscribe([source_channel(open_.key)])
-            await stream_closed(socket, [open_], denied[open_.key], duration=0)
+        for open_, events in refused:
+            await _close_opens(socket, [open_], events)
 
         socket.enqueue(
             {
@@ -479,12 +508,64 @@ async def _sender(socket: _Socket) -> None:
             raise _Closed() from None
 
 
+def _lost(
+    socket: _Socket, servers: dict[uuid.UUID, uuid.UUID], patterns: dict[uuid.UUID, list[str]]
+) -> dict[str, str]:
+    """The open sources the person may no longer read, with the reason of each. servers maps an existing server to
+    its group."""
+    access = socket.signed.access
+    lost: dict[str, str] = {}
+    for key, open_ in socket.opens.items():
+        group_id = servers.get(open_.server_id)
+        if group_id is None or not access.sees(group_id):
+            lost[key] = "not_found"
+        elif not access.allows(Permission.VIEW_LOGS, group_id):
+            lost[key] = "forbidden"
+        elif isinstance(open_.source, FileSource) and not matches(open_.source.path, patterns.get(group_id, [])):
+            lost[key] = "not_allowed"
+        else:
+            open_.group_id = group_id
+    return lost
+
+
+async def _recheck(socket: _Socket) -> None:
+    while True:
+        await asyncio.sleep(RECHECK_EVERY)
+        fresh = await recheck(socket.signed)
+        if fresh is None:
+            raise _Closed(NOT_SIGNED_IN_CLOSE)
+        async with socket.lock:
+            socket.signed = fresh
+            if not socket.opens:
+                continue
+            server_ids = {open_.server_id for open_ in socket.opens.values()}
+            async with SessionLocal() as db:
+                query = select(Server.id, Server.server_group_id).where(Server.id.in_(server_ids))
+                servers = {id_: group_id for id_, group_id in await db.execute(query)}
+                groups = {servers[o.server_id] for o in socket.opens.values()
+                          if isinstance(o.source, FileSource) and o.server_id in servers}
+                patterns = await patterns_of(db, groups) if groups else {}
+            lost = _lost(socket, servers, patterns)
+            for reason in sorted(set(lost.values())):
+                await _end_together(socket, [key for key, why in lost.items() if why == reason], reason)
+
+
+async def _watch(socket: _Socket) -> None:
+    while True:
+        await asyncio.sleep(WATCH_EVERY)
+        if not socket.opens:
+            continue
+        async with socket.lock:
+            if socket.opens and time.monotonic() - socket.last_active >= idle_after():
+                await _end_together(socket, socket.opens, "idle")
+
+
 async def _serve(socket: _Socket) -> int | None:
     """Runs the socket's tasks until one ends it, and returns the close code to send."""
     code = None
     try:
         async with asyncio.TaskGroup() as group:
-            for task in (_reader, _pump, _sender):
+            for task in (_reader, _pump, _sender, _recheck, _watch):
                 group.create_task(task(socket))
     except* _Closed as closed:
         code = closed.exceptions[0].code
@@ -521,8 +602,17 @@ async def logs_socket(websocket: WebSocket, signed: SocketSession) -> None:
         except (ValkeyError, OSError, TimeoutError) as error:
             logger.warning("Closed a logs socket, Valkey cannot be reached: %s", error)
             code = VALKEY_CLOSE
+            socket = None
         else:
-            channels = _Channels(pubsub)
-            code = await _serve(_Socket(websocket, signed, client, channels, asyncio.Queue(QUEUE_LIMIT), socket_id))
+            socket = _Socket(websocket, signed, client, _Channels(pubsub), asyncio.Queue(QUEUE_LIMIT), socket_id)
+            code = await _serve(socket)
         if code is not None:
             await _close(websocket, code)
+        if socket is not None:
+            # The pubsub closes with the socket, so the remaining sources are only recorded closed.
+            reason = "signed_out" if code == NOT_SIGNED_IN_CLOSE else "left"
+            stream_closed(socket, list(socket.opens.values()), reason)
+            try:
+                await _record_closed(socket, list(socket.unrecorded))
+            except _Closed:  # logged by _record; the socket is closed already
+                pass
