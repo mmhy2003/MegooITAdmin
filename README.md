@@ -53,6 +53,8 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 - `make upgrade` pulls every image of the stack, Caddy and the database included, and restarts what changed.
   It also pulls the Valkey image and creates its `valkey_data` volume the first time, and starts the collector,
   so nobody has to act.
+- It also adds `POSTGRES_LOGS_PASSWORD` to `.env` when it is missing and starts the `logs` service, so nobody has
+  to act. Run one `logs` service.
 - To stay on a release, set `MEGOOITADMIN_VERSION=0.1.0` in `.env`. `make upgrade` then pulls that version until
   the line changes.
 - Each release note's "Upgrading" says what else the release needs.
@@ -69,8 +71,8 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 - The Owner invites a person on Settings → Users and gets a one-time link. The app emails only alerts (see
   [Alerts](#alerts)), not invitations: pass the link on by hand. It is valid 7 days. The person opens it, chooses a password and sets up an authenticator.
 - Roles are given per server group (Settings → Server groups). A person is Admin or Operator on each group, or
-  has no access to it, and each group's role carries seven switches. Only Connect SSH and Connect RDP are checked
-  so far; the other five are kept for the features that use them.
+  has no access to it, and each group's role carries seven switches. Connect SSH, View processes and View logs
+  are checked so far; the other four are kept for the features that use them.
 - Auditor and Owner are platform-wide and cover every group. Everyone sees their own access on Profile and
   security.
 - An account is disabled, never deleted: its sessions end and it can be enabled again. Every change to a person,
@@ -179,3 +181,25 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   means typing them again.
 - A webhook URL must be `https://`. `WEBHOOK_ALLOW_HTTP=true` in `.env` also allows `http://`: set it on test
   stacks only (the dev, e2e and stack-test stacks do).
+
+### Live logs
+
+- People with View logs in a server's group follow its logs live, and so does the Owner. Auditors never do. The
+  WebSocket `/api/ws/logs` serves them; its page comes later.
+- A Linux server has three kinds of source: its journal (optionally one unit, a priority and worse, and this boot
+  only), one file that the group's allowlist allows, and one Docker container.
+- Each server group has its own file allowlist. The upgrade gives every group, and a new group, four starter
+  patterns: `/var/log/syslog`, `/var/log/messages`, `/var/log/nginx/*.log` and `/var/log/apache2/*.log`. The Owner
+  and the group's Admins change them through `/api/server-groups/{id}/log-allowlist`. A wildcard stays inside one
+  path segment, so `/var/log/*.log` does not reach `/var/log/nginx/access.log`. A group has at most 50 patterns.
+- A viewer first gets the last 200 lines, then the new ones. The `logs` worker opens one SSH channel per source,
+  shared by everyone who watches it, and closes it a few seconds after the last viewer leaves.
+- A source sends at most `LOG_STREAM_MAX_LINES_PER_SECOND` lines a second (2000 by default). The lines above it are
+  dropped, and the viewer is told how many were skipped.
+- Sources end after `LOG_STREAM_IDLE_MINUTES` (30 by default) without activity in the log view. Reading lines does
+  not count as activity.
+- Log lines are never stored. The audit log records each opened stream (`logs.stream_opened`: the person, the
+  server and the sources) and its end (`logs.stream_closed`), and every allowlist change
+  (`log_allowlist.pattern_added`, `log_allowlist.pattern_removed`).
+- Run one `logs` service: a second one would open every source twice. See
+  [What the logs worker runs](docs/server-setup.md#what-the-logs-worker-runs).

@@ -139,6 +139,27 @@ and every command is bounded with `timeout`.
   "Could not be checked" while the metrics still work. Leave `MaxSessions` at its default (10), or at least 2.
 - The checks also appear in `ps -u megoo -o pid,args`, as `sh -s`.
 
+## What the logs worker runs
+
+While someone watches a server's logs, the `logs` worker signs in as the login account and runs one command per
+source, each on a channel of its own. Every command runs under a fixed `sh -c` wrapper named `megoo-follow`, which
+ends the command when its channel closes, so nothing stays on the server, not even a quiet `tail -F`. Nothing is
+installed and no file is written.
+
+| Source | What it runs |
+|---|---|
+| Journal | `journalctl --no-pager -f -o json --output-fields=MESSAGE,PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER -n 200`, plus `-u <unit>`, `-p <n>` (0 emerg to 7 debug) and `-b` when the viewer filters by unit, priority or this boot. |
+| File | `sh -c 'test -f "$1" && test -r "$1" \|\| exit 66; exec tail -n 200 -F -- "$1"' megoo-file <path>`: a read check, then `tail -n 200 -F -- <path>`. |
+| Container | `sudo -n /usr/local/sbin/megoo-ctl docker logs <id> --follow --tail 200` |
+
+- The journal needs `megoo` in `systemd-journal` and systemd 236 or later, for `--output-fields`.
+- A file needs `megoo` in `adm`, or a file it may read. A file it cannot read ends with "not_readable".
+- Containers use `megoo-ctl docker logs`. `megoo-ctl` stays at version 1, so no server needs the setup script again.
+- A server runs at most 8 sources, over one connection that closes with its last source. Each source is a channel,
+  so leave `MaxSessions` in `sshd_config` at its default (10). With `MaxSessions 1` a second source ends with
+  "ssh_error".
+- To see them on the server: `ps -u megoo -o pid,args`.
+
 ## Run it again
 
 Run the script again, with the same `--from` and `--key`:
