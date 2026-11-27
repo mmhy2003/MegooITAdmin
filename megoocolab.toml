@@ -8,6 +8,7 @@ DB_NAME = "megooitadmin_test"
 TEST_DATABASE_URL = "postgresql+asyncpg://megooitadmin_api:megooitadminapi@localhost:${DB_PORT}/megooitadmin_test"
 TEST_DATABASE_OWNER_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin_test"
 TEST_DATABASE_COLLECTOR_URL = "postgresql+asyncpg://megooitadmin_collector:megooitadmincollector@localhost:${DB_PORT}/megooitadmin_test"
+TEST_DATABASE_LOGS_URL = "postgresql+asyncpg://megooitadmin_logs:megooitadminlogs@localhost:${DB_PORT}/megooitadmin_test"
 TEST_VALKEY_URL = "valkey://localhost:${VALKEY_PORT}/0"
 
 [services.migrate]

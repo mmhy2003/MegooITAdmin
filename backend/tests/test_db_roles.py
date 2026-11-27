@@ -1,5 +1,6 @@
-"""The password step: `python -m app.core.db_roles` gives the API role LOGIN and the password of DATABASE_URL, and the
-collector role LOGIN and the password of DATABASE_COLLECTOR_URL."""
+"""The password step: `python -m app.core.db_roles` gives the API role LOGIN and the password of DATABASE_URL, the
+collector role LOGIN and the password of DATABASE_COLLECTOR_URL, and the logs role LOGIN and the password of
+DATABASE_LOGS_URL."""
 
 import asyncio
 import os
@@ -19,9 +20,11 @@ from app.core.config import Settings
 from app.core.db_roles import (
     API_ROLE,
     COLLECTOR_ROLE,
+    LOGS_ROLE,
     ApiRoleError,
     sync_api_role_password,
     sync_collector_role_password,
+    sync_logs_role_password,
 )
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -29,6 +32,8 @@ BACKEND = Path(__file__).resolve().parents[1]
 PASSWORD = "megooitadminapi"
 # The collector role's password in the same set.
 COLLECTOR_PASSWORD = "megooitadmincollector"
+# The logs role's password in the same set.
+LOGS_PASSWORD = "megooitadminlogs"
 
 
 def _url(user: str, password: str) -> str:
@@ -37,20 +42,26 @@ def _url(user: str, password: str) -> str:
     )
 
 
-def _settings(database_url: str, database_collector_url: str | None = None) -> Settings:
+def _settings(
+    database_url: str, database_collector_url: str | None = None, database_logs_url: str | None = None
+) -> Settings:
     return Settings(
         database_url=database_url,
         database_owner_url=os.environ["DATABASE_OWNER_URL"],
         database_collector_url=database_collector_url,
+        database_logs_url=database_logs_url,
     )
 
 
 @pytest.fixture(autouse=True)
 def restored_password(database_at_head):
     yield
-    settings = _settings(_url(API_ROLE, PASSWORD), _url(COLLECTOR_ROLE, COLLECTOR_PASSWORD))
+    settings = _settings(
+        _url(API_ROLE, PASSWORD), _url(COLLECTOR_ROLE, COLLECTOR_PASSWORD), _url(LOGS_ROLE, LOGS_PASSWORD)
+    )
     sync_api_role_password(settings)
     sync_collector_role_password(settings)
+    sync_logs_role_password(settings)
 
 
 def _login(password: str, role: str = API_ROLE) -> str:
@@ -148,3 +159,27 @@ def test_without_the_collector_url_the_step_says_so_and_exits_0():
     )
     assert result.returncode == 0, result.stderr
     assert "DATABASE_COLLECTOR_URL is not set" in result.stdout
+
+
+def test_the_logs_role_gets_login_and_its_password():
+    settings = _settings(_url(API_ROLE, PASSWORD), database_logs_url=_url(LOGS_ROLE, "changedlogspassword"))
+    assert sync_logs_role_password(settings) is True
+    assert _login("changedlogspassword", role=LOGS_ROLE) == LOGS_ROLE
+
+
+def test_a_logs_url_with_another_user_is_refused():
+    settings = _settings(_url(API_ROLE, PASSWORD), database_logs_url=os.environ["DATABASE_OWNER_URL"])
+    with pytest.raises(ApiRoleError, match="DATABASE_LOGS_URL must connect as megooitadmin_logs"):
+        sync_logs_role_password(settings)
+
+
+def test_without_the_logs_url_the_step_says_so_and_exits_0():
+    env = {name: value for name, value in os.environ.items() if name != "DATABASE_LOGS_URL"}
+    result = subprocess.run(
+        [sys.executable, "-m", "app.core.db_roles"], cwd=BACKEND, env=env, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        "DATABASE_LOGS_URL is not set: megooitadmin_logs keeps no login, so the logs worker cannot sign in."
+        in result.stdout
+    )

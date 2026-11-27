@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     db_null_pool: bool = False
     # The collector role's URL, for the entrypoint's password step only (DATABASE_COLLECTOR_URL). The API never gets it.
     database_collector_url: str | None = None
+    # The logs role's URL, for the entrypoint's password step only (DATABASE_LOGS_URL). The API never gets it.
+    database_logs_url: str | None = None
     # Touched by the collector after each read of servers; its healthcheck reads its age.
     collector_heartbeat_file: str = "/tmp/megooitadmin-collector.heartbeat"
     # It encrypts the authenticator secrets, so a lost key locks every account out of its second factor. The API
