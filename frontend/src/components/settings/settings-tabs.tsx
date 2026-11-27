@@ -7,6 +7,8 @@ import { cn } from "@/lib/utils";
 const TABS = [
   { href: "/settings/users", label: "Users" },
   { href: "/settings/groups", label: "Server groups" },
+  { href: "/settings/alert-rules", label: "Alert rules" },
+  { href: "/settings/notifications", label: "Notifications" },
 ];
 
 /** The tabs of Settings: links to its pages, the current one marked. */
