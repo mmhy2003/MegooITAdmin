@@ -11,3 +11,7 @@ services:
     # The image the backend service builds: never pulled.
     image: megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}
     pull_policy: never
+  logs:
+    # The same image again.
+    image: megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}
+    pull_policy: never

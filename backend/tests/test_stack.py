@@ -33,6 +33,7 @@ NETWORKS = {
     "frontend": {"edge"},
     "backend": {"edge", "core", "servers"},
     "collector": {"core", "servers"},
+    "logs": {"core", "servers"},
     "db": {"core", "exec"},
     "valkey": {"core"},
 }
@@ -148,7 +149,7 @@ def test_caddy_passes_the_upstream_proxys_forwarded_proto_on():
     assert response.headers["location"].startswith("https://")
 
 
-def test_the_stack_has_exactly_its_six_services():
+def test_the_stack_has_exactly_its_seven_services():
     assert set(_model()["services"]) == set(NETWORKS)
 
 
@@ -169,13 +170,13 @@ def test_core_exec_and_sandbox_are_internal_and_edge_and_servers_are_not():
     assert {name for name, network in networks.items() if network.get("internal")} == {"core", "exec", "sandbox"}
 
 
-def test_the_backend_mounts_the_ssh_key_volume_and_the_collector_reads_it():
+def test_the_backend_mounts_the_ssh_key_volume_and_the_collector_and_the_logs_worker_read_it():
     services = _model()["services"]
-    for name, read_only in (("backend", False), ("collector", True)):
+    for name, read_only in (("backend", False), ("collector", True), ("logs", True)):
         volumes = services[name]["volumes"]
         assert [(v["type"], v["source"], v["target"]) for v in volumes] == [("volume", "ssh_key", "/var/lib/megooitadmin/ssh")], name
         assert volumes[0].get("read_only", False) is read_only, name
-    mounting = {"backend", "collector"}
+    mounting = {"backend", "collector", "logs"}
     others = {name for name, service in services.items() if name not in mounting and any(v["source"] == "ssh_key" for v in service.get("volumes", []))}
     assert others == set()
     assert "ssh_key" in _model()["volumes"]
@@ -193,15 +194,17 @@ def test_docker_compose_yml_pulls_the_two_release_images_and_builds_nothing():
     services = _written(COMPOSE_FILE)
     for name in ("backend", "frontend"):
         assert services[name]["image"] == f"{GHCR}{name}:${{MEGOOITADMIN_VERSION:-latest}}"
-    assert services["collector"]["image"] == f"{GHCR}backend:${{MEGOOITADMIN_VERSION:-latest}}"
+    for name in ("collector", "logs"):
+        assert services[name]["image"] == f"{GHCR}backend:${{MEGOOITADMIN_VERSION:-latest}}", name
     assert {name for name, service in services.items() if "build" in service} == set()
 
 
 def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
     services = _written(BUILD_FILE)
-    assert set(services) == {"backend", "frontend", "collector"}
-    # The collector runs the image the backend service builds, and never pulls it.
-    assert services.pop("collector") == {"image": "megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}", "pull_policy": "never"}
+    assert set(services) == {"backend", "frontend", "collector", "logs"}
+    # The collector and the logs worker run the image the backend service builds, and never pull it.
+    for name in ("collector", "logs"):
+        assert services.pop(name) == {"image": "megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}", "pull_policy": "never"}, name
     for name, service in services.items():
         assert service["build"] == f"./{name}"
         assert service["image"] == f"megooitadmin-{name}:${{MEGOOITADMIN_VERSION:-dev}}"
@@ -210,7 +213,7 @@ def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
 
 def test_the_stack_runs_the_images_it_built_under_its_own_tag():
     project = _env("MEGOO_SERVICES_PROJECT")
-    for name, image in (("backend", "backend"), ("frontend", "frontend"), ("collector", "backend")):
+    for name, image in (("backend", "backend"), ("frontend", "frontend"), ("collector", "backend"), ("logs", "backend")):
         container = _compose("ps", "-q", name).stdout.strip()
         inspected = subprocess.run(
             ["docker", "inspect", "--format", "{{.Config.Image}}", container], capture_output=True, text=True, timeout=30
@@ -238,6 +241,22 @@ def test_the_collector_runs_the_backends_image_as_its_own_role():
     assert collector["healthcheck"]["test"] == ["CMD", "python", "-m", "app.collector.health"]
 
 
+def test_the_logs_worker_runs_the_backends_image_as_its_own_role():
+    logs = _model()["services"]["logs"]
+    assert logs["entrypoint"] == ["python", "-m", "app.logs.worker"]
+    # Names and booleans only, so a failure never prints a password.
+    for variables in (logs["environment"], _environ_of("logs")):
+        assert variables.get("DATABASE_URL", "").startswith("postgresql+asyncpg://megooitadmin_logs:") is True
+        assert variables.get("VALKEY_URL") == "valkey://valkey:6379/0"
+        assert variables.get("LOG_STREAM_MAX_LINES_PER_SECOND") == "2000"
+        assert not set(variables) & {"AUTH_SECRET_KEY", "DATABASE_OWNER_URL", "DATABASE_COLLECTOR_URL", "DATABASE_LOGS_URL"}
+    assert {name: d["condition"] for name, d in logs["depends_on"].items()} == {
+        "backend": "service_healthy",
+        "valkey": "service_healthy",
+    }
+    assert logs["healthcheck"]["test"] == ["CMD", "python", "-m", "app.logs.worker.health"]
+
+
 def test_the_backend_waits_for_a_healthy_database():
     assert _model()["services"]["backend"]["depends_on"]["db"]["condition"] == "service_healthy"
 
@@ -246,6 +265,10 @@ def test_the_backend_waits_for_a_healthy_valkey_and_has_its_url():
     backend = _model()["services"]["backend"]
     assert backend["depends_on"]["valkey"]["condition"] == "service_healthy"
     assert backend["environment"]["VALKEY_URL"] == "valkey://valkey:6379/0"
+
+
+def test_the_backend_has_the_log_streams_idle_minutes():
+    assert _model()["services"]["backend"]["environment"]["LOG_STREAM_IDLE_MINUTES"] == "30"
 
 
 def test_valkey_keeps_an_append_only_file_in_valkey_data():
@@ -312,6 +335,7 @@ def _resolves(service: str, host: str) -> bool:
         "frontend": ["node", "-e", f"require('dns').lookup('{host}', (error) => process.exit(error ? 1 : 0))"],
         "backend": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
         "collector": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
+        "logs": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
     }
     return _compose("exec", "-T", service, *commands[service]).returncode == 0
 
@@ -331,9 +355,12 @@ def _resolves(service: str, host: str) -> bool:
         ("collector", "db", True),
         ("collector", "valkey", True),
         ("frontend", "collector", False),
+        ("logs", "db", True),
+        ("logs", "valkey", True),
+        ("frontend", "logs", False),
     ],
 )
-def test_only_the_backend_and_the_collector_can_find_the_database_and_valkey(service, host, expected):
+def test_only_the_backend_and_the_workers_can_find_the_database_and_valkey(service, host, expected):
     assert _resolves(service, host) is expected
 
 
@@ -391,6 +418,20 @@ def test_the_backend_sets_the_collector_password_and_does_not_hold_it():
     assert login.returncode == 0, login.stderr
     assert login.stdout.strip() == "megooitadmin_collector"
     assert "DATABASE_COLLECTOR_URL" not in _environ_of("backend")
+
+
+def _psql_as_logs_role(sql: str) -> subprocess.CompletedProcess[str]:
+    return _compose(
+        "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_LOGS_PASSWORD')}", "db",
+        "psql", "-h", "127.0.0.1", "-U", "megooitadmin_logs", "-d", "megooitadmin", "-tAc", sql,
+    )
+
+
+def test_the_backend_sets_the_logs_password_and_does_not_hold_it():
+    login = _psql_as_logs_role("SELECT current_user")
+    assert login.returncode == 0, login.stderr
+    assert login.stdout.strip() == "megooitadmin_logs"
+    assert "DATABASE_LOGS_URL" not in _environ_of("backend")
 
 
 def test_the_api_role_can_read_metrics_1m():

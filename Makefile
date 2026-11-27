@@ -47,17 +47,18 @@ help:
 	@echo ""
 	@echo "Without STACK, up, upgrade, down, logs, migrate, shell-backend, setup-code, reset-mfa, reset-password and ssh-public-key act on the real instance."
 
-# Only the real instance reads .env. A missing file is created with the three passwords and AUTH_SECRET_KEY. A file
-# without POSTGRES_API_PASSWORD, AUTH_SECRET_KEY or POSTGRES_COLLECTOR_PASSWORD gets the missing line appended. No
-# line is ever changed or removed.
+# Only the real instance reads .env. A missing file is created with the four passwords and AUTH_SECRET_KEY. A file
+# without POSTGRES_API_PASSWORD, AUTH_SECRET_KEY, POSTGRES_COLLECTOR_PASSWORD or POSTGRES_LOGS_PASSWORD gets the
+# missing line appended. No line is ever changed or removed.
 .env:
 	@if [ ! -e .env ]; then \
 		pw=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); api=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
 		key=$$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); col=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
-		if ! printf '%s%s%s%s' "$$pw" "$$api" "$$key" "$$col" | grep -Eqx '[0-9a-f]{160}'; then \
+		logs=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
+		if ! printf '%s%s%s%s%s' "$$pw" "$$api" "$$key" "$$col" "$$logs" | grep -Eqx '[0-9a-f]{192}'; then \
 			echo "Could not read a random password from /dev/urandom: .env was not written." >&2; exit 1; \
 		fi; \
-		(umask 077; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_API_PASSWORD=%s\nPOSTGRES_COLLECTOR_PASSWORD=%s\nAUTH_SECRET_KEY=%s\n' "$$pw" "$$api" "$$col" "$$key" > .env); \
+		(umask 077; printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_API_PASSWORD=%s\nPOSTGRES_COLLECTOR_PASSWORD=%s\nPOSTGRES_LOGS_PASSWORD=%s\nAUTH_SECRET_KEY=%s\n' "$$pw" "$$api" "$$col" "$$logs" "$$key" > .env); \
 		echo "Created .env with new database passwords and the key that encrypts the authenticator secrets. Keep this file: the database keeps the owner's password it was first started with."; \
 	else \
 		if ! grep -q '^POSTGRES_API_PASSWORD=' .env; then \
@@ -86,6 +87,15 @@ help:
 			if [ -s .env ] && [ -n "$$(tail -c 1 .env)" ]; then echo >> .env; fi; \
 			printf 'POSTGRES_COLLECTOR_PASSWORD=%s\n' "$$col" >> .env; \
 			echo "Added POSTGRES_COLLECTOR_PASSWORD to .env: the collector writes samples as the restricted role megooitadmin_collector."; \
+		fi; \
+		if ! grep -q '^POSTGRES_LOGS_PASSWORD=' .env; then \
+			logs=$$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n'); \
+			if ! printf '%s' "$$logs" | grep -Eqx '[0-9a-f]{32}'; then \
+				echo "Could not read a random password from /dev/urandom: .env was not changed." >&2; exit 1; \
+			fi; \
+			if [ -s .env ] && [ -n "$$(tail -c 1 .env)" ]; then echo >> .env; fi; \
+			printf 'POSTGRES_LOGS_PASSWORD=%s\n' "$$logs" >> .env; \
+			echo "Added POSTGRES_LOGS_PASSWORD to .env: the logs worker reads servers as the restricted role megooitadmin_logs."; \
 		fi; \
 	fi
 
