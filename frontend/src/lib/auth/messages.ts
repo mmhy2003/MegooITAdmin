@@ -31,11 +31,40 @@ const MESSAGES: Record<string, string> = {
   host_key_changed: "The server's host key has changed. Review it before connecting.",
   not_an_ssh_server: "Only Linux servers connect over SSH.",
   reason_required: "Say why you accept the new key.",
+  rule_name_taken: "An alert rule with this name exists already.",
+  unknown_server: "A server was removed meanwhile. The list has been reloaded.",
+  bad_threshold: "The limit does not fit this measure.",
+  bad_scope: "Choose all servers, one server group or one server.",
+  channel_name_taken: "A channel with this name exists already.",
+  too_many_channels: "There are as many channels as allowed. Delete one first.",
+  webhook_url_https: "The address must start with https://.",
+  bad_url: "This is not a web address.",
+  bad_telegram_token: "This is not a Telegram bot token.",
+  bad_chat_id: "This is not a Telegram chat ID.",
+  email_not_set_up: "Set up email first.",
 };
 
 /** The text shown for an `ApiError` detail. */
 export function messageFor(detail: string): string {
   return Object.hasOwn(MESSAGES, detail) ? MESSAGES[detail] : "Something went wrong. Try again.";
+}
+
+/** Why a delivery or a channel test failed. Apart from MESSAGES: `undecryptable` means another thing there. */
+export const DELIVERY_ERRORS: Record<string, string> = {
+  connection_failed: "The connection failed.",
+  timeout: "The other side did not answer in time.",
+  tls_failed: "The secure connection failed.",
+  auth_failed: "The mail server refused the user name or the password.",
+  recipients_refused: "The mail server refused the recipients.",
+  smtp_failed: "The mail server refused the message.",
+  http_status: "The address answered with an error.",
+  redirect_refused: "The address answered with a redirect, which is not followed.",
+  undecryptable: "The saved secret cannot be read any more. Enter it again.",
+};
+
+/** The text for the `error` of a delivery or a test result. */
+export function deliveryErrorText(code: string | null): string {
+  return code !== null && Object.hasOwn(DELIVERY_ERRORS, code) ? DELIVERY_ERRORS[code] : "The message could not be sent.";
 }
 
 export const CONNECTION_REASONS: Record<ConnectionReason, { title: string; advice: string }> = {
