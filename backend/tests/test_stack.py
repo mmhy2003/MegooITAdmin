@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from functools import cache
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pyotp
@@ -808,6 +808,80 @@ def test_ten_servers_stream_live_through_caddy(owner):
         with pytest.raises(ConnectionClosed) as closed:
             socket.recv(timeout=10)
     assert closed.value.rcvd.code == 4401
+
+
+def _logs_socket_url() -> str:
+    return _env("STACK_URL").replace("http", "ws", 1) + "/api/ws/logs"
+
+
+def _tails_on_fake_server() -> int:
+    """How many tail -F run on the fake server. pgrep -c prints 0 (and exits 1) when none does."""
+    return int(_compose_with_fake_server("exec", "-T", "fake-server", "pgrep", "-c", "-f", "^tail .*-F").stdout.strip())
+
+
+APPEND = 'mkdir -p "$(dirname "$1")" && p=$1 && shift && printf "%s\\n" "$@" >> "$p"'
+
+
+def _append_on_fake_server(path: str, *lines: str) -> None:
+    written = _compose_with_fake_server("exec", "-T", "fake-server", "sh", "-c", APPEND, "sh", path, *lines)
+    assert written.returncode == 0, written.stderr
+
+
+def _lines_from(socket, count: int, timeout: float = 30) -> list[tuple[int, str]]:
+    """(seq, text) of the next count lines the logs socket sends, which sends nothing else meanwhile."""
+    received: list[tuple[int, str]] = []
+    deadline = time.monotonic() + timeout
+    while len(received) < count:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            pytest.fail(f"Not within {timeout:.0f} s: {count} lines, got {received}")
+        message = json.loads(socket.recv(timeout=left))
+        assert message["type"] == "lines", message
+        received += [(line["seq"], line["text"]) for line in message["lines"]]
+    return received
+
+
+def test_two_sockets_through_caddy_share_one_follower_of_a_file(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    # A new group gets the four starter patterns, /var/log/nginx/*.log among them.
+    group = owner.post("/api/server-groups", json={"name": "logs-stack"}).json()["id"]
+    server = {"name": "fake-server-logs", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+    server_id = owner.post("/api/servers", json=server).json()["id"]
+    fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+    assert fetched["ok"], fetched
+    assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
+
+    path = f"/var/log/nginx/stack-{uuid4().hex[:8]}.log"
+    _append_on_fake_server(path, "one", "two", "three")
+
+    origin = Origin(_env("STACK_URL"))
+    cookie = {"Cookie": f"megoo_session={owner.cookies.get('megoo_session')}"}
+    subscribe = {"type": "subscribe", "sources": [{"kind": "file", "server_id": server_id, "path": path}]}
+    with (
+        connect(_logs_socket_url(), origin=origin, additional_headers=cookie, open_timeout=10) as first,
+        connect(_logs_socket_url(), origin=origin, additional_headers=cookie, open_timeout=10) as second,
+    ):
+        for socket in (first, second):
+            socket.send(json.dumps(subscribe))
+            subscribed = json.loads(socket.recv(timeout=30))
+            assert (subscribed["type"], len(subscribed["sources"]), subscribed["denied"]) == ("subscribed", 1, []), subscribed
+            backlog = json.loads(socket.recv(timeout=10))
+            assert (backlog["type"], backlog.get("backlog")) == ("lines", True), backlog
+            # The first viewer may ask before tail printed the file's last lines: then they follow the empty backlog.
+            seen = [(line["seq"], line["text"]) for line in backlog["lines"]]
+            assert seen + _lines_from(socket, 3 - len(seen)) == [(1, "one"), (2, "two"), (3, "three")]
+
+        _append_on_fake_server(path, "four", "five")
+        for socket in (first, second):
+            assert _lines_from(socket, 2) == [(4, "four"), (5, "five")]
+
+        assert _tails_on_fake_server() == 1
+
+    # 5 s of grace after the last viewer, then the worker closes the channel and the wrapper ends tail.
+    _wait(lambda: _tails_on_fake_server() == 0, 30, "no tail -F on the fake server once both sockets closed")
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):
