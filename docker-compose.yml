@@ -54,6 +54,7 @@ services:
       SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-60}
       SESSION_ABSOLUTE_MINUTES: ${SESSION_ABSOLUTE_MINUTES:-720}
       API_DOCS: ${API_DOCS:-false}
+      WEBHOOK_ALLOW_HTTP: ${WEBHOOK_ALLOW_HTTP:-false}
       VALKEY_URL: valkey://valkey:6379/0
     volumes:
       # The platform's SSH private key. Back it up: a lost key means a new one on every server.

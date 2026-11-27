@@ -55,5 +55,7 @@ POSTGRES_API_PASSWORD = "megooitadminapi"
 POSTGRES_COLLECTOR_PASSWORD = "megooitadmincollector"
 AUTH_SECRET_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 STACK_URL = "http://localhost:${STACK_PORT}"
+# The sink of the staged disk-fill check takes webhooks over http.
+WEBHOOK_ALLOW_HTTP = "true"
 # Each check builds and starts its own images, under its own project name.
 MEGOOITADMIN_VERSION = "${MEGOO_SERVICES_PROJECT}"

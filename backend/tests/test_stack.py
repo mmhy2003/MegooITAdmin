@@ -635,6 +635,93 @@ def test_the_collector_checks_the_fake_server_and_lists_its_containers(owner):
     ]
 
 
+FILL = "/var/tmp/megoo-fill"
+READ_SINK = """
+import urllib.request
+print(urllib.request.urlopen("http://sink:8080/received", timeout=5).read().decode())
+"""
+
+
+def _received() -> dict:
+    """What the sink has received: {"webhooks": [...], "mail": [...]}, read from inside the backend."""
+    result = _compose_with_fake_server("exec", "-T", "backend", "python", "-c", READ_SINK)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _hooks_of(alert_id: str) -> list[str]:
+    """The event of each generic JSON webhook of the alert, in the order the sink got them."""
+    bodies = [json.loads(hook["body"]) for hook in _received()["webhooks"] if hook["path"] == "/hook"]
+    return [body["event"] for body in bodies if body["alert"]["id"] == alert_id]
+
+
+def _mail_about(headline: str) -> list[str]:
+    return [mail["data"] for mail in _received()["mail"] if headline in mail["data"]]
+
+
+def _root_alerts(owner: httpx.Client, server_id: str, rule_id: str) -> list[dict]:
+    """The rule's alerts of the server's /. The fake server's bind mounts (/etc/hosts…) share the host's disk with its
+    overlay /, so they fire too, each with its own alert and messages."""
+    alerts = owner.get(f"/api/servers/{server_id}/alerts").json()
+    return [alert for alert in alerts if alert["rule_id"] == rule_id and alert["instance"] == "/"]
+
+
+def test_a_staged_disk_fill_fires_notifies_and_resolves(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    group = owner.post("/api/server-groups", json={"name": "alerts-lab"}).json()["id"]
+    server = {"name": "fake-server-alerts", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+    server_id = owner.post("/api/servers", json=server).json()["id"]
+    fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+    assert fetched["ok"], fetched
+    assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
+
+    email = {"enabled": True, "host": "sink", "port": 2525, "security": "none", "from_address": "alerts@example.com"}
+    response = owner.put("/api/notifications/email", json=email)
+    assert response.status_code == 200, response.text
+    hook = {"name": "Sink", "kind": "webhook_json", "url": "http://sink:8080/hook"}
+    response = owner.post("/api/notification-channels", json=hook)
+    assert response.status_code == 200, response.text
+
+    # The fake server's / is the overlay of its container: the threshold sits 128 MiB above what it uses now, and the
+    # 256 MiB file crosses it.
+    df = _compose_with_fake_server("exec", "-T", "fake-server", "df", "-kP", "/")
+    assert df.returncode == 0, df.stderr
+    used, avail = (int(field) for field in df.stdout.splitlines()[1].split()[2:4])
+    threshold = (used + 131072) / (used + avail) * 100
+    rule = {
+        "name": "Staged disk fill", "metric": "disk.used_percent", "comparison": "above", "threshold": threshold,
+        "duration_seconds": 0, "severity": "critical", "server_id": server_id,
+    }
+    response = owner.post("/api/alert-rules", json=rule)
+    assert response.status_code == 200, response.text
+    rule_id = response.json()["id"]
+
+    try:
+        filled = _compose_with_fake_server("exec", "-T", "fake-server", "fallocate", "-l", "256M", FILL)
+        if filled.returncode != 0:
+            dd = ["dd", "if=/dev/zero", f"of={FILL}", "bs=1M", "count=256"]
+            filled = _compose_with_fake_server("exec", "-T", "fake-server", *dd)
+        assert filled.returncode == 0, filled.stderr
+
+        _wait(lambda: [a["state"] for a in _root_alerts(owner, server_id, rule_id)] == ["firing"], 90, "a firing alert of /")
+        (alert,) = _root_alerts(owner, server_id, rule_id)
+        headline = f"{server['name']}: / is "
+        _wait(lambda: _hooks_of(alert["id"]) == ["fired"], 90, "the webhook of the fired alert at the sink")
+        _wait(lambda: len(_mail_about(headline)) == 1, 90, "the mail of the fired alert at the sink")
+
+        removed = _compose_with_fake_server("exec", "-T", "fake-server", "rm", "-f", FILL)
+        assert removed.returncode == 0, removed.stderr
+        _wait(lambda: [a["state"] for a in _root_alerts(owner, server_id, rule_id)] == ["resolved"], 90, "the resolved alert")
+        _wait(lambda: _hooks_of(alert["id"]) == ["fired", "resolved"], 90, "the webhook of the resolved alert at the sink")
+        _wait(lambda: len(_mail_about(headline)) == 2, 90, "the mail of the resolved alert at the sink")
+        assert f"Resolved: {headline}" in _mail_about(headline)[1]
+    finally:
+        _compose_with_fake_server("exec", "-T", "fake-server", "rm", "-f", FILL)
+
+
 def _socket_url() -> str:
     return _env("STACK_URL").replace("http", "ws", 1) + "/api/ws/metrics"
 
