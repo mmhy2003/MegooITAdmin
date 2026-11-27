@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from app.logs.allowlist import STARTER_PATTERNS, check_pattern, matches
@@ -43,3 +45,13 @@ def test_the_starter_patterns_are_valid():
     assert STARTER_PATTERNS == ("/var/log/syslog", "/var/log/messages", "/var/log/nginx/*.log", "/var/log/apache2/*.log")
     for pattern in STARTER_PATTERNS:
         assert check_pattern(pattern) == pattern
+
+
+def test_many_stars_match_in_linear_time():
+    # As a regex, "[^/]*" per star backtracks exponentially on this path; the glob match does not.
+    pattern = "/v/" + "*a" * 20 + "*b"
+    assert check_pattern(pattern) == pattern
+    started = time.monotonic()
+    assert not matches("/v/" + "a" * 250, [pattern])
+    assert matches("/v/" + "a" * 250 + "b", [pattern])
+    assert time.monotonic() - started < 0.5

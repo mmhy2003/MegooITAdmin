@@ -8,6 +8,7 @@ left goes out, then the end and its reason: how the command exited, or why the s
 stored: the backlog lives in this process only."""
 
 import asyncio
+import logging
 import time
 from collections import deque
 from collections.abc import Callable
@@ -26,6 +27,8 @@ from app.logs.protocol import ON_SOURCE, Ended, encode, source_channel
 from app.logs.sources import BACKLOG, NOT_READABLE, Source, command
 from app.logs.worker.links import Links
 from app.ssh import client
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,8 +111,14 @@ class RunningSource:
             ended = Ended(type="ended", reason=refused.detail)
         except client.SshFailure as failure:
             ended = Ended(type="ended", reason=failure.reason)
-        await self._flush()
-        await self._publish(ended)
+        except Exception:
+            logger.exception("The source %s failed", self.key)
+            ended = Ended(type="ended", reason=client.SshFailure.reason)
+        try:
+            await self._flush()
+            await self._publish(ended)
+        except Exception:  # Valkey failed: nothing more reaches the viewers
+            logger.exception("The end of the source %s cannot be published", self.key)
         on_end(self)
 
     async def _follow(self) -> Ended:

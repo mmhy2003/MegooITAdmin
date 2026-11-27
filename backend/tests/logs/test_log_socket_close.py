@@ -281,3 +281,31 @@ async def test_valkey_unreachable_closes_1011(api, clock, socket_base, monkeypat
     async with signed_in(api, clock, OWNER, "owner") as (_, browser):
         async with connect(socket_base, PATH, browser.cookies.get(COOKIE)) as ws:
             assert await close_code(ws) == 1011
+
+
+async def test_a_subscribe_that_fails_midway_records_every_opened_source_closed(
+    api, clock, socket_base, worker, monkeypatch
+):
+    real_subscribe = logs_socket._Channels.subscribe
+    calls = 0
+
+    async def second_fails(self, channel):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise logs_socket._Closed(1011)
+        await real_subscribe(self, channel)
+
+    monkeypatch.setattr(logs_socket._Channels, "subscribe", second_fails)
+    _, server = await staging_server()
+    sources = [file_source(server.id, log_file(name)) for name in ("one", "two", "three")]
+    async with signed_in(api, clock, OWNER, "owner") as (_, browser):
+        async with connect(socket_base, PATH, browser.cookies.get(COOKIE)) as ws:
+            await ws.send(json.dumps({"type": "subscribe", "sources": sources}))
+            assert await close_code(ws) == 1011
+        await eventually(closed_events, timeout=5, every=0.02)
+    [opened] = await events("logs.stream_opened")
+    [closed] = await closed_events()
+    assert closed.result_detail["sources"] == opened.result_detail["sources"] == [
+        described(s) for s in sorted(sources, key=key_of)
+    ]

@@ -30,7 +30,7 @@ if TYPE_CHECKING:  # the schemas import check_pattern from here
 MAX_PATTERNS = 50
 STARTER_PATTERNS = ("/var/log/syslog", "/var/log/messages", "/var/log/nginx/*.log", "/var/log/apache2/*.log")
 PATTERN = re.compile(rf"/[*?{PATH_CHARS}]{{0,254}}")  # wildcards first: PATH_CHARS ends with "-"
-WILDCARDS = {"*": "[^/]*", "?": "[^/]"}
+WILDCARDS = ("*", "?")
 
 
 def check_pattern(value: str) -> str:
@@ -44,14 +44,35 @@ def check_pattern(value: str) -> str:
     return value
 
 
-def _regex(pattern: str) -> re.Pattern[str]:
-    return re.compile("".join(WILDCARDS.get(char) or re.escape(char) for char in pattern))
+def _glob(segment: str, pattern: str) -> bool:
+    """Whether one segment matches one pattern segment, in O(len(segment) * len(pattern)). On a mismatch only the
+    last "*" seen takes one more character: a regex would backtrack into every earlier one."""
+    at = on = 0  # in the pattern, in the segment
+    star = after = -1  # the last "*" seen, and where in the segment it stops for now
+    while on < len(segment):
+        if at < len(pattern) and pattern[at] == "*":
+            star, after = at, on
+            at += 1
+        elif at < len(pattern) and pattern[at] in ("?", segment[on]):
+            at += 1
+            on += 1
+        elif star >= 0:
+            after += 1
+            at, on = star + 1, after
+        else:
+            return False
+    return all(char == "*" for char in pattern[at:])
 
 
 def matches(path: str, patterns: Iterable[str]) -> bool:
-    """Whether the path matches one pattern. "*" is "[^/]*" and "?" is "[^/]"; every other character is itself
-    (re.escape). The whole path must match."""
-    return any(_regex(pattern).fullmatch(path) for pattern in patterns)
+    """Whether the path matches one pattern. "*" is any characters but "/" and "?" one; every other character is
+    itself. The whole path must match, segment by segment."""
+    segments = path.split("/")
+    for pattern in patterns:
+        parts = pattern.split("/")
+        if len(parts) == len(segments) and all(map(_glob, segments, parts)):
+            return True
+    return False
 
 
 async def patterns_of(db: AsyncSession, group_ids: Iterable[UUID]) -> dict[UUID, list[str]]:

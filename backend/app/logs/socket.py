@@ -395,10 +395,11 @@ async def _subscribe(socket: _Socket, asked: SubscribeIn) -> None:
             first = together[0]
             server = (first.server_id, first.server_name, first.group_id)
             await _record(_event(socket, LOGS_STREAM_OPENED, server, {"sources": _described(together)}))
+            # Open as soon as recorded, so that a failure below still records them closed.
+            socket.opens.update((open_.key, open_) for open_ in together)
 
         asked_worker: list[asyncio.Future] = []
         for open_ in accepted:
-            socket.opens[open_.key] = open_
             await socket.channels.subscribe(source_channel(open_.key))
             request = OpenRequest(type="open", socket_id=socket.socket_id, request_id=open_.request_id,
                                   source=open_.source)

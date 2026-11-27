@@ -209,3 +209,16 @@ async def test_a_line_over_8_kb_is_cut(clean_auth, logs_sessions, fake_server, v
         assert long["text"] == "x" * MAX_LINE_BYTES
         assert after == {"seq": 2, "time": after["time"], "text": "after"}
         assert all(isinstance(message, Lines) for message in messages)
+
+
+async def test_an_unexpected_error_ends_with_ssh_error(clean_auth, logs_sessions, fake_server, valkey, monkeypatch):
+    @asynccontextmanager
+    async def follow(conn, argv):
+        raise RuntimeError("a bug")
+        yield
+
+    monkeypatch.setattr(source_module.client, "follow", follow)
+    server = await pinned_server(fake_server, "ends-bug")
+
+    async with ending(source_of(server.id, kind="journal"), server, valkey) as (messages, ended):
+        assert await the_end(messages, ended) == Ended(type="ended", reason="ssh_error")
