@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { CONNECTION_REASONS, MONITORING_REASONS, NOT_CHECKED, messageFor, monitoringText, reasonText } from "@/lib/auth/messages";
+import {
+  CONNECTION_REASONS,
+  DELIVERY_ERRORS,
+  MONITORING_REASONS,
+  NOT_CHECKED,
+  deliveryErrorText,
+  messageFor,
+  monitoringText,
+  reasonText,
+} from "@/lib/auth/messages";
 import type { ConnectionReason } from "@/lib/servers";
 
 describe("messageFor", () => {
@@ -30,6 +39,78 @@ describe("messageFor", () => {
     ["no_such_reason", "Something went wrong. Try again."],
   ])("%s → %s", (detail, text) => {
     expect(messageFor(detail)).toBe(text);
+  });
+});
+
+describe("the alert and notification codes", () => {
+  const codes = [
+    "rule_name_taken",
+    "unknown_group",
+    "unknown_server",
+    "bad_threshold",
+    "bad_scope",
+    "no_change",
+    "channel_name_taken",
+    "too_many_channels",
+    "webhook_url_https",
+    "bad_url",
+    "bad_telegram_token",
+    "bad_chat_id",
+    "email_not_set_up",
+  ];
+
+  it.each(codes)("%s has a text of its own", (code) => {
+    expect(messageFor(code)).not.toBe(messageFor("no_such_code"));
+  });
+
+  it("gives each code another text", () => {
+    expect(new Set(codes.map(messageFor)).size).toBe(codes.length);
+  });
+
+  it.each([
+    ["rule_name_taken", "An alert rule with this name exists already."],
+    ["bad_threshold", "The limit does not fit this measure."],
+    ["webhook_url_https", "The address must start with https://."],
+    ["email_not_set_up", "Set up email first."],
+  ])("%s → %s", (code, text) => {
+    expect(messageFor(code)).toBe(text);
+  });
+});
+
+describe("deliveryErrorText", () => {
+  const codes = [
+    "connection_failed",
+    "timeout",
+    "tls_failed",
+    "auth_failed",
+    "recipients_refused",
+    "smtp_failed",
+    "http_status",
+    "redirect_refused",
+    "bad_url",
+    "webhook_url_https",
+    "email_not_set_up",
+    "undecryptable",
+  ];
+
+  it("covers every code a delivery or a test may fail with", () => {
+    expect(Object.keys(DELIVERY_ERRORS).sort()).toEqual([...codes].sort());
+  });
+
+  it("gives each code another text", () => {
+    expect(new Set(codes.map(deliveryErrorText)).size).toBe(codes.length);
+  });
+
+  it.each(["bad_url", "webhook_url_https", "email_not_set_up"])("says %s as an answer to a request does", (code) => {
+    expect(deliveryErrorText(code)).toBe(messageFor(code));
+  });
+
+  it("tells an undecryptable secret apart from a sign-in's", () => {
+    expect(deliveryErrorText("undecryptable")).not.toBe(messageFor("undecryptable"));
+  });
+
+  it.each([null, "something_new", "toString"])("says the try failed for %s", (code) => {
+    expect(deliveryErrorText(code)).toBe("The message could not be sent.");
   });
 });
 

@@ -113,3 +113,11 @@ def test_the_valkey_client_without_valkey_url_names_the_variable(monkeypatch):
     monkeypatch.delenv("VALKEY_URL", raising=False)
     with pytest.raises(RuntimeError, match="VALKEY_URL"):
         valkey_client(Settings(database_url=URL))
+
+
+def test_the_notification_settings_have_their_defaults(monkeypatch):
+    monkeypatch.delenv("NOTIFICATION_SENDER", raising=False)
+    monkeypatch.delenv("WEBHOOK_ALLOW_HTTP", raising=False)
+    settings = Settings(database_url=URL)
+    assert settings.notification_sender is True
+    assert settings.webhook_allow_http is False

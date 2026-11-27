@@ -1,10 +1,14 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import asyncssh
-from auth_helpers import add_grant, events, make_group, make_server, signed_in
+import pytest
+from alerts_helpers import alerts_of, make_rule
+from auth_helpers import actions, add_grant, events, make_group, make_server, signed_in
 from conftest import owner_session
 from sqlalchemy import func, select, update
 
+from app.alerts.models import Alert, AlertRule
 from app.inventory.models import Server, ServerStatus, ServerTag
 from app.ssh import hostkeys
 
@@ -46,6 +50,60 @@ async def test_an_admin_removes_a_server_and_its_tags(api, clock):
         "port": {"before": 2222, "after": None},
         "role": {"before": "db", "after": None},
         "tags": {"before": ["eu-west", "web"], "after": None},
+    }
+
+
+@pytest.mark.usefixtures("clean_alerts")
+@pytest.mark.parametrize("email, platform_role", [(OWNER, "owner"), (ADMIN, None)])
+async def test_removing_a_server_deletes_its_rules_with_their_events(api, clock, email, platform_role):
+    staging = await make_group("staging")
+    server = await make_server(staging.id, "db-01")
+    other = await make_server(staging.id, "db-02")
+    rule = await make_rule(name="db-01 disk", server_id=server.id, threshold=95)
+    kept = (await make_rule(name="Everywhere"), await make_rule(name="db-02 disk", server_id=other.id))
+    async with owner_session() as session:
+        session.add(
+            Alert(
+                server_id=server.id,
+                rule_id=kept[0].id,
+                rule_name=kept[0].name,
+                metric=kept[0].metric,
+                comparison=kept[0].comparison,
+                threshold=kept[0].threshold,
+                duration_seconds=kept[0].duration_seconds,
+                severity=kept[0].severity,
+                instance="/",
+                state="firing",
+                fired_at=datetime(2026, 11, 23, 11, 0, tzinfo=UTC),
+            )
+        )
+        await session.commit()
+    async with signed_in(api, clock, email, platform_role) as (user, client):
+        if platform_role is None:
+            await add_grant(user.id, staging.id, "admin")
+        response = await client.delete(f"/api/servers/{server.id}")
+
+    assert response.status_code == 204, response.text
+    async with owner_session() as session:
+        left = set((await session.scalars(select(AlertRule.id))).all())
+    assert left == {r.id for r in kept}
+    assert await alerts_of(server.id) == []
+    assert [a for a in await actions() if a in ("alert_rule.deleted", "server.deleted")] == [
+        "alert_rule.deleted",
+        "server.deleted",
+    ]
+    (deleted,) = await events("alert_rule.deleted")
+    assert (deleted.actor_id, deleted.result, deleted.mfa) == (str(user.id), "success", True)
+    assert (deleted.target_type, deleted.target_id, deleted.target_name) == ("alert_rule", str(rule.id), "db-01 disk")
+    assert deleted.change == {
+        "name": {"before": "db-01 disk", "after": None},
+        "metric": {"before": "disk.used_percent", "after": None},
+        "comparison": {"before": "above", "after": None},
+        "threshold": {"before": "95", "after": None},
+        "duration_seconds": {"before": 0, "after": None},
+        "severity": {"before": "critical", "after": None},
+        "server_id": {"before": str(server.id), "after": None},
+        "enabled": {"before": True, "after": None},
     }
 
 

@@ -5,6 +5,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ServerAlertBanner } from "@/components/alerts/server-alert-banner";
+import { ServerAlertsTab } from "@/components/alerts/server-alerts-tab";
 import { formatTime } from "@/components/profile/profile-page";
 import { CertificatesCard } from "@/components/servers/checks/certificates-card";
 import { ContainersSummaryCard } from "@/components/servers/checks/containers-summary-card";
@@ -30,6 +32,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
+import type { Alert as ServerAlert } from "@/lib/alerts";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 import { checkOf, type ChecksResponse, type Container } from "@/lib/checks";
@@ -39,10 +42,13 @@ import { OS_LABELS, type ConnectionTestResult, type HostKeyState, type Server } 
 /** What the Edit dialog offers: the groups the person manages and the tags in use. */
 type Choices = { groups: ServerGroup[]; tags: string[] };
 
-/** A Linux server's checks and containers, as read together. */
-type Facts = { checks: ChecksResponse; containers: Container[] };
+/** A Linux server's checks, containers and alerts, as read together. */
+type Facts = { checks: ChecksResponse; containers: Container[]; alerts: ServerAlert[] };
 
-type Tab = "overview" | "performance" | "containers";
+type Tab = "overview" | "performance" | "containers" | "alerts";
+
+/** The tabs a Linux server has besides Overview. */
+const LINUX_TABS: readonly Tab[] = ["performance", "containers", "alerts"];
 
 // The charts and Recharts load only when the Performance tab opens, never with Overview.
 const PerformanceTab = dynamic(() => import("@/components/servers/performance/performance-tab"), {
@@ -63,7 +69,10 @@ const STATE_BADGES: Record<Exclude<HostKeyState, "none">, { label: string; varia
     changed: { label: "Host key changed", variant: "destructive" },
   };
 
-/** One server's page: its name and badges, the Overview tab and, for a Linux server, Performance and Containers. */
+/**
+ * One server's page: its name and badges, the Overview tab and, for a Linux server, Performance, Containers and Alerts,
+ * with a banner above the tabs while alerts fire.
+ */
 export function ServerPage({ serverId }: { serverId: string }) {
   const router = useRouter();
   const params = useSearchParams();
@@ -85,17 +94,18 @@ export function ServerPage({ serverId }: { serverId: string }) {
   // Each foreground read takes a number; an answer is applied only while its read is still the latest.
   const reads = useRef(0);
 
-  /** Reads a Linux server's checks and containers; the answer counts only while `read` is the latest. */
+  /** Reads a Linux server's checks, containers and alerts; the answer counts only while `read` is the latest. */
   const readFacts = useCallback(
     (read: number, background: boolean) => {
       const get = <T,>(path: string) => (background ? apiFetch<T>(path, { background: true }) : apiFetch<T>(path));
       Promise.all([
         get<ChecksResponse>(`/servers/${serverId}/checks`),
         get<Container[]>(`/servers/${serverId}/containers`),
+        get<ServerAlert[]>(`/servers/${serverId}/alerts`),
       ]).then(
-        ([checks, containers]) => {
+        ([checks, containers, alerts]) => {
           if (read !== reads.current) return;
-          setFacts({ checks, containers });
+          setFacts({ checks, containers, alerts });
           setNow(new Date());
         },
         (e: unknown) => {
@@ -202,7 +212,8 @@ export function ServerPage({ serverId }: { serverId: string }) {
 
   const linux = server?.os === "linux";
   // A Windows server has only Overview, whatever the address asks for.
-  const tab: Tab = linux && (wanted === "containers" || wanted === "performance") ? wanted : "overview";
+  const tab: Tab = (linux && LINUX_TABS.find((name) => name === wanted)) || "overview";
+  const firing = linux && facts ? facts.alerts.filter((alert) => alert.state === "firing") : [];
 
   if (missing) {
     return (
@@ -296,6 +307,7 @@ export function ServerPage({ serverId }: { serverId: string }) {
               </AlertDescription>
             </Alert>
           )}
+          <ServerAlertBanner serverId={serverId} alerts={firing} />
           <div role="tablist" aria-label="Server" className="flex gap-2 border-b">
             <button
               type="button"
@@ -332,6 +344,23 @@ export function ServerPage({ serverId }: { serverId: string }) {
                 >
                   {facts ? `Containers (${facts.containers.length})` : "Containers"}
                 </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="server-tab-alerts"
+                  aria-selected={tab === "alerts"}
+                  aria-controls="server-tab-panel"
+                  className={tab === "alerts" ? TAB_CLASSES.selected : TAB_CLASSES.other}
+                  onClick={() => showTab("alerts")}
+                >
+                  Alerts
+                  {firing.length > 0 && (
+                    <>
+                      {" "}
+                      <Badge variant="destructive">{firing.length}</Badge>
+                    </>
+                  )}
+                </button>
               </>
             )}
           </div>
@@ -347,6 +376,8 @@ export function ServerPage({ serverId }: { serverId: string }) {
               facts && (
                 <ContainersTab check={checkOf(facts.checks, "containers")} containers={facts.containers} now={now} />
               )
+            ) : tab === "alerts" ? (
+              facts && <ServerAlertsTab serverId={serverId} alerts={facts.alerts} />
             ) : (
               <>
                 {linux &&

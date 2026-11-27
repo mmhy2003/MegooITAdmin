@@ -447,5 +447,115 @@ def test_the_database_refuses_a_bad_kind_status_runtime_and_state():
         _execute("DELETE FROM servers WHERE name = 'probe-0010'")
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0010'")
 
+
+ALERT_TABLES = (
+    "alert_rules",
+    "alerts",
+    "alert_events",
+    "notification_channels",
+    "notification_email",
+    "notification_deliveries",
+)
+
+
+def _alert_tables() -> list:
+    return _fetch(f"SELECT {', '.join(f'to_regclass({t!r})' for t in ALERT_TABLES)}")
+
+
+def test_0011_goes_down_and_up_again():
+    command.downgrade(_config(), "0010")
+    try:
+        assert _alert_tables() == [(None,) * len(ALERT_TABLES)]
+        assert _fetch(
+            "SELECT count(*) FROM information_schema.columns"
+            " WHERE table_name = 'users' AND column_name = 'alerts_seen_at'"
+        ) == [(0,)]
+    finally:
+        upgrade_to_head()
+    assert _alert_tables() == [ALERT_TABLES]
+    assert _fetch("SELECT id, enabled FROM notification_email") == [(1, False)]
+
+
+def test_0011_inserts_the_four_starter_rules():
+    command.downgrade(_config(), "0010")
+    upgrade_to_head()
+    assert _fetch(
+        "SELECT name, metric, comparison, threshold, duration_seconds, severity, enabled,"
+        " server_group_id IS NULL AND server_id IS NULL FROM alert_rules ORDER BY name"
+    ) == [
+        ("CPU busy", "cpu.used_percent", "above", 90.0, 900, "warning", True, True),
+        ("Filesystem almost full", "disk.used_percent", "above", 90.0, 600, "critical", True, True),
+        ("Memory almost full", "mem.used_percent", "above", 90.0, 600, "warning", True, True),
+        ("Server unreachable", "unreachable", None, None, 300, "critical", True, True),
+    ]
+
+
+def _insert_rule(name: str, columns: str, values: str) -> None:
+    _execute(
+        f"INSERT INTO alert_rules (id, name, metric, duration_seconds, severity{columns})"
+        f" VALUES (gen_random_uuid(), '{name}', {values})"
+    )
+
+
+def test_the_database_refuses_a_threshold_on_unreachable_and_two_scopes():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0011')")
+    try:
+        _execute(
+            "INSERT INTO servers (id, server_group_id, name, address, port, os)"
+            " SELECT gen_random_uuid(), id, 'probe-0011', '10.0.0.11', 22, 'linux' FROM server_groups"
+            " WHERE name = 'Migration probe group 0011'"
+        )
+        with pytest.raises(IntegrityError, match="alert_rules_condition_check"):
+            _insert_rule(
+                "probe-0011 threshold", ", comparison, threshold", "'unreachable', 300, 'critical', 'above', 1"
+            )
+        with pytest.raises(IntegrityError, match="alert_rules_condition_check"):
+            _insert_rule("probe-0011 load", ", comparison, threshold", "'load.1m', 0, 'warning', 'above', 1001")
+        with pytest.raises(IntegrityError, match="alert_rules_scope_check"):
+            _execute(
+                "INSERT INTO alert_rules (id, name, metric, duration_seconds, severity, server_group_id, server_id)"
+                " SELECT gen_random_uuid(), 'probe-0011 scopes', 'unreachable', 300, 'critical', g.id, s.id"
+                " FROM server_groups g, servers s WHERE s.name = 'probe-0011'"
+                " AND g.name = 'Migration probe group 0011'"
+            )
+    finally:
+        _execute("DELETE FROM alert_rules WHERE name LIKE 'probe-0011%'")
+        _execute("DELETE FROM servers WHERE name = 'probe-0011'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0011'")
+
+
+def _insert_alert(state: str) -> None:
+    resolved_at = "NULL" if state == "firing" else "now()"
+    _execute(
+        "INSERT INTO alerts (id, server_id, rule_id, rule_name, metric, comparison, threshold, duration_seconds,"
+        " severity, instance, state, fired_at, resolved_at)"
+        " SELECT gen_random_uuid(), s.id, r.id, r.name, r.metric, r.comparison, r.threshold, r.duration_seconds,"
+        f" r.severity, '/', '{state}', now(), {resolved_at}"
+        " FROM servers s, alert_rules r WHERE s.name = 'probe-0011-alert' AND r.name = 'Filesystem almost full'"
+    )
+
+
+def test_one_firing_alert_per_rule_server_and_instance():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0011 alerts')")
+    try:
+        _execute(
+            "INSERT INTO servers (id, server_group_id, name, address, port, os)"
+            " SELECT gen_random_uuid(), id, 'probe-0011-alert', '10.0.0.11', 22, 'linux' FROM server_groups"
+            " WHERE name = 'Migration probe group 0011 alerts'"
+        )
+        _insert_alert("firing")
+        with pytest.raises(IntegrityError, match="alerts_one_firing_key"):
+            _insert_alert("firing")
+        _insert_alert("resolved")
+        assert _fetch(
+            "SELECT a.state FROM alerts a JOIN servers s ON s.id = a.server_id"
+            " WHERE s.name = 'probe-0011-alert' ORDER BY a.state"
+        ) == [("firing",), ("resolved",)]
+    finally:
+        # The server's alerts cascade.
+        _execute("DELETE FROM servers WHERE name = 'probe-0011-alert'")
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0011 alerts'")
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())

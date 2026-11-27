@@ -14,8 +14,8 @@ export default async function SettingsLayout({ children }: { children: React.Rea
             <h2>Settings are for the Owner</h2>
           </CardTitle>
           <CardDescription>
-            Only the Owner of this installation manages people and server groups. Your own access is on Profile and
-            security.
+            Only the Owner of this installation manages people, server groups, alert rules and notifications. Your own
+            access is on Profile and security.
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatTime } from "@/components/profile/profile-page";
 import { ServerPage } from "@/components/servers/server-page";
 import { useRefresh } from "@/hooks/use-refresh";
+import type { Alert } from "@/lib/alerts";
 import { ApiError, apiFetch } from "@/lib/api";
 import type { ChecksResponse, Container } from "@/lib/checks";
 import type { ConnectionTestResult, Server } from "@/lib/servers";
@@ -175,6 +176,39 @@ const CONTAINERS: Container[] = [
   container({ container_id: "4".repeat(64), name: "hello-adhoc", image: "busybox:1.37", state: "restarting" }),
 ];
 
+function alertOf(id: string, fields: Partial<Alert> = {}): Alert {
+  return {
+    id,
+    server_id: "s-1",
+    server_name: "db-01",
+    group_id: "g-staging",
+    group_name: "staging",
+    rule_id: "r-1",
+    rule_name: "Filesystem almost full",
+    metric: "disk.used_percent",
+    comparison: "above",
+    threshold: 90,
+    duration_seconds: 600,
+    severity: "critical",
+    instance: "/",
+    state: "firing",
+    end_reason: null,
+    fired_at: "2026-11-27T10:00:00Z",
+    resolved_at: null,
+    value: 93.25,
+    last_value: 91,
+    peak_value: 95,
+    ...fields,
+  };
+}
+
+/** Two alerts firing on the fake server, then one that resolved. */
+const ALERTS: Alert[] = [
+  alertOf("a-1"),
+  alertOf("a-2", { metric: "mem.used_percent", severity: "warning", instance: "", value: 91.5 }),
+  alertOf("a-3", { state: "resolved", fired_at: "2026-11-26T08:00:00Z", resolved_at: "2026-11-26T08:30:00Z" }),
+];
+
 let push: ReturnType<typeof vi.fn>;
 let replace: ReturnType<typeof vi.fn>;
 
@@ -182,6 +216,7 @@ function mockApi(
   server: Server | ApiError,
   test: ConnectionTestResult | ApiError = WORKS,
   checks: ChecksResponse | ApiError = CHECKS,
+  alerts: Alert[] = [],
 ) {
   vi.mocked(apiFetch).mockImplementation(async (path: string, init?: { method?: string }) => {
     if (init?.method === "DELETE") return undefined;
@@ -194,6 +229,7 @@ function mockApi(
       return checks;
     }
     if (path === "/servers/s-1/containers") return CONTAINERS;
+    if (path === "/servers/s-1/alerts") return alerts;
     if (path === "/servers/s-1/connection-test") {
       if (test instanceof ApiError) throw test;
       return test;
@@ -242,7 +278,7 @@ const CARDS = ["Services", "Updates", "Failed sign-ins", "Certificates", "Top pr
 function checkReads() {
   return vi
     .mocked(apiFetch)
-    .mock.calls.filter(([path]) => path === "/servers/s-1/checks" || path === "/servers/s-1/containers");
+    .mock.calls.filter(([path]) => ["/servers/s-1/checks", "/servers/s-1/containers", "/servers/s-1/alerts"].includes(path));
 }
 
 describe("ServerPage", () => {
@@ -608,7 +644,7 @@ describe("ServerPage", () => {
     expect(replace).toHaveBeenLastCalledWith("/servers/s-1", { scroll: false });
   });
 
-  it("offers a Linux server Overview, Performance and Containers tabs in that order", async () => {
+  it("offers a Linux server Overview, Performance, Containers and Alerts tabs in that order", async () => {
     mockApi(PINNED);
     render(<ServerPage serverId="s-1" />);
 
@@ -617,6 +653,7 @@ describe("ServerPage", () => {
       "Overview",
       "Performance",
       "Containers (4)",
+      "Alerts",
     ]);
     expect(screen.getByRole("tab", { name: "Performance" })).toHaveAttribute("aria-selected", "false");
     expect(screen.queryByText(/performance tab/)).not.toBeInTheDocument();
@@ -748,6 +785,77 @@ describe("ServerPage", () => {
     expect(await screen.findByText("2 failed")).toBeInTheDocument();
     expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/checks", { background: true });
     expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/containers", { background: true });
+  });
+
+  it("reads a Linux server's alerts with its facts, and again in the background", async () => {
+    mockApi(PINNED, WORKS, CHECKS, ALERTS.slice(2));
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("heading", { name: "Services" });
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/alerts");
+    expect(screen.getByRole("tab", { name: "Alerts" })).toBeInTheDocument();
+    expect(screen.queryByText(/alerts? firing/)).not.toBeInTheDocument();
+
+    mockApi(PINNED, WORKS, CHECKS, ALERTS);
+    await refreshNow();
+
+    expect(await screen.findByRole("tab", { name: "Alerts 2" })).toBeInTheDocument();
+    expect(screen.getByText("2 alerts firing")).toBeInTheDocument();
+    expect(vi.mocked(apiFetch)).toHaveBeenCalledWith("/servers/s-1/alerts", { background: true });
+  });
+
+  it("names the firing alerts in a banner above the tabs, with a link to the Alerts tab", async () => {
+    mockApi(PINNED, WORKS, CHECKS, ALERTS);
+    render(<ServerPage serverId="s-1" />);
+
+    const title = await screen.findByText("2 alerts firing");
+    const banner = within(title.closest("[data-slot=alert]") as HTMLElement);
+    expect(banner.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "Criticaldb-01: / is 93.3% full",
+      "Warningdb-01: memory is 91.5% used",
+    ]);
+    expect(banner.getByRole("link", { name: "Show alerts" })).toHaveAttribute("href", "/servers/s-1?tab=alerts");
+    const order = title.compareDocumentPosition(screen.getByRole("tablist", { name: "Server" }));
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Alerts 2" })).toHaveAttribute("id", "server-tab-alerts");
+  });
+
+  it("shows the firing alerts, then the history, on ?tab=alerts", async () => {
+    setTab("alerts");
+    mockApi(PINNED, WORKS, CHECKS, ALERTS);
+    render(<ServerPage serverId="s-1" />);
+
+    const tab = await screen.findByRole("tab", { name: "Alerts 2" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel");
+    expect(panel).toHaveAttribute("aria-labelledby", "server-tab-alerts");
+    const ids = (name: string) =>
+      [...within(panel).getByRole("region", { name }).querySelectorAll("[data-alert-id]")].map((row) =>
+        row.getAttribute("data-alert-id"),
+      );
+    expect(ids("Firing")).toEqual(["a-1", "a-2"]);
+    expect(ids("History")).toEqual(["a-3"]);
+    expect(screen.queryByRole("heading", { name: "Services" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Connection" })).not.toBeInTheDocument();
+  });
+
+  it("switches to the Alerts tab by replacing the address", async () => {
+    mockApi(PINNED);
+    render(<ServerPage serverId="s-1" />);
+    await userEvent.setup().click(await screen.findByRole("tab", { name: "Alerts" }));
+    expect(replace).toHaveBeenLastCalledWith("/servers/s-1?tab=alerts", { scroll: false });
+  });
+
+  it("reads no alerts and shows neither the banner nor the Alerts tab for a Windows server", async () => {
+    setTab("alerts");
+    mockApi({ ...DB, os: "windows", port: 3389, host_key_state: "none" }, WORKS, CHECKS, ALERTS);
+    render(<ServerPage serverId="s-1" />);
+
+    await screen.findByRole("heading", { name: "db-01", level: 2 });
+    await refreshNow();
+    expect(screen.queryByRole("tab", { name: /Alerts/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText(/alerts? firing/)).not.toBeInTheDocument();
+    expect(vi.mocked(apiFetch).mock.calls.filter(([path]) => path === "/servers/s-1/alerts")).toHaveLength(0);
   });
 
   it("pauses the re-read while the Edit dialog is open", async () => {

@@ -209,7 +209,13 @@ export function filtersFrom(params: URLSearchParams): ServerFilters {
   return { group: params.get("group") || null, tags };
 }
 
-function withQuery(path: string, groupKey: string, filters: ServerFilters, extra: Record<string, string> = {}): string {
+/** `path` with the filters as a query (the group under `groupKey`, each tag as `tag`), then `extra`. */
+export function withQuery(
+  path: string,
+  groupKey: string,
+  filters: ServerFilters,
+  extra: Record<string, string> = {},
+): string {
   const params = new URLSearchParams();
   if (filters.group !== null) params.set(groupKey, filters.group);
   for (const tag of filters.tags) params.append("tag", tag);

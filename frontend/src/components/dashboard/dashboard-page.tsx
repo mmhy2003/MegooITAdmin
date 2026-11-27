@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertsCard } from "@/components/alerts/alerts-card";
 import { FleetSummary } from "@/components/dashboard/fleet-summary";
 import { ServerCard } from "@/components/dashboard/server-card";
 import { ServerRows } from "@/components/dashboard/server-rows";
@@ -15,6 +16,7 @@ import { useLiveMetrics } from "@/hooks/use-live-metrics";
 import { useOnScreen } from "@/hooks/use-on-screen";
 import { useRefresh } from "@/hooks/use-refresh";
 import type { ServerGroup } from "@/lib/access";
+import { type Alert as FiringAlert, alertsPath, firingByServer } from "@/lib/alerts";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 import {
@@ -31,7 +33,7 @@ import {
 } from "@/lib/metrics";
 import { addressOf, filtersFrom, listPath, type Server, type ServerFilters as Filters } from "@/lib/servers";
 
-type Lists = { groups: ServerGroup[]; tags: string[]; servers: Server[] };
+type Lists = { groups: ServerGroup[]; tags: string[]; servers: Server[]; firing: FiringAlert[] };
 
 /** Cards turn to dashes when their newest values grow stale, so the page looks at the clock this often. */
 const TICK_MS = 5_000;
@@ -62,6 +64,7 @@ export function DashboardPage() {
   const filters = filtersFrom(params);
   const view: DashboardView = params.get("view") === "table" ? "table" : "cards";
   const path = listPath(filters);
+  const firingPath = alertsPath("firing", filters);
   const [lists, setLists] = useState<Lists | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [vitals, setVitals] = useState<Record<string, Vitals>>({});
@@ -77,17 +80,18 @@ export function DashboardPage() {
       apiFetch<ServerGroup[]>("/server-groups"),
       apiFetch<string[]>("/server-tags"),
       apiFetch<Server[]>(path),
+      apiFetch<FiringAlert[]>(firingPath),
     ]).then(
-      ([groups, tags, servers]) => {
+      ([groups, tags, servers, firing]) => {
         if (read !== reads.current) return;
-        setLists({ groups, tags, servers });
+        setLists({ groups, tags, servers, firing });
         setError(null);
       },
       (e: unknown) => {
         if (read === reads.current) setError(e instanceof ApiError ? e.detail : "error");
       },
     );
-  }, [path]);
+  }, [path, firingPath]);
 
   useEffect(() => {
     void reload();
@@ -109,6 +113,8 @@ export function DashboardPage() {
   }, []);
 
   const servers = useMemo(() => fleetOrder(lists?.servers ?? []), [lists]);
+  const firing = useMemo(() => lists?.firing ?? [], [lists]);
+  const alertsOn = useMemo(() => firingByServer(firing), [firing]);
   const { track, onScreen } = useOnScreen();
   const live = useMemo(() => {
     const linux = new Set(servers.filter((s) => s.os === "linux").map((s) => s.id));
@@ -122,7 +128,8 @@ export function DashboardPage() {
     );
   }, [live, readOverview]);
 
-  // A background re-read replaces the servers only if no foreground read started meanwhile, and fails silently.
+  // A background re-read replaces the servers and the firing alerts only if no foreground read started meanwhile,
+  // and fails silently.
   const refresh = useCallback(() => {
     const read = reads.current;
     apiFetch<Server[]>(path, { background: true }).then(
@@ -131,8 +138,14 @@ export function DashboardPage() {
       },
       () => {},
     );
+    apiFetch<FiringAlert[]>(firingPath, { background: true }).then(
+      (firing) => {
+        if (reads.current === read) setLists((l) => l && { ...l, firing });
+      },
+      () => {},
+    );
     readOverview(live, true);
-  }, [path, live, readOverview]);
+  }, [path, firingPath, live, readOverview]);
   useRefresh(refresh, true);
 
   const onMessage = useCallback((m: LiveMessage) => {
@@ -190,25 +203,32 @@ export function DashboardPage() {
                   />
                   <ViewSwitch view={view} onChange={(next) => router.replace(addressOf("/", filters, extra(next)))} />
                 </div>
-                <FleetSummary servers={lists.servers} />
+                <FleetSummary servers={lists.servers} firing={firing.length} />
                 {servers.length === 0 && <Empty filtered={filtered} />}
               </>
             )}
           </CardContent>
         )}
       </Card>
-      {/* The firing alerts go here with MITA-29. */}
+      {lists && lists.groups.length > 0 && <AlertsCard firing={firing} filters={filters} />}
       {servers.length > 0 &&
         (view === "table" ? (
           <Card>
             <CardContent>
-              <ServerRows servers={servers} vitalsOf={vitals} now={now} track={trackRow} />
+              <ServerRows servers={servers} vitalsOf={vitals} now={now} track={trackRow} alerts={alertsOn} />
             </CardContent>
           </Card>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {servers.map((server) => (
-              <ServerCard key={server.id} server={server} vitals={vitals[server.id]} now={now} track={track(server.id)} />
+              <ServerCard
+                key={server.id}
+                server={server}
+                vitals={vitals[server.id]}
+                now={now}
+                track={track(server.id)}
+                alerts={alertsOn[server.id]}
+              />
             ))}
           </div>
         ))}

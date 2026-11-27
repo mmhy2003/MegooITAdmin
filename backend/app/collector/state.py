@@ -2,7 +2,7 @@
 state or the reason changes. A write the database refused waits until retry()."""
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -25,17 +25,23 @@ class StatusBook:
         self.sessions = sessions
         self._known: dict[UUID, tuple[str, str | None]] = {}
         self._pending: dict[UUID, tuple[str, str | None, datetime | None]] = {}
+        # Since when each server is in its known state: the row's time, or the collector's own after a change of state.
+        self._since: dict[UUID, datetime] = {}
         self._warn = Throttle()
 
     async def load(self) -> None:
         """Reads every row into memory, so a restart writes nothing that did not change. Raises on a database error."""
         async with self.sessions() as session:
-            rows = select(ServerStatus.server_id, ServerStatus.state, ServerStatus.reason)
+            rows = select(ServerStatus.server_id, ServerStatus.state, ServerStatus.reason, ServerStatus.since)
             found = (await session.execute(rows)).all()
-        self._known = {server_id: (state, reason) for server_id, state, reason in found}
+        self._known = {server_id: (state, reason) for server_id, state, reason, _ in found}
+        self._since = {server_id: since for server_id, _, _, since in found}
 
     def known(self, server_id: UUID) -> tuple[str, str | None] | None:
         return self._known.get(server_id)
+
+    def since(self, server_id: UUID) -> datetime | None:
+        return self._since.get(server_id)
 
     def known_ids(self) -> set[UUID]:
         return set(self._known)
@@ -43,6 +49,7 @@ class StatusBook:
     def forget(self, server_id: UUID) -> None:
         self._known.pop(server_id, None)
         self._pending.pop(server_id, None)
+        self._since.pop(server_id, None)
 
     async def set(
         self, server_id: UUID, state: State, reason: str | None = None, *, last_sample_at: datetime | None = None
@@ -97,6 +104,10 @@ class StatusBook:
         except (SQLAlchemyError, OSError) as exc:
             self._keep_pending(exc)
             return
+        known = self._known.get(server_id)
+        if known is None or known[0] != state:
+            # Only a new state: a new reason, such as another failure while unreachable, keeps the count going.
+            self._since[server_id] = datetime.now(UTC)
         self._known[server_id] = (state, reason)
         if self._pending.get(server_id) == written:  # unless a newer set() came in meanwhile
             del self._pending[server_id]

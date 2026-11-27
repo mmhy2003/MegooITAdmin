@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PercentValue } from "@/components/metrics/percent-value";
+import { AlertCount } from "@/components/dashboard/server-card";
 import { MonitoringBadge } from "@/components/servers/monitoring-badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatLoad, formatRate, isStale, type Vitals } from "@/lib/metrics";
@@ -13,10 +14,12 @@ type Props = {
   vitalsOf: Record<string, Vitals>;
   now: number;
   track: (element: Element | null) => void;
+  /** How many alerts fire on each server that has any. */
+  alerts?: Record<string, number>;
 };
 
 /** The Dashboard as a table: one row per server with its newest numbers, dashes when it is not monitored. */
-export function ServerRows({ servers, vitalsOf, now, track }: Props) {
+export function ServerRows({ servers, vitalsOf, now, track, alerts = {} }: Props) {
   return (
     <div className="overflow-x-auto">
       <Table>
@@ -50,7 +53,10 @@ export function ServerRows({ servers, vitalsOf, now, track }: Props) {
                   </Link>
                 </TableCell>
                 <TableCell>
-                  <MonitoringBadge monitoring={server.monitoring} />
+                  <span className="flex flex-wrap items-center gap-2">
+                    <MonitoringBadge monitoring={server.monitoring} />
+                    <AlertCount alerts={alerts[server.id]} />
+                  </span>
                 </TableCell>
                 <TableCell className="tabular-nums">
                   <PercentValue value={overview?.cpu ?? null} />

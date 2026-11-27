@@ -10,6 +10,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access.permissions import Access, Permission
+from app.alerts.service import delete_rules_of
 from app.audit import Event, Target, changes, record
 from app.auth.models import User
 from app.auth.service import actor_of, auth_event
@@ -263,7 +264,9 @@ async def delete_server(db: AsyncSession, request: Request, user: User, server_i
     fingerprint = hostkeys.fingerprint(server.host_key) if server.host_key is not None else None
     change = changes(_fields(server) | {"group": group.name, "tags": tags, "host_key_fingerprint": fingerprint}, {})
     event = _event(request, user, actions.SERVER_DELETED, server, change=change)
+    events = await delete_rules_of(db, request, user, server_id=server.id)
     await db.delete(server)
     await db.flush()
     # record() last: it holds the audit chain lock until the commit.
-    await record(db, event)
+    for each in [*events, event]:
+        await record(db, each)

@@ -4,7 +4,22 @@ import { describe, expect, it, vi } from "vitest";
 import { SettingsTabs } from "@/components/settings/settings-tabs";
 
 describe("SettingsTabs", () => {
-  it("links to Users and Server groups and marks the current page", () => {
+  it("links to Users, Server groups, Alert rules and Notifications", () => {
+    vi.mocked(usePathname).mockReturnValue("/settings/alert-rules");
+    render(<SettingsTabs />);
+
+    const nav = within(screen.getByRole("navigation", { name: "Settings" }));
+    expect(nav.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
+      ["Users", "/settings/users"],
+      ["Server groups", "/settings/groups"],
+      ["Alert rules", "/settings/alert-rules"],
+      ["Notifications", "/settings/notifications"],
+    ]);
+    expect(nav.getByRole("link", { name: "Alert rules" })).toHaveAttribute("aria-current", "page");
+    expect(nav.getByRole("link", { name: "Notifications" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("marks Server groups on its page", () => {
     vi.mocked(usePathname).mockReturnValue("/settings/groups");
     render(<SettingsTabs />);
 

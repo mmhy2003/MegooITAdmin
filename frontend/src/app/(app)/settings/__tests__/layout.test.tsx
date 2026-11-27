@@ -36,7 +36,7 @@ describe("Settings layout", () => {
       expect(screen.getByRole("heading", { name: "Settings are for the Owner" })).toBeInTheDocument();
       expect(
         screen.getByText(
-          "Only the Owner of this installation manages people and server groups. Your own access is on Profile and security.",
+          "Only the Owner of this installation manages people, server groups, alert rules and notifications. Your own access is on Profile and security.",
         ),
       ).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Profile and security" })).toHaveAttribute("href", "/profile");

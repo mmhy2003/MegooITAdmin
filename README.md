@@ -66,8 +66,8 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 
 ### People and access
 
-- The Owner invites a person on Settings → Users and gets a one-time link. The app sends no email: pass the link
-  on by hand. It is valid 7 days. The person opens it, chooses a password and sets up an authenticator.
+- The Owner invites a person on Settings → Users and gets a one-time link. The app emails only alerts (see
+  [Alerts](#alerts)), not invitations: pass the link on by hand. It is valid 7 days. The person opens it, chooses a password and sets up an authenticator.
 - Roles are given per server group (Settings → Server groups). A person is Admin or Operator on each group, or
   has no access to it, and each group's role carries seven switches. Only Connect SSH and Connect RDP are checked
   so far; the other five are kept for the features that use them.
@@ -134,6 +134,48 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
   monitored or not checked yet, by name.
 - Each Linux server shows CPU, memory, its fullest filesystem, load (1 minute) and network, updated live over one
   WebSocket for the servers on screen. CPU and memory carry a 5-minute sparkline.
-- A percentage turns amber with ▲ from 80% and pink from 90%. This is a visual hint only; alert rules come later.
+- A percentage turns amber with ▲ from 80% and pink from 90%. This is a visual hint only: alerts come from the
+  alert rules below.
 - An unreachable server keeps its last values for 5 minutes, greyed, with the reason.
-- Firing alerts join the Dashboard with alert rules.
+
+### Alerts
+
+- An alert rule is a threshold plus a duration, such as "space used above 90% for 10 min". Only the Owner sets the
+  rules, on Settings → Alert rules: create, edit, switch off or delete. Every change is in the audit log.
+- A rule watches CPU used, memory used, filesystem space or inodes used, load (1, 5 or 15 minutes) or
+  "unreachable for N minutes". Load is per CPU core: 1.0 means every core is busy. Each filesystem is its own
+  alert, so two full filesystems give two alerts. A duration of 0 fires at the first sample.
+- A rule applies to all servers, one server group or one server, and has the severity Warning or Critical. Every
+  rule that applies to a server counts on its own: a stricter rule for one server is a second rule.
+- The upgrade adds four starter rules for all servers, which the Owner can edit, switch off or delete:
+
+  | Rule | Condition | Severity |
+  |---|---|---|
+  | Filesystem almost full | Space used above 90% for 10 min | Critical |
+  | Memory almost full | Memory used above 90% for 10 min | Warning |
+  | CPU busy | CPU used above 90% for 15 min | Warning |
+  | Server unreachable | Unreachable for 5 min | Critical |
+
+- The collector checks every sample. An alert fires once its condition has held for the rule's whole duration, and
+  is resolved by the first sample that no longer meets it. "Unreachable" counts from when the server was marked
+  unreachable, and resolves at the next sample. An alert ends instead (shown as Ended) when its rule is changed,
+  switched off or deleted, or when the server is no longer monitored (a changed or unpinned host key). Renaming a
+  rule ends nothing. While the collector is stopped nothing is checked, and firing alerts stay firing.
+- Everyone who sees a server sees its alerts: on the Dashboard (the Firing alerts tile, the Alerts card with
+  Firing and History, and a mark on the server's card or row), on the server's Alerts tab with a banner above the
+  tabs (Linux only), and under the bell in the header, which counts what is new and lists the 10 latest events.
+- Settings → Notifications (Owner only) sends one message when an alert fires and one when it is resolved or ends,
+  with no reminders in between:
+  - **Email**, through the SMTP server set there, to the Owner and the Admins of the server's group at their
+    account address, plus up to 20 extra addresses that get every alert. Everyone is in Bcc. Disabled accounts get
+    nothing. "Send a test" mails the Owner.
+  - **Channels**, up to 20: Generic JSON (a versioned JSON body), Slack-compatible (`{"text": …}`) and Telegram
+    (a bot token and a chat ID).
+  - Email and each channel are "Warning and Critical" or "Critical only".
+- A message that fails is tried six times over about an hour (at once, then after 30 seconds, 2, 5, 15 and 40
+  minutes), then marked failed, and the channel's row shows the error.
+- The SMTP password, webhook URLs and bot tokens are encrypted in the database with a key derived from
+  `AUTH_SECRET_KEY`, and never shown again: the page shows only the host or the chat. A new `AUTH_SECRET_KEY`
+  means typing them again.
+- A webhook URL must be `https://`. `WEBHOOK_ALLOW_HTTP=true` in `.env` also allows `http://`: set it on test
+  stacks only (the dev, e2e and stack-test stacks do).

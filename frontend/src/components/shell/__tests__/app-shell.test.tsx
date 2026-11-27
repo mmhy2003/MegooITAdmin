@@ -4,6 +4,10 @@ import { usePathname } from "next/navigation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockMatchMedia } from "@/__tests__/helpers/match-media";
 import { AppShell } from "@/components/shell/app-shell";
+import { apiFetch } from "@/lib/api";
+
+vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
+vi.mock("@/hooks/use-refresh", () => ({ useRefresh: vi.fn() }));
 
 const owner = { name: "Olive Owner", email: "owner@example.com" };
 const sidebar = () => document.querySelector('[data-slot="sidebar"]');
@@ -13,6 +17,7 @@ describe("AppShell", () => {
   beforeEach(() => {
     document.cookie = "sidebar_state=; max-age=0; path=/";
     vi.mocked(usePathname).mockReturnValue("/");
+    vi.mocked(apiFetch).mockResolvedValue({ unseen: 0, firing: 0, events: [] });
   });
 
   it("collapses and opens the sidebar from the header and remembers it in a cookie", async () => {

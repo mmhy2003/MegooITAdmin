@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { AlertBell } from "@/components/shell/alert-bell";
 import { AccountMenu, type AccountUser } from "@/components/shell/account-menu";
 import { SearchPlaceholder } from "@/components/shell/search-placeholder";
 import { ThemeSwitch } from "@/components/shell/theme-switch";
@@ -8,7 +9,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { pageTitle } from "@/lib/navigation";
 
-/** The bar above every page: the sidebar button, the page title, search, the theme and the account. */
+/** The bar above every page: the sidebar button, the page title, search, the alerts bell, the theme and the account. */
 export function SiteHeader({ user }: { user: AccountUser }) {
   const title = pageTitle(usePathname());
 
@@ -19,6 +20,7 @@ export function SiteHeader({ user }: { user: AccountUser }) {
       <h1 className="truncate text-base font-semibold">{title}</h1>
       <div className="ml-auto flex items-center gap-1">
         <SearchPlaceholder />
+        <AlertBell />
         <ThemeSwitch />
         <AccountMenu user={user} />
       </div>
