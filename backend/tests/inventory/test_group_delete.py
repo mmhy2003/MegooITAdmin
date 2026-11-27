@@ -69,6 +69,7 @@ async def test_deleting_a_group_removes_its_roles_and_records_each(api, clock):
     assert deleted.change == {
         "name": {"before": "staging", "after": None},
         "description": {"before": "The staging servers", "after": None},
+        "log_file_allowlist": {"before": [], "after": None},
     }
 
 

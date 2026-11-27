@@ -16,6 +16,7 @@ from app.core.db import flush_refusing, flush_unique
 from app.inventory import actions
 from app.inventory.models import Server, ServerGroup
 from app.inventory.schemas import ServerGroupIn, ServerGroupOut, ServerGroupPatch
+from app.logs.allowlist import STARTER_PATTERNS, patterns_of, starter_rows
 from app.users import actions as user_actions
 from app.users.service import grant_event
 
@@ -89,6 +90,7 @@ async def create_group(db: AsyncSession, request: Request, owner: User, body: Se
     group = ServerGroup(name=body.name, description=body.description)
     db.add(group)
     await flush_unique(db, "server_groups_name_key", "name_taken")
+    db.add_all(starter_rows(group.id))
     await db.refresh(group)
     # record() last: it holds the audit chain lock until the commit.
     await record(
@@ -99,7 +101,7 @@ async def create_group(db: AsyncSession, request: Request, owner: User, body: Se
             actor_of(owner),
             mfa=True,
             target=_target(group),
-            change=changes({}, _fields(group)),
+            change=changes({}, _fields(group) | {"log_file_allowlist": list(STARTER_PATTERNS)}),
         ),
     )
     return _out(group, 0, 0, True)
@@ -158,13 +160,15 @@ async def delete_group(db: AsyncSession, request: Request, owner: User, group_id
         for grant, user in grants
     ]
     events += await delete_rules_of(db, request, owner, group_id=group.id)
+    # The patterns go with the group (ON DELETE CASCADE); the event keeps them, [] included.
+    patterns = (await patterns_of(db, [group.id])).get(group.id, [])
     deleted = auth_event(
         request,
         actions.SERVER_GROUP_DELETED,
         actor_of(owner),
         mfa=True,
         target=_target(group),
-        change=changes(_fields(group), {}),
+        change=changes(_fields(group) | {"log_file_allowlist": patterns}, {}),
     )
     for grant, _ in grants:
         await db.delete(grant)

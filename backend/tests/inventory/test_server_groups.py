@@ -4,6 +4,7 @@ from auth_helpers import add_grant, events, make_group, make_server, make_user, 
 
 from app.auth.models import User
 from app.inventory import service as inventory_service
+from app.logs.allowlist import STARTER_PATTERNS
 
 PERSON = "pat@example.com"
 
@@ -122,7 +123,10 @@ async def test_the_owner_creates_a_group_and_it_is_recorded(api, clock):
     (created,) = await events("server_group.created")
     assert (created.actor_id, created.result, created.mfa) == (str(the_owner.id), "success", True)
     assert (created.target_type, created.target_id, created.target_name) == ("server_group", body["id"], "staging")
-    assert created.change == {"name": {"before": None, "after": "staging"}}
+    assert created.change == {
+        "name": {"before": None, "after": "staging"},
+        "log_file_allowlist": {"before": None, "after": list(STARTER_PATTERNS)},
+    }
 
 
 async def test_names_clash_without_regard_to_case(api, clock):
