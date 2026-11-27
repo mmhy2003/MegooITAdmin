@@ -108,6 +108,24 @@ describe("AlertRulesPage", () => {
     await waitFor(() => expect(listCalls()).toBe(2));
   });
 
+  it("holds the switch while its change is sent", async () => {
+    mockApi();
+    let answer: (rule: AlertRule) => void = () => {};
+    render(<AlertRulesPage />);
+    const user = userEvent.setup();
+    const disk = within(await screen.findByRole("row", { name: /Disk almost full/ }));
+    vi.mocked(apiFetch).mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+
+    await user.click(disk.getByRole("switch", { name: "Enabled" }));
+    expect(disk.getByRole("switch", { name: "Enabled" })).toBeDisabled();
+    await user.click(disk.getByRole("switch", { name: "Enabled" }));
+    answer(DISK);
+
+    await waitFor(() => expect(disk.getByRole("switch", { name: "Enabled" })).toBeEnabled());
+    const patches = vi.mocked(apiFetch).mock.calls.filter(([, init]) => init?.method === "PATCH");
+    expect(patches).toHaveLength(1);
+  });
+
   it("switches a rule on", async () => {
     mockApi();
     render(<AlertRulesPage />);

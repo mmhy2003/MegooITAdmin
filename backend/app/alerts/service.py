@@ -90,8 +90,12 @@ async def _check_name(db: AsyncSession, name: str, rule_id: UUID | None = None) 
 
 
 async def _firing_counts(db: AsyncSession) -> dict[UUID, int]:
-    """How many alerts of each rule are firing."""
-    query = select(Alert.rule_id, func.count()).where(Alert.state == "firing").group_by(Alert.rule_id)
+    """On how many servers each rule fires: a server firing on two filesystems counts once."""
+    query = (
+        select(Alert.rule_id, func.count(func.distinct(Alert.server_id)))
+        .where(Alert.state == "firing")
+        .group_by(Alert.rule_id)
+    )
     return dict((await db.execute(query)).all())
 
 

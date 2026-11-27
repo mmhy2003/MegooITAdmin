@@ -26,6 +26,8 @@ export function AlertRulesPage() {
   // `undefined` is closed, `null` is a new rule.
   const [editing, setEditing] = useState<AlertRule | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<AlertRule | null>(null);
+  // The rules whose switch is being sent: held so a second click cannot overtake the first.
+  const [switching, setSwitching] = useState<ReadonlySet<string>>(new Set());
 
   const reload = useCallback(
     () =>
@@ -44,12 +46,18 @@ export function AlertRulesPage() {
   }, [reload]);
 
   async function toggle(rule: AlertRule, enabled: boolean) {
+    setSwitching((ids) => new Set(ids).add(rule.id));
     try {
       await apiFetch<AlertRule>(`/alert-rules/${rule.id}`, { method: "PATCH", body: { enabled } });
       await reload();
     } catch (e) {
       setError(e instanceof ApiError ? e.detail : "error");
     }
+    setSwitching((ids) => {
+      const rest = new Set(ids);
+      rest.delete(rule.id);
+      return rest;
+    });
   }
 
   function saved() {
@@ -115,6 +123,7 @@ export function AlertRulesPage() {
                           <Switch
                             id={`rule-enabled-${rule.id}`}
                             checked={rule.enabled}
+                            disabled={switching.has(rule.id)}
                             onCheckedChange={(enabled) => void toggle(rule, enabled)}
                           />
                           <Label htmlFor={`rule-enabled-${rule.id}`}>Enabled</Label>

@@ -43,7 +43,7 @@ async def firing(rule, server, instance: str = "/", state: str = "firing") -> No
         await session.commit()
 
 
-async def test_the_owner_lists_the_starter_set_with_firing_counts(api, clock):
+async def test_the_owner_lists_the_starter_set_with_the_servers_each_rule_fires_on(api, clock):
     disk, memory, _, unreachable = await starter_rules()
     group = await make_group("staging")
     web = await make_server(group.id, "web-01")
@@ -60,7 +60,8 @@ async def test_the_owner_lists_the_starter_set_with_firing_counts(api, clock):
     rules = response.json()
     assert [(r["name"], r["firing_count"]) for r in rules] == [
         ("CPU busy", 0),
-        ("Filesystem almost full", 3),
+        # Two filesystems of web-01 and one of db-01: two servers.
+        ("Filesystem almost full", 2),
         ("Memory almost full", 0),
         ("Server unreachable", 1),
     ]

@@ -62,7 +62,7 @@ class AlertRuleOut(BaseModel):
     # Goes up when the condition, the scope or the severity changes.
     revision: int
     suggested_playbook_id: UUID | None
-    # How many of its alerts are firing now.
+    # On how many servers it fires now.
     firing_count: int
     created_at: datetime
     updated_at: datetime
