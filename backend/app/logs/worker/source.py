@@ -88,9 +88,9 @@ class RunningSource:
             await self._task
 
     async def end(self, reason: str) -> None:
-        """Tells the viewers the source ended for this reason, then stops it."""
-        await self._publish(Ended(type="ended", reason=reason))
+        """Stops the source, then tells the viewers it ended for this reason: nothing of it follows the end."""
         await self.stop()
+        await self._publish(Ended(type="ended", reason=reason))
 
     async def _run(self, on_end: Callable[["RunningSource"], None]) -> None:
         async with self._links.use(self._server) as conn, client.follow(conn, command(self.source)) as followed:
@@ -98,7 +98,9 @@ class RunningSource:
             try:
                 await self._read(followed)
             finally:
-                flusher.cancel()
+                # Under the lock the flusher sleeps or waits for it: cancelling it loses no batch it took.
+                async with self._publishing:
+                    flusher.cancel()
                 with suppress(asyncio.CancelledError):
                     await flusher
             await self._flush()

@@ -5,15 +5,18 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
 from app.core.valkey import valkey_client
+from app.inventory.models import Server
 from app.logs.protocol import ON_SOURCE, Ended, Lines, source_channel
 from app.logs.sources import SOURCES, source_key
 from app.logs.worker.links import Links
+from app.logs.worker import source as source_module
 from app.logs.worker.source import Limits, RunningSource
+from app.ssh.client import Exit
 from collector_helpers import eventually, pinned_server
 from logs_helpers import log_file
 
@@ -169,3 +172,78 @@ async def test_a_container_that_stops_ends_with_exited(clean_auth, logs_sessions
             await eventually(lambda: messages and isinstance(messages[-1], Ended))
             assert messages[-1] == Ended(type="ended", reason="exited", status=3)
             assert [line["text"] for line in streamed(messages)] == ["bye"]
+
+
+class FakeLinks:
+    @asynccontextmanager
+    async def use(self, server):
+        yield None
+
+
+class FakeFollower:
+    """Yields these output chunks, each after its gate (an Event, or None), then ends with status 0."""
+
+    def __init__(self, chunks: list[tuple[asyncio.Event | None, bytes]], *, then_wait: bool = False):
+        self.exit: Exit | None = None
+        self._chunks = chunks
+        self._then_wait = then_wait
+
+    async def __aiter__(self):
+        for gate, chunk in self._chunks:
+            if gate is not None:
+                await gate.wait()
+            yield "out", chunk
+        if self._then_wait:
+            await asyncio.Event().wait()
+        self.exit = Exit(0, b"")
+
+
+class SlowValkey:
+    """Records what is published as it is sent, as Valkey orders it; each publish then takes `delay`."""
+
+    def __init__(self, delay: float):
+        self.published: list = []
+        self.publishing = asyncio.Event()
+        self._delay = delay
+
+    async def publish(self, channel: str, data: str) -> None:
+        self.published.append(ON_SOURCE.validate_json(data))
+        self.publishing.set()
+        await asyncio.sleep(self._delay)
+
+
+def faked(monkeypatch, follower: FakeFollower, valkey: SlowValkey, limits: Limits) -> RunningSource:
+    @asynccontextmanager
+    async def follow(conn, argv):
+        yield follower
+
+    monkeypatch.setattr(source_module.client, "follow", follow)
+    server = Server(id=uuid4())
+    source = source_of(server.id, kind="file", path="/var/log/syslog")
+    return RunningSource(source_key(source), source, server, links=FakeLinks(), valkey=valkey, limits=limits,
+                         clock=lambda: 0.0)
+
+
+async def test_the_end_waits_for_a_batch_being_published(monkeypatch):
+    valkey = SlowValkey(delay=0.1)
+    # The output ends while the publisher sends a batch it took: lines, then the skipped count of the second line.
+    follower = FakeFollower([(None, b"a\nb\n"), (valkey.publishing, b"")])
+    ran = faked(monkeypatch, follower, valkey, Limits(max_lines_per_second=1, batch_every=0.01))
+    ended: list = []
+    ran.start(ended.append)
+
+    await eventually(lambda: ended == [ran], timeout=5)
+    assert [message.type for message in valkey.published] == ["lines", "skipped", "ended"]
+
+
+async def test_ending_a_source_publishes_ended_last(monkeypatch):
+    valkey = SlowValkey(delay=0.02)
+    # Batches keep going out while end() publishes Ended.
+    follower = FakeFollower([(None, b"line %d\n" % n) for n in range(1, 1001)], then_wait=True)
+    ran = faked(monkeypatch, follower, valkey, Limits(batch_every=0.005, batch_lines=1))
+    ran.start(lambda _: None)
+    await eventually(lambda: valkey.published, timeout=5)
+
+    await ran.end("idle")
+    await asyncio.sleep(0.1)
+    assert valkey.published[-1] == Ended(type="ended", reason="idle")
