@@ -1,6 +1,6 @@
-"""Shared helpers of the log tests: allowlist patterns."""
+"""Shared helpers of the log tests: allowlist patterns and log files."""
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from conftest import owner_session
 
@@ -12,3 +12,8 @@ async def add_pattern(group_id: UUID, pattern: str) -> None:
     async with owner_session() as session:
         session.add(LogFileAllowlist(server_group_id=group_id, pattern=pattern))
         await session.commit()
+
+
+def log_file(name: str) -> str:
+    """A path of its own on the fake server, which the starter patterns cover."""
+    return f"/var/log/nginx/{name}-{uuid4().hex[:8]}.log"
