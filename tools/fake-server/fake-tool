@@ -2,12 +2,22 @@
 # Stands in for docker, systemctl, journalctl, apt-get and dnf: logs its name and each argument in brackets to
 # /var/log/fake-tools.log, then prints the fixture of the call and exits with its status. The fixture of a call is
 # /etc/fake-tools/<tool>_<first argument> when that file exists, else /etc/fake-tools/<tool>; <fixture>.exit holds the
-# exit status (0 without one). No fixture: nothing printed, status 0.
+# exit status (0 without one). No fixture: nothing printed, status 0. A call with -f or --follow, no <fixture>.exit and
+# a follow file /var/lib/fake-tools/follow/<fixture name> follows: after the fixture it prints what is appended to that
+# file from then on, until it is stopped.
 { printf '%s' "${0##*/}"; printf ' [%s]' "$@"; printf '\n'; } >> /var/log/fake-tools.log
 dir=/etc/fake-tools
 tool=${0##*/}
 name=$tool
 case ${1-} in [A-Za-z0-9]*) case $1 in *[!A-Za-z0-9-]*) ;; *) [ -f "$dir/${tool}_$1" ] && name=${tool}_$1 ;; esac ;; esac
+follow=
+case " $* " in *' -f '*|*' --follow '*) follow=1 ;; esac
+feed=/var/lib/fake-tools/follow/$name
+if [ -n "$follow" ] && [ ! -f "$dir/$name.exit" ] && [ -f "$feed" ]; then
+  size=$(stat -c %s "$feed")
+  [ -f "$dir/$name" ] && cat "$dir/$name"
+  exec tail -c +$((size + 1)) -F "$feed" 2> /dev/null
+fi
 [ -f "$dir/$name" ] && cat "$dir/$name"
 [ -f "$dir/$name.exit" ] && exit "$(cat "$dir/$name.exit")"
 exit 0

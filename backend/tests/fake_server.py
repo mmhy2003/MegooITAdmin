@@ -24,6 +24,8 @@ CTL = "/usr/local/sbin/megoo-ctl"
 LOG = "/var/log/fake-tools.log"
 # The stubs' fixtures: <tool>_<first argument> or <tool> is what a call prints, <fixture>.exit its exit status.
 FIXTURES = "/etc/fake-tools"
+# What a stub called with -f or --follow prints after its fixture: what feed() appends to <fixture name> here.
+FOLLOW = "/var/lib/fake-tools/follow"
 ACCOUNTS = ("megoo", "megoo-nologs", "megoo-nosudo", "megoo-wide", "megoo-docker", "megoo-root")
 
 
@@ -85,6 +87,21 @@ class FakeServer:
         finally:
             for file in kept:
                 self._root("sh", "-c", 'rm -f "$1"; if [ -e "$1.saved" ]; then mv "$1.saved" "$1"; fi', "sh", file)
+
+    def feed(self, name: str, text: str) -> None:
+        """Appends this text to the follow file of the stub fixture <name>: a stub that follows prints it next."""
+        self._root("sh", "-c", 'cat >> "$1"', "sh", f"{FOLLOW}/{name}", input=text)
+
+    def append(self, path: str, text: str) -> None:
+        """Appends this text to the file at this path, made (mode 0644) with its directories when missing."""
+        script = 'mkdir -p "$(dirname "$1")" && touch "$1" && chmod 0644 "$1" && cat >> "$1"'
+        self._root("sh", "-c", script, "sh", path, input=text)
+
+    def followers(self) -> int:
+        """How many followed commands run in the container: follow() wrappers and tail -F."""
+        result = self.exec("pgrep", "-c", "-f", "megoo-follow|^tail .*-F")
+        assert result.returncode in (0, 1), result.stderr  # 1: no process matched
+        return int(result.stdout.strip() or 0)
 
     @contextmanager
     def hidden(self, *paths: str) -> Iterator[None]:
