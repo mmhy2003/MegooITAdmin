@@ -1,7 +1,8 @@
-"""The request and response bodies of /api/notifications/email."""
+"""The request and response bodies of /api/notifications/email and /api/notification-channels."""
 
 from datetime import datetime
 from typing import Annotated, Literal, Self
+from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, StringConstraints, model_validator
 
@@ -74,6 +75,48 @@ class EmailOut(BaseModel):
     from_address: str | None
     extra_addresses: list[str]
     min_severity: str
+    last_delivery: DeliveryOut | None
+
+
+ChannelKind = Literal["webhook_json", "webhook_slack", "telegram"]
+ChannelName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+# The secret fields carry no constraint of their own: a refused value is answered with a code, never echoed back.
+SecretText = Annotated[str | None, BeforeValidator(_blank_is_none)]
+
+
+class ChannelIn(BaseModel):
+    """A new channel: a webhook's url, or a Telegram bot's token and chat."""
+
+    name: ChannelName
+    kind: ChannelKind
+    min_severity: Severity = "warning"
+    enabled: bool = True
+    url: SecretText = None
+    bot_token: SecretText = None
+    chat_id: SecretText = None
+
+
+class ChannelPatch(BaseModel):
+    """The fields to change. A secret field sent replaces that part of the secret."""
+
+    name: ChannelName | None = None
+    kind: ChannelKind | None = None
+    min_severity: Severity | None = None
+    enabled: bool | None = None
+    url: SecretText = None
+    bot_token: SecretText = None
+    chat_id: SecretText = None
+
+
+class ChannelOut(BaseModel):
+    id: UUID
+    name: str
+    kind: str
+    min_severity: str
+    enabled: bool
+    hint: str
+    created_at: datetime
+    updated_at: datetime
     last_delivery: DeliveryOut | None
 
 

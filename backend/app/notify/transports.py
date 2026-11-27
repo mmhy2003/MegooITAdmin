@@ -3,6 +3,7 @@ sendMessage. A failure is a DeliveryFailed with a short code and nothing else: n
 original exception, which is dropped from the chain so a traceback cannot show it either."""
 
 import asyncio
+import logging
 import smtplib
 import ssl
 from dataclasses import dataclass
@@ -15,6 +16,10 @@ import httpx
 
 TELEGRAM_API = "https://api.telegram.org"
 TIMEOUT_SECONDS = 10
+
+# httpx logs each request that gets an answer at INFO, with its whole address: a webhook's URL or a bot's token.
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 class DeliveryFailed(Exception):
