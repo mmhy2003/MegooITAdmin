@@ -303,6 +303,25 @@ async def test_last_error_holds_only_a_code(server, sink, fake_clock, settings, 
     assert [post["path"] for post in sink.received] == ["/bot123456:secret-bot-token/sendMessage"]
 
 
+async def test_an_unexpected_error_counts_as_a_try_and_the_queue_goes_on(server, sink, fake_clock, settings, caplog):
+    broken = await make_channel("webhook_json", {"address": f"{sink.url}/hook"})  # no "url": a KeyError
+    await make_channel("webhook_json", {"url": f"{sink.url}/hook"})
+    await make_alert(server.id, fired_at=T0, rule=await make_rule())
+    sender = make_sender(fake_clock, settings)
+    await sender.dispatch()
+
+    with caplog.at_level(logging.ERROR, logger="app.notify.sender"):
+        assert await sender.send_due() == 2
+
+    by_channel = {row.channel_id: row for row in await deliveries()}
+    failed = by_channel.pop(broken.id)
+    [delivered] = by_channel.values()
+    assert (failed.state, failed.attempts, failed.last_error) == ("pending", 1, "internal")
+    assert failed.next_attempt_at == T0 + timedelta(seconds=RETRY_DELAYS[0])
+    assert delivered.state == "delivered" and len(sink.received) == 1
+    assert any(record.exc_info for record in caplog.records)
+
+
 async def test_run_logs_a_failure_and_goes_on(fake_clock, settings, monkeypatch, caplog):
     sender = make_sender(fake_clock, settings)
     calls, done = [], asyncio.Event()

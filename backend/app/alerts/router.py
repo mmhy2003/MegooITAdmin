@@ -55,9 +55,10 @@ async def list_alerts(
     group_id: UUID | None = None,
     tag: Annotated[list[str] | None, Query()] = None,
     before: datetime | None = None,
+    before_id: UUID | None = None,
     limit: Annotated[int, Query(ge=1, le=service.PAGE)] = service.PAGE,
 ) -> list[AlertOut]:
-    return await service.list_alerts(db, access, state, group_id, tag or [], before, limit)
+    return await service.list_alerts(db, access, state, group_id, tag or [], before, before_id, limit)
 
 
 @alerts_router.get("/events")
@@ -74,5 +75,11 @@ async def mark_seen(user: CurrentUser) -> Response:
 @server_alerts_router.get(
     "/servers/{server_id}/alerts", dependencies=[Depends(require_group_visible(group=group_of_server))]
 )
-async def server_alerts(server_id: UUID, db: DbSession, before: datetime | None = None) -> list[AlertOut]:
-    return await service.server_alerts(db, server_id, before)
+async def server_alerts(
+    server_id: UUID,
+    db: DbSession,
+    before: datetime | None = None,
+    before_id: UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=service.PAGE)] = service.PAGE,
+) -> list[AlertOut]:
+    return await service.server_alerts(db, server_id, before, before_id, limit)

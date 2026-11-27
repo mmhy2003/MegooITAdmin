@@ -60,7 +60,7 @@ export function AlertsCard({ firing, filters }: Props) {
     if (tab === "history") read(path, false);
   }, [tab, path, read]);
 
-  const last = history?.alerts.at(-1)?.resolved_at;
+  const last = history?.alerts.at(-1);
 
   return (
     <Card>
@@ -91,7 +91,7 @@ export function AlertsCard({ firing, filters }: Props) {
                   <p className="text-muted-foreground">No alerts in the last 30 days.</p>
                 </AlertRows>
               )}
-              {history?.more && last && (
+              {history?.more && last?.resolved_at && (
                 <Button
                   variant="outline"
                   disabled={loading}

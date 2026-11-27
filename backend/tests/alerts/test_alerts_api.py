@@ -146,6 +146,30 @@ async def test_the_server_route_lists_firing_first_then_history_and_404s_a_hidde
     assert hidden_server.status_code == 404
 
 
+async def test_alerts_closed_at_the_same_time_page_with_before_and_before_id(api, clock):
+    """The collector ends every alert of a deleted rule with one `now`: no page may skip some of them."""
+    group = await make_group("staging")
+    web = await make_server(group.id, "web-01")
+    together = [await closed(web, clock, 5, state="ended", instance=f"/m{n}") for n in range(53)]
+    together.sort(key=lambda alert: alert.id, reverse=True)
+    older = await closed(web, clock, 10)
+    async with signed_in(api, clock, "owner@example.com", "owner") as (_, client):
+        pages = []
+        for path, extra in ((f"/api/servers/{web.id}/alerts", {}), ("/api/alerts", {"state": "closed"})):
+            first = (await client.get(path, params=extra)).json()
+            cursor = {"before": first[-1]["resolved_at"], "before_id": first[-1]["id"]}
+            rest = (await client.get(path, params={**extra, **cursor})).json()
+            pages.append((first, rest))
+        short = (await client.get(f"/api/servers/{web.id}/alerts", params={"limit": 10})).json()
+        too_many = await client.get(f"/api/servers/{web.id}/alerts", params={"limit": 51})
+
+    expected = [str(alert.id) for alert in together] + [str(older.id)]
+    for first, rest in pages:
+        assert [alert["id"] for alert in first + rest] == expected
+    assert [alert["id"] for alert in short] == expected[:10]
+    assert too_many.status_code == 422
+
+
 async def test_the_bell_counts_unseen_events_and_seen_moves_the_mark(api, clock):
     group = await make_group("staging")
     web = await make_server(group.id, "web-01")

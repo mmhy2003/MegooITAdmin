@@ -274,6 +274,19 @@ def test_a_sample_resolves_an_unreachable_alert():
     assert e.firing() == []
 
 
+def test_a_sample_after_the_unreachable_time_keeps_its_rule_from_firing_again():
+    """The stream resolves the alert with a sample before its status says reachable: a poll in between must not fire
+    the rule again on the old unreachable status."""
+    e = engine(unreachable_rule(duration_seconds=0))
+    [fired] = e.unreachable(WEB.id, at(0), at(0))
+    [resolved] = e.observe(WEB.id, readings(), 1, at(10))
+
+    assert resolved.alert_id == fired.alert_id
+    assert e.unreachable(WEB.id, at(0), at(15)) == []
+    [again] = e.unreachable(WEB.id, at(20), at(20))  # unreachable again, after the sample
+    assert again.kind == "fired" and again.alert_id != fired.alert_id
+
+
 def test_a_changed_rule_ends_its_alert():
     r = rule(duration_seconds=0)
     e = engine(r)

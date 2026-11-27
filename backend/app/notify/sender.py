@@ -54,6 +54,16 @@ async def email_recipients(db: AsyncSession, server_group_id: UUID) -> list[str]
     return sorted({address.lower() for address in [*accounts, *extra]})
 
 
+def _failed(delivery: NotificationDelivery, code: str, now: datetime) -> None:
+    """Counts a failed try: the delivery is retried on RETRY_DELAYS, or failed after MAX_ATTEMPTS."""
+    delivery.attempts += 1
+    delivery.last_error = code
+    if delivery.attempts >= MAX_ATTEMPTS:
+        delivery.state = "failed"
+    else:
+        delivery.next_attempt_at = now + timedelta(seconds=RETRY_DELAYS[delivery.attempts - 1])
+
+
 class Sender:
     def __init__(
         self,
@@ -138,12 +148,17 @@ class Sender:
             try:
                 await self._deliver(db, delivery)
             except DeliveryFailed as failure:
-                delivery.attempts += 1
-                delivery.last_error = failure.code
-                if delivery.attempts >= MAX_ATTEMPTS:
-                    delivery.state = "failed"
-                else:
-                    delivery.next_attempt_at = now + timedelta(seconds=RETRY_DELAYS[delivery.attempts - 1])
+                _failed(delivery, failure.code, now)
+            except Exception:
+                # A bug or a row of an unexpected shape: it counts as a try, so the deliveries behind it still go.
+                logger.exception("Could not send delivery %s", delivery.id)
+                delivery_id = delivery.id
+                # The transaction may be aborted: the row is read again, still held, in a new one.
+                await db.rollback()
+                delivery = await db.scalar(query.where(NotificationDelivery.id == delivery_id))
+                if delivery is None:
+                    return True  # another sender holds it now
+                _failed(delivery, "internal", now)
             else:
                 delivery.state = "delivered"
                 delivery.delivered_at = now

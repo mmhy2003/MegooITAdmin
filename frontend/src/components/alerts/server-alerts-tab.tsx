@@ -5,7 +5,7 @@ import { AlertRows } from "@/components/alerts/alert-rows";
 import { Alert as Notice } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { Alert } from "@/lib/alerts";
+import { type Alert, afterAlert } from "@/lib/alerts";
 import { ApiError, apiFetch } from "@/lib/api";
 import { messageFor } from "@/lib/auth/messages";
 
@@ -29,11 +29,11 @@ export function ServerAlertsTab({ serverId, alerts }: { serverId: string; alerts
   const shown = new Set(first.map((alert) => alert.id));
   const history = [...first, ...(older?.alerts ?? []).filter((alert) => !shown.has(alert.id))];
   const more = older === null ? first.length === PAGE : older.more;
-  const last = history.at(-1)?.resolved_at;
+  const last = history.at(-1);
 
-  function showMore(before: string) {
+  function showMore(after: Alert) {
     setLoading(true);
-    apiFetch<Alert[]>(`/servers/${serverId}/alerts?${new URLSearchParams({ before })}`).then(
+    apiFetch<Alert[]>(`/servers/${serverId}/alerts?${new URLSearchParams(afterAlert(after))}`).then(
       (page) => {
         setOlder((current) => ({ alerts: [...(current?.alerts ?? []), ...page], more: page.length === PAGE }));
         setError(null);
@@ -71,7 +71,7 @@ export function ServerAlertsTab({ serverId, alerts }: { serverId: string; alerts
             <p className="text-muted-foreground">No alert has closed on this server yet.</p>
           </AlertRows>
           {error && <Notice variant="destructive">{messageFor(error)}</Notice>}
-          {more && last && (
+          {more && last?.resolved_at && (
             <Button variant="outline" disabled={loading} onClick={() => showMore(last)}>
               Show more
             </Button>

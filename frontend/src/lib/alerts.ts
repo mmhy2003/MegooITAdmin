@@ -200,10 +200,21 @@ export function eventSentence(event: AlertEvent): string {
   return alertHeadline(alert, "fired");
 }
 
-/** The API path listing the firing or the closed alerts of the servers matching these filters, older than `before`. */
-export function alertsPath(state: "firing" | "closed", filters: ServerFilters, before?: string): string {
-  const extra: Record<string, string> = { state };
-  if (before !== undefined) extra.before = before;
+/**
+ * The query asking for the closed alerts listed after `last`: resolved before it, or at the same time and after it by
+ * id. The collector ends many alerts with one time, so the time alone would skip some.
+ */
+export function afterAlert(last: Pick<Alert, "id" | "resolved_at">): Record<string, string> {
+  return last.resolved_at === null ? {} : { before: last.resolved_at, before_id: last.id };
+}
+
+/** The API path listing the firing or the closed alerts of the servers matching these filters, after `last`. */
+export function alertsPath(
+  state: "firing" | "closed",
+  filters: ServerFilters,
+  last?: Pick<Alert, "id" | "resolved_at">,
+): string {
+  const extra: Record<string, string> = { state, ...(last === undefined ? {} : afterAlert(last)) };
   return withQuery("/alerts", "group_id", filters, extra);
 }
 

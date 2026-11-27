@@ -6,7 +6,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.alerts import actions
@@ -285,10 +285,13 @@ def _firing(query):
     return query.where(Alert.state == "firing").order_by(Alert.fired_at.desc(), Alert.id.desc())
 
 
-def _closed(query, before: datetime | None, limit: int):
-    """The resolved and ended alerts, newest first, older than `before` when given."""
+def _closed(query, before: datetime | None, before_id: UUID | None, limit: int):
+    """The resolved and ended alerts, newest first, after the cursor when given: older than `before`, or, with
+    `before_id`, resolved at `before` and listed after that alert. The collector ends many alerts with one time."""
     query = query.where(Alert.state != "firing")
-    if before is not None:
+    if before is not None and before_id is not None:
+        query = query.where(tuple_(Alert.resolved_at, Alert.id) < tuple_(before, before_id))
+    elif before is not None:
         query = query.where(Alert.resolved_at < before)
     return query.order_by(Alert.resolved_at.desc(), Alert.id.desc()).limit(limit)
 
@@ -304,6 +307,7 @@ async def list_alerts(
     group_id: UUID | None,
     tags: list[str],
     before: datetime | None,
+    before_id: UUID | None,
     limit: int,
 ) -> list[AlertOut]:
     """The alerts of the servers the person sees, in one group when asked, carrying every tag asked for: every
@@ -315,14 +319,16 @@ async def list_alerts(
         query = query.where(Server.id.in_(select(ServerTag.server_id).where(ServerTag.tag == tag)))
     if state == "firing":
         return await _alerts(db, _firing(query))
-    return await _alerts(db, _closed(query.where(Alert.resolved_at >= clock.now() - HISTORY), before, limit))
+    return await _alerts(db, _closed(query.where(Alert.resolved_at >= clock.now() - HISTORY), before, before_id, limit))
 
 
-async def server_alerts(db: AsyncSession, server_id: UUID, before: datetime | None) -> list[AlertOut]:
+async def server_alerts(
+    db: AsyncSession, server_id: UUID, before: datetime | None, before_id: UUID | None, limit: int
+) -> list[AlertOut]:
     """The server's alerts: without `before`, every firing one then the first page of its whole history; with it,
-    the page of its history older than it."""
+    the page of its history after that cursor (see `_closed`)."""
     query = _alerts_query().where(Alert.server_id == server_id)
-    closed = await _alerts(db, _closed(query, before, PAGE))
+    closed = await _alerts(db, _closed(query, before, before_id, limit))
     return closed if before is not None else await _alerts(db, _firing(query)) + closed
 
 

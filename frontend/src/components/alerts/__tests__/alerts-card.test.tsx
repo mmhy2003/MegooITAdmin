@@ -101,7 +101,8 @@ describe("AlertsCard", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Show more" }));
     await waitFor(() => expect(rowIds()).toHaveLength(53));
     expect(rowIds().slice(48)).toEqual(["c-48", "c-49", "c-50", "c-51", "c-52"]);
-    expect(apiFetch).toHaveBeenLastCalledWith(alertsPath("closed", ALL, first[49].resolved_at!));
+    expect(apiFetch).toHaveBeenLastCalledWith(alertsPath("closed", ALL, first[49]));
+    expect(apiFetch).toHaveBeenLastCalledWith(expect.stringContaining("before_id=c-49"));
     expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
 

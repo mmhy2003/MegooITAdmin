@@ -167,9 +167,10 @@ describe("alertsPath", () => {
     expect(alertsPath("firing", { group: null, tags: [] })).toBe("/alerts?state=firing");
   });
 
-  it("reads closed alerts of a group with tags, before a time", () => {
-    expect(alertsPath("closed", { group: "g-1", tags: ["eu", "web"] }, "2026-11-27T10:00:00Z")).toBe(
-      "/alerts?group_id=g-1&tag=eu&tag=web&state=closed&before=2026-11-27T10%3A00%3A00Z",
+  it("reads closed alerts of a group with tags, after the last one shown", () => {
+    const last = { id: "a-9", resolved_at: "2026-11-27T10:00:00Z" };
+    expect(alertsPath("closed", { group: "g-1", tags: ["eu", "web"] }, last)).toBe(
+      "/alerts?group_id=g-1&tag=eu&tag=web&state=closed&before=2026-11-27T10%3A00%3A00Z&before_id=a-9",
     );
   });
 });

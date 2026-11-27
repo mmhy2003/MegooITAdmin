@@ -163,6 +163,10 @@ class Engine:
         server = self._servers.get(server_id)
         if server is None:
             return []
+        last = self._last_sample.get(server_id)
+        if last is not None and last > since:
+            # A sample came after: the status has not caught up yet, the server is back.
+            return []
         transitions: list[Transition] = []
         for rule in self._rules:
             if not rule.enabled or rule.metric != "unreachable" or not rule.applies_to(server):

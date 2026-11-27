@@ -123,7 +123,7 @@ describe("ServerAlertsTab", () => {
     await waitFor(() => expect(rowIds(history)).toHaveLength(53));
     expect(rowIds(history).slice(48)).toEqual(["c-48", "c-49", "c-50", "c-51", "c-52"]);
     expect(apiFetch).toHaveBeenCalledWith(
-      `/servers/s-1/alerts?${new URLSearchParams({ before: first[49].resolved_at! })}`,
+      `/servers/s-1/alerts?${new URLSearchParams({ before: first[49].resolved_at!, before_id: "c-49" })}`,
     );
     expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
