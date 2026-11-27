@@ -1,8 +1,16 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { usePathname } from "next/navigation";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SiteHeader } from "@/components/shell/site-header";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { apiFetch } from "@/lib/api";
+
+vi.mock("@/lib/api", async (orig) => ({ ...(await orig<typeof import("@/lib/api")>()), apiFetch: vi.fn() }));
+vi.mock("@/hooks/use-refresh", () => ({ useRefresh: vi.fn() }));
+
+beforeEach(() => {
+  vi.mocked(apiFetch).mockResolvedValue({ unseen: 0, firing: 0, events: [] });
+});
 
 function renderHeader(pathname: string) {
   vi.mocked(usePathname).mockReturnValue(pathname);
@@ -41,10 +49,21 @@ describe("SiteHeader", () => {
     for (const button of buttons) expect(button).toBeDisabled();
   });
 
-  it("holds the sidebar button, the theme button and the account menu", () => {
+  it("holds the sidebar button, the alerts bell, the theme button and the account menu", async () => {
     renderHeader("/");
+    await screen.findByRole("button", { name: "Alerts, 0 new" });
     for (const name of ["Toggle Sidebar", "Switch between light and dark", "Account"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
+  });
+
+  it("puts the bell before the theme button", async () => {
+    renderHeader("/");
+    const names = within(screen.getByRole("banner"))
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label"));
+    expect(names.indexOf("Alerts, 0 new")).toBeGreaterThan(-1);
+    expect(names.indexOf("Alerts, 0 new")).toBe(names.indexOf("Switch between light and dark") - 1);
+    await screen.findByRole("button", { name: "Alerts, 0 new" });
   });
 });
