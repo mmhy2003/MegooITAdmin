@@ -557,5 +557,51 @@ def test_one_firing_alert_per_rule_server_and_instance():
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0011 alerts'")
 
 
+def _logs_objects() -> list:
+    return _fetch(
+        "SELECT to_regclass('log_file_allowlist'), EXISTS (SELECT FROM pg_roles WHERE rolname = 'megooitadmin_logs')"
+    )
+
+
+def test_0012_goes_down_and_up_again():
+    command.downgrade(_config(), "0011")
+    try:
+        assert _logs_objects() == [(None, False)]
+    finally:
+        upgrade_to_head()
+    assert _logs_objects() == [("log_file_allowlist", True)]
+
+
+def test_0012_gives_every_existing_group_the_starter_patterns():
+    command.downgrade(_config(), "0011")
+    try:
+        _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0012')")
+    finally:
+        upgrade_to_head()
+    try:
+        assert _fetch(
+            "SELECT a.pattern FROM log_file_allowlist a JOIN server_groups g ON g.id = a.server_group_id"
+            " WHERE g.name = 'Migration probe group 0012' ORDER BY a.pattern"
+        ) == [("/var/log/apache2/*.log",), ("/var/log/messages",), ("/var/log/nginx/*.log",), ("/var/log/syslog",)]
+    finally:
+        # Its patterns cascade.
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0012'")
+
+
+def test_the_database_refuses_a_second_equal_pattern_in_a_group():
+    _execute("INSERT INTO server_groups (id, name) VALUES (gen_random_uuid(), 'Migration probe group 0012 unique')")
+    insert = (
+        "INSERT INTO log_file_allowlist (id, server_group_id, pattern)"
+        " SELECT gen_random_uuid(), id, '/var/log/app.log' FROM server_groups"
+        " WHERE name = 'Migration probe group 0012 unique'"
+    )
+    try:
+        _execute(insert)
+        with pytest.raises(IntegrityError, match="log_file_allowlist_server_group_id_pattern_key"):
+            _execute(insert)
+    finally:
+        _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0012 unique'")
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())

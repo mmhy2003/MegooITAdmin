@@ -3,9 +3,11 @@ host key and nothing else, and what the signed-in account may do with sudo."""
 
 import asyncio
 import re
+import shlex
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from typing import Literal
 
 import asyncssh
 
@@ -31,6 +33,16 @@ _SUDO_HEADER = re.compile(r"^User \S+ may run the following commands on ")
 _RUNAS = re.compile(r"^\([^)]*\)\s*")
 _TAGS = re.compile(r"^(?:[A-Z_]+:\s*)+")
 _SCRIPT_ARG = re.compile(r"[A-Za-z0-9.-]{1,253}")  # a host name, a number or a word: nothing a shell reads
+FOLLOW_ERRORS = 4096  # bytes of error output kept for the reason of an end
+FOLLOW_MAX_ARGS = 32
+FOLLOW_MAX_ARG = 4096  # characters of one argument
+# $0 is megoo-follow, "$@" the command. The command gets no stdin. A background cat reads the channel's stdin: when the
+# channel closes it gets EOF and ends the command, so nothing stays on the server, also for a quiet tail -F.
+FOLLOW_WRAPPER = (
+    'exec 3<&0; "$@" 3<&- < /dev/null & c=$!; '
+    '{ cat <&3 > /dev/null 2>&1; kill -TERM "$c" 2> /dev/null; } > /dev/null 2>&1 & w=$!; '
+    'wait "$c"; s=$?; kill "$w" 2> /dev/null; exit "$s"'
+)
 
 
 # A signed-in connection, the type other modules name so that only this one uses asyncssh's connection API.
@@ -267,3 +279,91 @@ async def run_script(
         if not timed_out:
             with suppress(asyncssh.Error, OSError, TimeoutError):
                 await asyncio.wait_for(process.wait_closed(), CLOSE_TIMEOUT)
+
+
+@dataclass(frozen=True)
+class Exit:
+    status: int | None  # None: no exit status (a signal, or a broken channel)
+    errors: bytes  # the first FOLLOW_ERRORS bytes of its error output
+
+
+Stream = Literal["out", "err"]
+
+
+class Follower:
+    """The chunks of a followed command's output and error output, as they come, until both streams end. Then `exit`
+    holds how it ended."""
+
+    def __init__(self, process: asyncssh.SSHClientProcess[bytes]) -> None:
+        self.exit: Exit | None = None
+        self._process = process
+        self._errors = b""
+        self._open = 2
+        # Bounded: a reader waits while chunks are not taken, so the channel's window holds the command back.
+        self._queue: asyncio.Queue[tuple[Stream, bytes | Exception]] = asyncio.Queue(maxsize=8)
+        self._readers = [
+            asyncio.create_task(self._read("out", process.stdout)),
+            asyncio.create_task(self._read("err", process.stderr)),
+        ]
+
+    async def _read(self, stream: Stream, reader: asyncssh.SSHReader[bytes]) -> None:
+        try:
+            while chunk := await reader.read(SCRIPT_CHUNK):
+                await self._queue.put((stream, chunk))
+        except (asyncssh.Error, OSError) as error:
+            await self._queue.put((stream, error))
+            return
+        await self._queue.put((stream, b""))
+
+    def __aiter__(self) -> "Follower":
+        return self
+
+    async def __anext__(self) -> tuple[Stream, bytes]:
+        while self._open:
+            stream, chunk = await self._queue.get()
+            if isinstance(chunk, Exception):
+                raise SshError() from chunk
+            if not chunk:
+                self._open -= 1
+                continue
+            if stream == "err" and len(self._errors) < FOLLOW_ERRORS:
+                self._errors = (self._errors + chunk)[:FOLLOW_ERRORS]
+            return stream, chunk
+        if self.exit is None:
+            with suppress(asyncssh.Error, OSError, TimeoutError):
+                await asyncio.wait_for(self._process.wait(), CLOSE_TIMEOUT)
+            status = self._process.exit_status
+            self.exit = Exit(status=None if status is None or status < 0 else status, errors=self._errors)
+        raise StopAsyncIteration
+
+    async def _stop(self) -> None:
+        for reader in self._readers:
+            reader.cancel()
+        await asyncio.gather(*self._readers, return_exceptions=True)
+
+
+@asynccontextmanager
+async def follow(conn: Connection, argv: Sequence[str]) -> AsyncIterator[Follower]:
+    """Runs argv under FOLLOW_WRAPPER on a channel of its own: `sh -c <wrapper> megoo-follow <argv…>`, each part
+    shlex.quote'd. ValueError for an empty argv, more than 32 arguments, or an argument that is longer than 4096 or not
+    printable. Leaving closes the channel, which ends the command. Raises SshError when the channel cannot start or
+    breaks."""
+    if not 1 <= len(argv) <= FOLLOW_MAX_ARGS:
+        raise ValueError(f"a followed command takes 1 to {FOLLOW_MAX_ARGS} arguments, not {len(argv)}")
+    for position, arg in enumerate(argv):
+        if not isinstance(arg, str) or len(arg) > FOLLOW_MAX_ARG or not arg.isprintable():
+            raise ValueError(f"argument {position} is not printable text of at most {FOLLOW_MAX_ARG} characters")
+    command = " ".join(["sh", "-c", shlex.quote(FOLLOW_WRAPPER), "megoo-follow", *map(shlex.quote, argv)])
+    try:
+        # Stdin stays open: its EOF is what ends the command. Stderr is read, so it cannot stall stdout.
+        process = await conn.create_process(command, encoding=None)
+    except asyncssh.Error as error:
+        raise SshError() from error
+    follower = Follower(process)
+    try:
+        yield follower
+    finally:
+        await follower._stop()
+        process.close()
+        with suppress(asyncssh.Error, OSError, TimeoutError):
+            await asyncio.wait_for(process.wait_closed(), CLOSE_TIMEOUT)

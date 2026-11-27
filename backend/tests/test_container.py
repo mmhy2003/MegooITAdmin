@@ -73,15 +73,23 @@ async def test_the_collector_role_logs_in_and_is_not_a_superuser():
     assert [tuple(row) for row in rows] == [("megooitadmin_collector", False)]
 
 
+async def test_the_logs_role_logs_in_and_is_not_a_superuser():
+    sql = "SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user"
+    rows = await _fetch(sql, variable="IMAGE_LOGS_DATABASE_URL")
+    assert [tuple(row) for row in rows] == [("megooitadmin_logs", False)]
+
+
 def _url(credentials: str) -> str:
     return f"postgresql+asyncpg://{credentials}@db:5432/{_env('DB_NAME')}"
 
 
-def _run_once(env: dict[str, str], *extra_args: str) -> subprocess.CompletedProcess[str]:
-    """Runs a one-off container of the image on the image set's network, with the given environment."""
+def _run_once(env: dict[str, str], *extra_args: str, command: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
+    """Runs a one-off container of the image on the image set's network, with the given environment. `extra_args` go
+    to docker run, `command` after the image."""
     variables = [arg for name, value in env.items() for arg in ("-e", f"{name}={value}")]
+    network = ["--network", _env("BACKEND_NETWORK")]
     return subprocess.run(
-        ["docker", "run", "--rm", "--network", _env("BACKEND_NETWORK"), *variables, *extra_args, _env("BACKEND_IMAGE")],
+        ["docker", "run", "--rm", *network, *variables, *extra_args, _env("BACKEND_IMAGE"), *command],
         capture_output=True,
         text=True,
         timeout=180,
@@ -130,6 +138,17 @@ def test_it_refuses_to_serve_without_the_auth_secret_key():
     assert "Uvicorn running" not in output
 
 
+def test_the_image_runs_the_logs_worker():
+    result = _run_once(
+        {"DATABASE_URL": _url("megooitadmin_logs:megooitadminlogs")},
+        "--entrypoint", "python",
+        command=("-m", "app.logs.worker"),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "VALKEY_URL is not set" in output
+
+
 def _container() -> str:
     """The id of the image set's backend container."""
     project = _env("MEGOO_SERVICES_PROJECT")
@@ -151,10 +170,10 @@ def _exec(*command: str) -> str:
     ).stdout.strip()
 
 
-def test_the_server_holds_neither_the_owners_nor_the_collectors_url():
+def test_the_server_holds_none_of_the_owners_the_collectors_or_the_logs_url():
     names = {entry.split("=", 1)[0] for entry in _exec("cat", "/proc/1/environ").split("\0") if entry}
     assert "DATABASE_URL" in names
-    assert not names & {"DATABASE_OWNER_URL", "DATABASE_COLLECTOR_URL"}
+    assert not names & {"DATABASE_OWNER_URL", "DATABASE_COLLECTOR_URL", "DATABASE_LOGS_URL"}
 
 
 def test_the_log_of_a_fresh_install_holds_a_setup_code():

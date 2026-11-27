@@ -18,7 +18,8 @@ EXPOSE 22
 # megoo-setup.sh comes from the setup build context (backend/app/ssh). fake-tool stands in for docker, systemctl,
 # journalctl, apt-get and dnf: it logs each call to /var/log/fake-tools.log and prints its fixture from
 # /etc/fake-tools. megoo calls the stubs without sudo too, so every account may write the log. The real journalctl
-# and systemctl (Debian's systemd, pulled in above) are removed, so a test that hides a stub hides the tool.
+# and systemctl (Debian's systemd, pulled in above) are removed, so a test that hides a stub hides the tool. A stub
+# that follows prints what the tests append to its file in /var/lib/fake-tools/follow, which every account may read.
 COPY --from=setup megoo-setup.sh /usr/local/lib/megoo-setup.sh
 COPY fake-tool /usr/local/bin/docker
 COPY fake-tool /usr/local/bin/systemctl
@@ -29,5 +30,8 @@ COPY fixtures/ /etc/fake-tools/
 RUN rm -f /usr/bin/journalctl /usr/bin/systemctl \
  && chmod 0755 /usr/local/bin/docker /usr/local/bin/systemctl /usr/local/bin/journalctl /usr/local/bin/apt-get \
       /usr/local/bin/dnf \
- && touch /var/log/fake-tools.log && chmod 0666 /var/log/fake-tools.log
+ && touch /var/log/fake-tools.log && chmod 0666 /var/log/fake-tools.log \
+ && install -d -m 0755 /var/lib/fake-tools/follow \
+ && touch /var/lib/fake-tools/follow/journalctl /var/lib/fake-tools/follow/docker_logs \
+ && chmod 0666 /var/lib/fake-tools/follow/journalctl /var/lib/fake-tools/follow/docker_logs
 ENTRYPOINT ["entrypoint.sh"]

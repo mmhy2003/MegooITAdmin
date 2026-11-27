@@ -22,8 +22,16 @@ class Settings(BaseSettings):
     db_null_pool: bool = False
     # The collector role's URL, for the entrypoint's password step only (DATABASE_COLLECTOR_URL). The API never gets it.
     database_collector_url: str | None = None
+    # The logs role's URL, for the entrypoint's password step only (DATABASE_LOGS_URL). The API never gets it.
+    database_logs_url: str | None = None
     # Touched by the collector after each read of servers; its healthcheck reads its age.
     collector_heartbeat_file: str = "/tmp/megooitadmin-collector.heartbeat"
+    # Touched by the logs worker's hub every second; its healthcheck reads its age.
+    logs_heartbeat_file: str = "/tmp/megooitadmin-logs.heartbeat"
+    # The most lines a log source sends each second (the logs worker); the rest are counted as skipped.
+    log_stream_max_lines_per_second: int = Field(default=2000, ge=1)
+    # A log stream whose viewer did nothing in the log view for this long ends (the backend's socket).
+    log_stream_idle_minutes: int = Field(default=30, ge=1)
     # It encrypts the authenticator secrets, so a lost key locks every account out of its second factor. The API
     # refuses to start without it (create_app and the entrypoint). The collector never gets it.
     auth_secret_key: str | None = Field(default=None, repr=False)

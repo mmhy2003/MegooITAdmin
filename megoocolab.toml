@@ -8,6 +8,7 @@ DB_NAME = "megooitadmin_test"
 TEST_DATABASE_URL = "postgresql+asyncpg://megooitadmin_api:megooitadminapi@localhost:${DB_PORT}/megooitadmin_test"
 TEST_DATABASE_OWNER_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin_test"
 TEST_DATABASE_COLLECTOR_URL = "postgresql+asyncpg://megooitadmin_collector:megooitadmincollector@localhost:${DB_PORT}/megooitadmin_test"
+TEST_DATABASE_LOGS_URL = "postgresql+asyncpg://megooitadmin_logs:megooitadminlogs@localhost:${DB_PORT}/megooitadmin_test"
 TEST_VALKEY_URL = "valkey://localhost:${VALKEY_PORT}/0"
 
 [services.migrate]
@@ -33,6 +34,7 @@ BACKEND_URL = "http://localhost:${API_PORT}"
 IMAGE_DATABASE_URL = "postgresql+asyncpg://megooitadmin:megooitadmin@localhost:${DB_PORT}/megooitadmin"
 IMAGE_API_DATABASE_URL = "postgresql+asyncpg://megooitadmin_api:megooitadminapi@localhost:${DB_PORT}/megooitadmin"
 IMAGE_COLLECTOR_DATABASE_URL = "postgresql+asyncpg://megooitadmin_collector:megooitadmincollector@localhost:${DB_PORT}/megooitadmin"
+IMAGE_LOGS_DATABASE_URL = "postgresql+asyncpg://megooitadmin_logs:megooitadminlogs@localhost:${DB_PORT}/megooitadmin"
 
 [services.web]
 description = "The frontend image built from this checkout, for npm run test:image"
@@ -44,7 +46,7 @@ FRONTEND_IMAGE = "megooitadmin-frontend:${MEGOO_SERVICES_PROJECT}"
 FRONTEND_URL = "http://localhost:${WEB_PORT}"
 
 [services.stack]
-description = "The whole Compose stack built from this checkout (docker-compose.build.yml: caddy, frontend, backend, collector, db, valkey) and the fake sshd server, for pytest -m stack"
+description = "The whole Compose stack built from this checkout (docker-compose.build.yml: caddy, frontend, backend, collector, logs, db, valkey) and the fake sshd server, for pytest -m stack"
 compose = ["docker-compose.yml", "docker-compose.build.yml", "tools/fake-server/docker-compose.stack.yml"]
 ports = ["STACK_PORT"]
 
@@ -53,6 +55,7 @@ MEGOOITADMIN_HTTP_PORT = "127.0.0.1:${STACK_PORT}"
 POSTGRES_PASSWORD = "megooitadmin"
 POSTGRES_API_PASSWORD = "megooitadminapi"
 POSTGRES_COLLECTOR_PASSWORD = "megooitadmincollector"
+POSTGRES_LOGS_PASSWORD = "megooitadminlogs"
 AUTH_SECRET_KEY = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
 STACK_URL = "http://localhost:${STACK_PORT}"
 # The sink of the staged disk-fill check takes webhooks over http.

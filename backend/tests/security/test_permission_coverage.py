@@ -93,3 +93,15 @@ def test_the_check_routes_need_a_visible_group():
     requirements = {context.path: access_requirement(context) for context in api_routes(create_app())}
     for path in ("/api/servers/{server_id}/checks", "/api/servers/{server_id}/containers"):
         assert requirements.get(path) == "group", path
+
+
+def test_the_log_allowlist_routes_need_a_visible_group_or_an_admin():
+    requirements = {
+        (method, context.path): access_requirement(context)
+        for context in api_routes(create_app())
+        for method in context.original_route.methods
+    }
+    collection = "/api/server-groups/{group_id}/log-allowlist"
+    assert requirements.get(("GET", collection)) == "group"
+    assert requirements.get(("POST", collection)) == "admin"
+    assert requirements.get(("DELETE", f"{collection}/{{pattern_id}}")) == "admin"

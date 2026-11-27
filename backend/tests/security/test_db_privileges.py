@@ -1,4 +1,5 @@
-"""The API role megooitadmin_api and the collector role megooitadmin_collector have only the grants declared here.
+"""The API role megooitadmin_api, the collector role megooitadmin_collector and the logs role megooitadmin_logs have
+only the grants declared here.
 A migration that creates a table grants the API role what the table needs, and adds the table to API_GRANTS (an empty
 set keeps a table closed on purpose)."""
 
@@ -9,7 +10,7 @@ from sqlalchemy.exc import DBAPIError
 
 import app.models  # noqa: F401  (registers every table on Base.metadata)
 from app.core.db import Base
-from app.core.db_roles import API_ROLE
+from app.core.db_roles import API_ROLE, LOGS_ROLE
 
 pytestmark = pytest.mark.usefixtures("database_at_head")
 
@@ -42,6 +43,8 @@ API_GRANTS: dict[str, frozenset[str]] = {
     "notification_channels": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     "notification_email": frozenset({"SELECT", "UPDATE"}),
     "notification_deliveries": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
+    # The Owner and a group's Admins add and remove patterns; a pattern is never changed in place.
+    "log_file_allowlist": frozenset({"SELECT", "INSERT", "DELETE"}),
 }
 # The sender claims an event FOR UPDATE and sets its dispatched_at, and changes nothing else of it.
 API_COLUMN_GRANTS = {("alert_events", "dispatched_at", "UPDATE")}
@@ -62,6 +65,18 @@ COLLECTOR_GRANTS: dict[str, frozenset[str]] = {
     "alert_events": frozenset({"INSERT"}),
 }
 COLLECTOR_COLUMN_GRANTS = {
+    ("servers", column, "UPDATE") for column in ("host_key_changed_at", "host_key_offered", "host_key_offered_at")
+}
+# The logs worker checks each request against servers, containers and the allowlist, and flags a changed host key with
+# its audit event. It writes nothing else: log lines are never stored.
+LOGS_GRANTS: dict[str, frozenset[str]] = {
+    "servers": frozenset({"SELECT"}),
+    "containers": frozenset({"SELECT"}),
+    "log_file_allowlist": frozenset({"SELECT"}),
+    "audit_log": frozenset({"INSERT"}),
+    "audit_chain_head": frozenset({"SELECT", "UPDATE"}),
+}
+LOGS_COLUMN_GRANTS = {
     ("servers", column, "UPDATE") for column in ("host_key_changed_at", "host_key_offered", "host_key_offered_at")
 }
 ROLE_OID = "(SELECT oid FROM pg_roles WHERE rolname = :role)"
@@ -156,7 +171,41 @@ async def test_the_collector_roles_table_grants_are_the_declared_ones():
 
 async def test_the_column_grants_are_the_declared_ones():
     assert set(await _rows(COLUMN_GRANTS_SQL, COLLECTOR_ROLE)) == COLLECTOR_COLUMN_GRANTS
+    assert set(await _rows(COLUMN_GRANTS_SQL, LOGS_ROLE)) == LOGS_COLUMN_GRANTS
     assert set(await _rows(COLUMN_GRANTS_SQL)) == API_COLUMN_GRANTS
+
+
+async def test_the_logs_role_is_not_a_superuser_and_owns_nothing():
+    rows = await _rows(
+        "SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = :role",
+        LOGS_ROLE,
+    )
+    assert rows == [(False, False, False, False, False)]
+    assert await _rows(f"SELECT relname FROM pg_class WHERE relowner = {ROLE_OID}", LOGS_ROLE) == []
+
+
+async def test_the_logs_roles_table_grants_are_the_declared_ones():
+    actual = _by_table(await _rows(TABLE_GRANTS_SQL, LOGS_ROLE))
+    assert actual == {t: set(p) for t, p in LOGS_GRANTS.items()}, (
+        f"{LOGS_ROLE}'s grants differ from LOGS_GRANTS: grant only what the logs worker needs"
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "INSERT INTO metrics (time, server_id, metric, value) VALUES (now(), gen_random_uuid(), 'cpu.used_percent', 1)",
+        "SELECT 1 FROM users",
+    ],
+    ids=["metrics", "users"],
+)
+async def test_the_logs_role_cannot_write_metrics_or_read_users(sql: str):
+    async with owner_session() as session:
+        await session.execute(text(f"SET LOCAL ROLE {LOGS_ROLE}"))
+        with pytest.raises(DBAPIError) as exc:
+            await session.execute(text(sql))
+        await session.rollback()
+    assert exc.value.orig.sqlstate == INSUFFICIENT_PRIVILEGE
 
 
 async def test_the_collector_role_can_insert_a_metric_and_cannot_read_users():

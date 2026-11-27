@@ -1,11 +1,11 @@
-"""The API role megooitadmin_api and the collector role megooitadmin_collector, and the entrypoint step that gives
-them their passwords.
+"""The API role megooitadmin_api, the collector role megooitadmin_collector and the logs role megooitadmin_logs, and
+the entrypoint step that gives them their passwords.
 
-Migrations 0003 and 0009 create the roles without login. `python -m app.core.db_roles` runs after
+Migrations 0003, 0009 and 0012 create the roles without login. `python -m app.core.db_roles` runs after
 `alembic upgrade head`, as the owner. It gives the API role LOGIN and the password of DATABASE_URL, then the collector
-role LOGIN and the password of DATABASE_COLLECTOR_URL; without that variable the collector role is left as it is. Each
-password is sent as a SCRAM-SHA-256 verifier, as psql's \\password does, so the plain password never reaches the
-database or its log."""
+role LOGIN and the password of DATABASE_COLLECTOR_URL, then the logs role LOGIN and the password of DATABASE_LOGS_URL;
+without one of the last two variables its role is left as it is. Each password is sent as a SCRAM-SHA-256 verifier, as
+psql's \\password does, so the plain password never reaches the database or its log."""
 
 import asyncio
 import base64
@@ -25,6 +25,7 @@ from app.core.config import Settings, get_settings
 
 API_ROLE = "megooitadmin_api"
 COLLECTOR_ROLE = "megooitadmin_collector"
+LOGS_ROLE = "megooitadmin_logs"
 SCRAM_ITERATIONS = 4096
 UNDEFINED_OBJECT = "42704"
 # Only base64, digits, $ and :, so the verifier is safe between the quotes of ALTER ROLE.
@@ -112,6 +113,16 @@ def sync_collector_role_password(settings: Settings | None = None) -> bool:
     return True
 
 
+def sync_logs_role_password(settings: Settings | None = None) -> bool:
+    """Gives the logs role LOGIN and the password of DATABASE_LOGS_URL. False, and nothing changes, when the variable
+    is not set."""
+    settings = settings or _settings()
+    if not settings.database_logs_url:
+        return False
+    _sync(settings, settings.database_logs_url, LOGS_ROLE, "DATABASE_LOGS_URL")
+    return True
+
+
 def main() -> int:
     role = API_ROLE
     try:
@@ -119,6 +130,8 @@ def main() -> int:
         print(f"Set the password of {API_ROLE}.")
         role = COLLECTOR_ROLE
         collector_set = sync_collector_role_password()
+        role = LOGS_ROLE
+        logs_set = sync_logs_role_password()
     except ApiRoleError as exc:
         print(f"Could not set the password of {role}: {exc}", file=sys.stderr)
         return 1
@@ -128,6 +141,10 @@ def main() -> int:
         print(
             f"DATABASE_COLLECTOR_URL is not set: {COLLECTOR_ROLE} keeps no login, so the collector cannot sign in."
         )
+    if logs_set:
+        print(f"Set the password of {LOGS_ROLE}.")
+    else:
+        print(f"DATABASE_LOGS_URL is not set: {LOGS_ROLE} keeps no login, so the logs worker cannot sign in.")
     return 0
 
 

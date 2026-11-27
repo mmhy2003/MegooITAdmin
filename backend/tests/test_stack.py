@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from functools import cache
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import pyotp
@@ -33,6 +33,7 @@ NETWORKS = {
     "frontend": {"edge"},
     "backend": {"edge", "core", "servers"},
     "collector": {"core", "servers"},
+    "logs": {"core", "servers"},
     "db": {"core", "exec"},
     "valkey": {"core"},
 }
@@ -148,7 +149,7 @@ def test_caddy_passes_the_upstream_proxys_forwarded_proto_on():
     assert response.headers["location"].startswith("https://")
 
 
-def test_the_stack_has_exactly_its_six_services():
+def test_the_stack_has_exactly_its_seven_services():
     assert set(_model()["services"]) == set(NETWORKS)
 
 
@@ -169,13 +170,13 @@ def test_core_exec_and_sandbox_are_internal_and_edge_and_servers_are_not():
     assert {name for name, network in networks.items() if network.get("internal")} == {"core", "exec", "sandbox"}
 
 
-def test_the_backend_mounts_the_ssh_key_volume_and_the_collector_reads_it():
+def test_the_backend_mounts_the_ssh_key_volume_and_the_collector_and_the_logs_worker_read_it():
     services = _model()["services"]
-    for name, read_only in (("backend", False), ("collector", True)):
+    for name, read_only in (("backend", False), ("collector", True), ("logs", True)):
         volumes = services[name]["volumes"]
         assert [(v["type"], v["source"], v["target"]) for v in volumes] == [("volume", "ssh_key", "/var/lib/megooitadmin/ssh")], name
         assert volumes[0].get("read_only", False) is read_only, name
-    mounting = {"backend", "collector"}
+    mounting = {"backend", "collector", "logs"}
     others = {name for name, service in services.items() if name not in mounting and any(v["source"] == "ssh_key" for v in service.get("volumes", []))}
     assert others == set()
     assert "ssh_key" in _model()["volumes"]
@@ -193,15 +194,17 @@ def test_docker_compose_yml_pulls_the_two_release_images_and_builds_nothing():
     services = _written(COMPOSE_FILE)
     for name in ("backend", "frontend"):
         assert services[name]["image"] == f"{GHCR}{name}:${{MEGOOITADMIN_VERSION:-latest}}"
-    assert services["collector"]["image"] == f"{GHCR}backend:${{MEGOOITADMIN_VERSION:-latest}}"
+    for name in ("collector", "logs"):
+        assert services[name]["image"] == f"{GHCR}backend:${{MEGOOITADMIN_VERSION:-latest}}", name
     assert {name for name, service in services.items() if "build" in service} == set()
 
 
 def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
     services = _written(BUILD_FILE)
-    assert set(services) == {"backend", "frontend", "collector"}
-    # The collector runs the image the backend service builds, and never pulls it.
-    assert services.pop("collector") == {"image": "megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}", "pull_policy": "never"}
+    assert set(services) == {"backend", "frontend", "collector", "logs"}
+    # The collector and the logs worker run the image the backend service builds, and never pull it.
+    for name in ("collector", "logs"):
+        assert services.pop(name) == {"image": "megooitadmin-backend:${MEGOOITADMIN_VERSION:-dev}", "pull_policy": "never"}, name
     for name, service in services.items():
         assert service["build"] == f"./{name}"
         assert service["image"] == f"megooitadmin-{name}:${{MEGOOITADMIN_VERSION:-dev}}"
@@ -210,7 +213,7 @@ def test_the_build_overlay_builds_exactly_the_two_images_under_local_names():
 
 def test_the_stack_runs_the_images_it_built_under_its_own_tag():
     project = _env("MEGOO_SERVICES_PROJECT")
-    for name, image in (("backend", "backend"), ("frontend", "frontend"), ("collector", "backend")):
+    for name, image in (("backend", "backend"), ("frontend", "frontend"), ("collector", "backend"), ("logs", "backend")):
         container = _compose("ps", "-q", name).stdout.strip()
         inspected = subprocess.run(
             ["docker", "inspect", "--format", "{{.Config.Image}}", container], capture_output=True, text=True, timeout=30
@@ -238,6 +241,22 @@ def test_the_collector_runs_the_backends_image_as_its_own_role():
     assert collector["healthcheck"]["test"] == ["CMD", "python", "-m", "app.collector.health"]
 
 
+def test_the_logs_worker_runs_the_backends_image_as_its_own_role():
+    logs = _model()["services"]["logs"]
+    assert logs["entrypoint"] == ["python", "-m", "app.logs.worker"]
+    # Names and booleans only, so a failure never prints a password.
+    for variables in (logs["environment"], _environ_of("logs")):
+        assert variables.get("DATABASE_URL", "").startswith("postgresql+asyncpg://megooitadmin_logs:") is True
+        assert variables.get("VALKEY_URL") == "valkey://valkey:6379/0"
+        assert variables.get("LOG_STREAM_MAX_LINES_PER_SECOND") == "2000"
+        assert not set(variables) & {"AUTH_SECRET_KEY", "DATABASE_OWNER_URL", "DATABASE_COLLECTOR_URL", "DATABASE_LOGS_URL"}
+    assert {name: d["condition"] for name, d in logs["depends_on"].items()} == {
+        "backend": "service_healthy",
+        "valkey": "service_healthy",
+    }
+    assert logs["healthcheck"]["test"] == ["CMD", "python", "-m", "app.logs.worker.health"]
+
+
 def test_the_backend_waits_for_a_healthy_database():
     assert _model()["services"]["backend"]["depends_on"]["db"]["condition"] == "service_healthy"
 
@@ -246,6 +265,10 @@ def test_the_backend_waits_for_a_healthy_valkey_and_has_its_url():
     backend = _model()["services"]["backend"]
     assert backend["depends_on"]["valkey"]["condition"] == "service_healthy"
     assert backend["environment"]["VALKEY_URL"] == "valkey://valkey:6379/0"
+
+
+def test_the_backend_has_the_log_streams_idle_minutes():
+    assert _model()["services"]["backend"]["environment"]["LOG_STREAM_IDLE_MINUTES"] == "30"
 
 
 def test_valkey_keeps_an_append_only_file_in_valkey_data():
@@ -312,6 +335,7 @@ def _resolves(service: str, host: str) -> bool:
         "frontend": ["node", "-e", f"require('dns').lookup('{host}', (error) => process.exit(error ? 1 : 0))"],
         "backend": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
         "collector": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
+        "logs": ["python", "-c", f"import socket; socket.gethostbyname('{host}')"],
     }
     return _compose("exec", "-T", service, *commands[service]).returncode == 0
 
@@ -331,9 +355,12 @@ def _resolves(service: str, host: str) -> bool:
         ("collector", "db", True),
         ("collector", "valkey", True),
         ("frontend", "collector", False),
+        ("logs", "db", True),
+        ("logs", "valkey", True),
+        ("frontend", "logs", False),
     ],
 )
-def test_only_the_backend_and_the_collector_can_find_the_database_and_valkey(service, host, expected):
+def test_only_the_backend_and_the_workers_can_find_the_database_and_valkey(service, host, expected):
     assert _resolves(service, host) is expected
 
 
@@ -391,6 +418,20 @@ def test_the_backend_sets_the_collector_password_and_does_not_hold_it():
     assert login.returncode == 0, login.stderr
     assert login.stdout.strip() == "megooitadmin_collector"
     assert "DATABASE_COLLECTOR_URL" not in _environ_of("backend")
+
+
+def _psql_as_logs_role(sql: str) -> subprocess.CompletedProcess[str]:
+    return _compose(
+        "exec", "-T", "-e", f"PGPASSWORD={_env('POSTGRES_LOGS_PASSWORD')}", "db",
+        "psql", "-h", "127.0.0.1", "-U", "megooitadmin_logs", "-d", "megooitadmin", "-tAc", sql,
+    )
+
+
+def test_the_backend_sets_the_logs_password_and_does_not_hold_it():
+    login = _psql_as_logs_role("SELECT current_user")
+    assert login.returncode == 0, login.stderr
+    assert login.stdout.strip() == "megooitadmin_logs"
+    assert "DATABASE_LOGS_URL" not in _environ_of("backend")
 
 
 def test_the_api_role_can_read_metrics_1m():
@@ -767,6 +808,80 @@ def test_ten_servers_stream_live_through_caddy(owner):
         with pytest.raises(ConnectionClosed) as closed:
             socket.recv(timeout=10)
     assert closed.value.rcvd.code == 4401
+
+
+def _logs_socket_url() -> str:
+    return _env("STACK_URL").replace("http", "ws", 1) + "/api/ws/logs"
+
+
+def _tails_on_fake_server() -> int:
+    """How many tail -F run on the fake server. pgrep -c prints 0 (and exits 1) when none does."""
+    return int(_compose_with_fake_server("exec", "-T", "fake-server", "pgrep", "-c", "-f", "^tail .*-F").stdout.strip())
+
+
+APPEND = 'mkdir -p "$(dirname "$1")" && p=$1 && shift && printf "%s\\n" "$@" >> "$p"'
+
+
+def _append_on_fake_server(path: str, *lines: str) -> None:
+    written = _compose_with_fake_server("exec", "-T", "fake-server", "sh", "-c", APPEND, "sh", path, *lines)
+    assert written.returncode == 0, written.stderr
+
+
+def _lines_from(socket, count: int, timeout: float = 30) -> list[tuple[int, str]]:
+    """(seq, text) of the next count lines the logs socket sends, which sends nothing else meanwhile."""
+    received: list[tuple[int, str]] = []
+    deadline = time.monotonic() + timeout
+    while len(received) < count:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            pytest.fail(f"Not within {timeout:.0f} s: {count} lines, got {received}")
+        message = json.loads(socket.recv(timeout=left))
+        assert message["type"] == "lines", message
+        received += [(line["seq"], line["text"]) for line in message["lines"]]
+    return received
+
+
+def test_two_sockets_through_caddy_share_one_follower_of_a_file(owner):
+    public = _compose_with_fake_server("exec", "-T", "backend", "python", "-m", "app.ssh.cli", "public-key")
+    assert public.returncode == 0, public.stderr
+    authorized = _compose_with_fake_server("exec", "-T", "fake-server", "authorize-key", input=public.stdout)
+    assert authorized.returncode == 0, authorized.stderr
+    # A new group gets the four starter patterns, /var/log/nginx/*.log among them.
+    group = owner.post("/api/server-groups", json={"name": "logs-stack"}).json()["id"]
+    server = {"name": "fake-server-logs", "address": "fake-server", "group_id": group, "os": "linux", "port": 22}
+    server_id = owner.post("/api/servers", json=server).json()["id"]
+    fetched = owner.post(f"/api/servers/{server_id}/host-key/fetch", timeout=30).json()
+    assert fetched["ok"], fetched
+    assert owner.put(f"/api/servers/{server_id}/host-key", json={"fingerprint": fetched["fingerprint"]}).status_code == 200
+
+    path = f"/var/log/nginx/stack-{uuid4().hex[:8]}.log"
+    _append_on_fake_server(path, "one", "two", "three")
+
+    origin = Origin(_env("STACK_URL"))
+    cookie = {"Cookie": f"megoo_session={owner.cookies.get('megoo_session')}"}
+    subscribe = {"type": "subscribe", "sources": [{"kind": "file", "server_id": server_id, "path": path}]}
+    with (
+        connect(_logs_socket_url(), origin=origin, additional_headers=cookie, open_timeout=10) as first,
+        connect(_logs_socket_url(), origin=origin, additional_headers=cookie, open_timeout=10) as second,
+    ):
+        for socket in (first, second):
+            socket.send(json.dumps(subscribe))
+            subscribed = json.loads(socket.recv(timeout=30))
+            assert (subscribed["type"], len(subscribed["sources"]), subscribed["denied"]) == ("subscribed", 1, []), subscribed
+            backlog = json.loads(socket.recv(timeout=10))
+            assert (backlog["type"], backlog.get("backlog")) == ("lines", True), backlog
+            # The first viewer may ask before tail printed the file's last lines: then they follow the empty backlog.
+            seen = [(line["seq"], line["text"]) for line in backlog["lines"]]
+            assert seen + _lines_from(socket, 3 - len(seen)) == [(1, "one"), (2, "two"), (3, "three")]
+
+        _append_on_fake_server(path, "four", "five")
+        for socket in (first, second):
+            assert _lines_from(socket, 2) == [(4, "four"), (5, "five")]
+
+        assert _tails_on_fake_server() == 1
+
+    # 5 s of grace after the last viewer, then the worker closes the channel and the wrapper ends tail.
+    _wait(lambda: _tails_on_fake_server() == 0, 30, "no tail -F on the fake server once both sockets closed")
 
 
 def test_after_sign_out_pages_redirect_to_login(owner):

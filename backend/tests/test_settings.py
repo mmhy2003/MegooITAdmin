@@ -121,3 +121,17 @@ def test_the_notification_settings_have_their_defaults(monkeypatch):
     settings = Settings(database_url=URL)
     assert settings.notification_sender is True
     assert settings.webhook_allow_http is False
+
+
+def test_the_log_stream_settings_have_their_defaults(monkeypatch):
+    for name in ("LOG_STREAM_MAX_LINES_PER_SECOND", "LOG_STREAM_IDLE_MINUTES", "LOGS_HEARTBEAT_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(database_url=URL)
+    assert (settings.log_stream_max_lines_per_second, settings.log_stream_idle_minutes) == (2000, 30)
+    assert settings.logs_heartbeat_file == "/tmp/megooitadmin-logs.heartbeat"
+
+
+def test_the_cap_must_be_positive(monkeypatch):
+    monkeypatch.setenv("LOG_STREAM_MAX_LINES_PER_SECOND", "0")
+    with pytest.raises(ValidationError):
+        Settings(database_url=URL)
