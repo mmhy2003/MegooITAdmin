@@ -4,7 +4,8 @@ the last lines a new viewer gets first, and the publisher of what its viewers re
 The reader cuts the output into lines, parses them and passes them through the cap. A kept line gets the next seq,
 joins the backlog and waits in the batcher; a dropped line is counted there. The publisher sends what waits every
 batch_every seconds, or at once when batch_lines lines wait, on the source's channel. When the command ends, what is
-left goes out, then the end and its reason. Nothing is stored: the backlog lives in this process only."""
+left goes out, then the end and its reason: how the command exited, or why the server refused or failed. Nothing is
+stored: the backlog lives in this process only."""
 
 import asyncio
 import time
@@ -17,11 +18,12 @@ from datetime import UTC, datetime
 from pydantic import BaseModel
 from valkey.asyncio import Valkey
 
+from app.inventory.connection import ConnectionRefused
 from app.inventory.models import Server
 from app.logs.cap import Batcher, Cap
 from app.logs.lines import MAX_JOURNAL_BYTES, MAX_LINE_BYTES, Splitter, line_message, parse
 from app.logs.protocol import ON_SOURCE, Ended, encode, source_channel
-from app.logs.sources import BACKLOG, Source, command
+from app.logs.sources import BACKLOG, NOT_READABLE, Source, command
 from app.logs.worker.links import Links
 from app.ssh import client
 
@@ -39,7 +41,14 @@ DIAGNOSTICS = (b"sudo: ", b"megoo-ctl: ")  # container error lines that are not 
 
 
 def ended_by(kind: str, exit: client.Exit) -> tuple[str, int | None]:
-    """The reason and the status of an end, from how the command exited."""
+    """The reason and the status of an end, from how the command exited: 127 is a command the server lacks, a file
+    script's NOT_READABLE a file megoo cannot read, and a container's sudo error a missing sudo rule."""
+    if exit.status == 127:
+        return "not_available", None
+    if kind == "file" and exit.status == NOT_READABLE:
+        return "not_readable", None
+    if kind == "container" and any(line.startswith(b"sudo: ") for line in exit.errors.splitlines()):
+        return "denied", None
     return "exited", exit.status
 
 
@@ -93,6 +102,18 @@ class RunningSource:
         await self._publish(Ended(type="ended", reason=reason))
 
     async def _run(self, on_end: Callable[["RunningSource"], None]) -> None:
+        try:
+            ended = await self._follow()
+        except ConnectionRefused as refused:
+            ended = Ended(type="ended", reason=refused.detail)
+        except client.SshFailure as failure:
+            ended = Ended(type="ended", reason=failure.reason)
+        await self._flush()
+        await self._publish(ended)
+        on_end(self)
+
+    async def _follow(self) -> Ended:
+        """Reads the command's output until it ends, and tells how it ended."""
         async with self._links.use(self._server) as conn, client.follow(conn, command(self.source)) as followed:
             flusher = asyncio.create_task(self._flush_every())
             try:
@@ -103,11 +124,9 @@ class RunningSource:
                     flusher.cancel()
                 with suppress(asyncio.CancelledError):
                     await flusher
-            await self._flush()
-            assert followed.exit is not None  # set when the iteration ended
-            reason, status = ended_by(self.source.kind, followed.exit)
-            await self._publish(Ended(type="ended", reason=reason, status=status))
-        on_end(self)
+        assert followed.exit is not None  # set when the iteration ended
+        reason, status = ended_by(self.source.kind, followed.exit)
+        return Ended(type="ended", reason=reason, status=status)
 
     async def _read(self, followed: client.Follower) -> None:
         kind = self.source.kind
