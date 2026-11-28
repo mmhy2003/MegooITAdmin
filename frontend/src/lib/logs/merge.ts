@@ -26,7 +26,13 @@ export class Merger {
     }
     const added: Row[] = [];
     for (const entry of entries) {
-      const held = this.held.get(entry.id) ?? { rows: [], seen: entry.trimmed };
+      let held = this.held.get(entry.id);
+      // Not fed while the source was removed and added again: the entry is a new one, so its old rows go.
+      if (held !== undefined && !continues(held, entry)) {
+        for (const row of held.rows) removed.add(row);
+        held = undefined;
+      }
+      held ??= { rows: [], seen: entry.trimmed };
       this.held.set(entry.id, held);
       const dropped = Math.min(Math.max(0, entry.trimmed - (held.seen - held.rows.length)), held.rows.length);
       for (const row of held.rows.splice(0, dropped)) removed.add(row);
@@ -56,6 +62,14 @@ export class Merger {
     this.merged = next;
     return next;
   }
+}
+
+/** Whether `entry` is the one `held` was taken from: it has had as many rows, and holds the last one at its place. */
+function continues(held: Held, entry: MergeEntry): boolean {
+  if (entry.trimmed + entry.rows.length < held.seen) return false;
+  const last = held.rows[held.rows.length - 1];
+  const at = held.seen - 1 - entry.trimmed;
+  return last === undefined || at < 0 || entry.rows[at] === last;
 }
 
 function compare(a: Row, b: Row, ia: number, ib: number): number {

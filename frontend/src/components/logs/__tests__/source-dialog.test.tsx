@@ -13,7 +13,8 @@ vi.mock("@/lib/auth/navigate");
 const A = "6f1c2a8e-4b3d-4e5f-9a0b-1c2d3e4f5a6b";
 const B = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 const WEB_01 = server("web-01", null, { id: A, can_view_logs: true, group_id: "g1", group_name: "Production" });
-const DB_01 = server("db-01", null, { id: B, can_view_logs: true, group_id: "g2", group_name: "Staging" });
+const WEB_02 = server("web-02", null, { id: "s-web-02", can_view_logs: true, group_id: "g1", group_name: "Production" });
+const DB_01 =server("db-01", null, { id: B, can_view_logs: true, group_id: "g2", group_name: "Staging" });
 const WIN_01 = server("win-01", null, { id: "s-win", os: "windows", can_view_logs: true, group_name: "Production" });
 const BLIND = server("blind-01", null, { id: "s-blind", can_view_logs: false, group_name: "Production" });
 const SERVERS = [WEB_01, DB_01, WIN_01, BLIND];
@@ -131,6 +132,19 @@ describe("SourceDialog", () => {
       const list = within(await screen.findByRole("list", { name: "Patterns of Production" }));
       expect(list.getAllByRole("listitem").map((i) => i.textContent)).toEqual(["/var/log/nginx/*.log", "/var/log/syslog"]);
       expect(apiFetch).toHaveBeenCalledWith("/server-groups/g1/log-allowlist");
+    });
+
+    it("keeps the patterns when another server of the same group is chosen", async () => {
+      const { user, onAdd } = renderDialog({ serverId: undefined, servers: [WEB_01, WEB_02, DB_01] });
+      await choose(user, "Server", "web-01");
+      await user.click(screen.getByRole("radio", { name: "File" }));
+      await screen.findByRole("list", { name: "Patterns of Production" });
+      await choose(user, "Server", "web-02");
+      expect(screen.getByRole("list", { name: "Patterns of Production" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Manage patterns" })).toBeInTheDocument();
+      await user.type(screen.getByLabelText("Path"), "/var/log/syslog");
+      await user.click(add());
+      expect(onAdd).toHaveBeenCalledWith([{ kind: "file", server_id: WEB_02.id, path: "/var/log/syslog" }]);
     });
 
     it("offers a pattern without a wildcard as the person types", async () => {

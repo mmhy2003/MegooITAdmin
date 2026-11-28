@@ -12,8 +12,10 @@ import type { LogView } from "@/lib/logs/views";
  * The saved views: the person's own and those shared with them, to open one, and what can be done with the view that
  * is open. "Save" shows only while the open view differs and the person may change it; others save as a new view.
  */
-export function ViewsMenu({ views, current, changed, onOpen, onSave, onSaveAs, onEdit, onDelete }: {
+export function ViewsMenu({ views, failed = false, current, changed, onOpen, onSave, onSaveAs, onEdit, onDelete }: {
   views: LogView[];
+  /** The views could not be read: the list says so, rather than that there are none. */
+  failed?: boolean;
   current: LogView | null;
   changed: boolean;
   onOpen: (view: LogView) => void;
@@ -54,7 +56,13 @@ export function ViewsMenu({ views, current, changed, onOpen, onSave, onSaveAs, o
             ))}
           </DropdownMenuGroup>
         )}
-        {views.length === 0 && <DropdownMenuLabel className="font-normal">No saved views yet.</DropdownMenuLabel>}
+        {failed ? (
+          <DropdownMenuLabel className="font-normal text-destructive">
+            The saved views could not be read.
+          </DropdownMenuLabel>
+        ) : (
+          views.length === 0 && <DropdownMenuLabel className="font-normal">No saved views yet.</DropdownMenuLabel>
+        )}
         <DropdownMenuSeparator />
         {editable && changed && <DropdownMenuItem onSelect={onSave}>Save</DropdownMenuItem>}
         <DropdownMenuItem onSelect={onSaveAs}>Save as a new view</DropdownMenuItem>

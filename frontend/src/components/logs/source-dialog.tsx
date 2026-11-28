@@ -94,10 +94,11 @@ function SourceForm({ servers, serverId, current, onAdd }: Pick<Props, "servers"
   const onServer = current.filter((s) => s.server_id === chosen).length;
   const fits = current.length + added.length <= MAX_SOURCES && onServer + added.length <= MAX_PER_SERVER;
 
-  // What was picked on another server does not carry over.
+  // What was picked on another server does not carry over. The patterns are the group's: kept within it, as the
+  // file picker is keyed by group and does not read them again.
   function choose(next: string) {
+    if (servers.find((s) => s.id === next)?.group_id !== target?.group_id) setAllowlist(null);
     setChosen(next);
-    setAllowlist(null);
     setTicked([]);
   }
 

@@ -38,10 +38,21 @@ export function LogsPage() {
   const [error, setError] = useState<string | null>(null);
   const [views, setViews] = useState<LogView[] | null>(null);
   const [viewError, setViewError] = useState<string | null>(null);
+  // Whether the last read of the views failed: the menu then says so instead of "No saved views yet."
+  const [viewsFailed, setViewsFailed] = useState(false);
   const [editing, setEditing] = useState<Editing>(null);
 
   const reload = useCallback(() => {
-    listViews().then(setViews, (e: unknown) => setViewError(errorOf(e)));
+    listViews().then(
+      (list) => {
+        setViews(list);
+        setViewsFailed(false);
+      },
+      (e: unknown) => {
+        setViewError(errorOf(e));
+        setViewsFailed(true);
+      },
+    );
   }, []);
 
   useEffect(() => {
@@ -102,7 +113,7 @@ export function LogsPage() {
     );
   }
   const menu = (
-    <ViewsMenu views={views ?? []} current={current} changed={current !== null && differs(state, current)}
+    <ViewsMenu views={views ?? []} failed={viewsFailed} current={current} changed={current !== null && differs(state, current)}
       onOpen={(v) => go(stateOf(v), v.id)} onSave={save} onSaveAs={() => setEditing("new")}
       onEdit={() => setEditing("edit")} onDelete={() => setEditing("delete")} />
   );

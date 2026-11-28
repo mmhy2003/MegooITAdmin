@@ -139,6 +139,18 @@ describe("LogsPage", () => {
       return (await screen.findAllByRole("menuitem")).map((item) => item.textContent);
     }
 
+    it("says in the menu that the views could not be read, not that there are none", async () => {
+      const answer = vi.mocked(apiFetch).getMockImplementation()!;
+      vi.mocked(apiFetch).mockImplementation(async (path, init) => {
+        if (path === "/log-views" && !init) throw new ApiError(500, "error");
+        return answer(path, init);
+      });
+      await page();
+      await menu();
+      expect(screen.getByText("The saved views could not be read.")).toBeInTheDocument();
+      expect(screen.queryByText("No saved views yet.")).not.toBeInTheDocument();
+    });
+
     it("opens a view by writing its state and its id into the address", async () => {
       views = [MINE];
       await page();

@@ -178,6 +178,27 @@ export function LogViewer({ state, onChange, servers, serverId, extra }: {
     onChange({ ...state, sources: state.sources.filter((s) => encodeSource(s) !== id) });
   }
 
+  // A container may have been recreated since its list was read: Reconnect reads it again, and a container gone
+  // from it is swapped for the one with its name, as when the sources change. A failed read reconnects as it was.
+  function reconnect(id: string) {
+    const source = entries.find((e) => e.id === id)?.source;
+    if (source?.kind !== "container" || source.name === null) {
+      store.reconnect(id);
+      return;
+    }
+    const listing = apiFetch<Container[]>(`/servers/${source.server_id}/containers`).catch(() => null);
+    listings.set(source.server_id, listing);
+    void listing.then((list) => {
+      const swapped = list === null ? null : swapContainers([source], new Map([[source.server_id, list]]));
+      const { state: now, onChange: change } = latest.current;
+      if (swapped?.changed && now.sources.some((s) => encodeSource(s) === id)) {
+        change({ ...now, sources: now.sources.map((s) => (encodeSource(s) === id ? swapped.sources[0] : s)) });
+      } else {
+        store.reconnect(id);
+      }
+    });
+  }
+
   const active = () => link.socket?.active();
   const pane = {
     socket: snapshot.socket,
@@ -185,7 +206,7 @@ export function LogViewer({ state, onChange, servers, serverId, extra }: {
     wrap: settings.wrap,
     filter: filtered.filter,
     onRetryNow: (id: string) => store.retryNow(id),
-    onReconnect: (id: string) => store.reconnect(id),
+    onReconnect: reconnect,
   };
 
   return (

@@ -100,6 +100,22 @@ describe("Merger", () => {
     expect(keys(first)).toEqual(["a:0:1", "b:0:1"]);
   });
 
+  // The source was removed and added again while the merger was not fed: the entry is a new one under the same id.
+  it("takes the rows of a new entry under an id it holds, when the entry has fewer rows", () => {
+    const merger = new Merger();
+    const b = { id: "b", rows: [line("b", 1, 5)], trimmed: 0 };
+    merger.update([{ id: "a", rows: [line("a", 1, 10), line("a", 2, 20), line("a", 3, 30)], trimmed: 0 }, b]);
+    const rows = merger.update([{ id: "a", rows: [line("a", 101, 40)], trimmed: 0 }, b]);
+    expect(keys(rows)).toEqual(["b:0:1", "a:0:101"]);
+  });
+
+  it("takes the rows of a new entry under an id it holds, when the entry has more rows", () => {
+    const merger = new Merger();
+    merger.update([{ id: "a", rows: [line("a", 1, 10), line("a", 2, 20)], trimmed: 0 }]);
+    const rows = merger.update([{ id: "a", rows: [line("a", 101, 40), line("a", 102, 50), line("a", 103, 60)], trimmed: 0 }]);
+    expect(keys(rows)).toEqual(["a:0:101", "a:0:102", "a:0:103"]);
+  });
+
   it("orders again when the entries change order", () => {
     const merger = new Merger();
     const a = { id: "a", rows: [line("a", 1, 10)], trimmed: 0 };

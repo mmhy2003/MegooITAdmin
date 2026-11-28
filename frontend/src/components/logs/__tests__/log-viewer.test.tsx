@@ -198,6 +198,30 @@ describe("LogViewer", () => {
     expect(subscribes(ws).at(-1)).toEqual({ type: "subscribe", sources: [wire(fresh)] });
   });
 
+  it("reads the containers again on Reconnect, and follows a recreated container by its name", async () => {
+    const { onChange } = await view(stateOf([CONTAINER]));
+    const ws = follow([CONTAINER], [lines([1, "up"])]);
+    act(() => ws.receive({ type: "ended", source: "s0", reason: "not_found" }));
+    // Compose recreated web after the list was read at mount.
+    containers = [listed("9e8d7c6b5a4f", "web")];
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await flush();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledWith(stateOf([{ ...CONTAINER, container_id: "9e8d7c6b5a4f" }]));
+  });
+
+  it("subscribes to the same container again on Reconnect while the server still lists it", async () => {
+    const { onChange } = await view(stateOf([CONTAINER]));
+    const ws = follow([CONTAINER], [lines([1, "up"])]);
+    act(() => ws.receive({ type: "ended", source: "s0", reason: "exited", status: 0 }));
+    const before = subscribes(ws).length;
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await flush();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(subscribes(ws).length).toBe(before + 1);
+    expect(subscribes(ws).at(-1)).toEqual({ type: "subscribe", sources: [wire(CONTAINER)] });
+  });
+
   it("reads the containers again after a failed read", async () => {
     vi.mocked(apiFetch).mockRejectedValueOnce(new Error("unreachable"));
     const { rerender, onChange } = await view(stateOf([CONTAINER]));
