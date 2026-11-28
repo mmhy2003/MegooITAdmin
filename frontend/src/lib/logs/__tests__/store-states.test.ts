@@ -259,3 +259,15 @@ describe("LogStore socket", () => {
     expect(store.snapshot().entries[0].rows).toHaveLength(1);
   });
 });
+
+describe("LogStore with a frame that runs at once", () => {
+  it("publishes each change, not the state before it", () => {
+    const store = new LogStore({ onWanted: vi.fn(), frame: (cb) => cb(), now: () => NOW });
+    store.setSources([JOURNAL]);
+    store.handle({ type: "subscribed", sources: [{ id: "w0", source: wire(JOURNAL) }], denied: [] });
+    expect(store.snapshot().entries[0].wireId).toBe("w0");
+    store.handle({ type: "ended", source: "w0", reason: "idle" });
+    expect(store.snapshot().entries[0]).toMatchObject({ state: { state: "idle" }, wireId: null });
+    expect(store.snapshot().idle).toBe(true);
+  });
+});

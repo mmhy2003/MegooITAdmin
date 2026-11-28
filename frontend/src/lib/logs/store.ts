@@ -231,8 +231,9 @@ export class LogStore {
       if (entry.state.state !== "opening" && entry.state.state !== "live") continue;
       const match = message.sources.find((s) => sameSource(entry.source, s.source));
       if (match !== undefined) {
-        if (entry.wireId !== match.id) this.#touch(entry);
+        if (entry.wireId === match.id) continue;
         entry.wireId = match.id;
+        this.#touch(entry);
         continue;
       }
       const denied = message.denied.find((d) => sameSource(entry.source, d.source));
@@ -247,20 +248,19 @@ export class LogStore {
   /** `idle` waits for resume, a passing reason is tried again up to five times, anything else waits for Reconnect. */
   #ended(entry: SourceEntry, reason: string, status: number | null): void {
     entry.wireId = null;
-    this.#touch(entry);
     if (reason === "idle") {
       entry.state = { state: "idle" };
-      return;
-    }
-    if (!RETRY_REASONS.has(reason) || entry.retries >= RETRY_MS.length) {
+    } else if (!RETRY_REASONS.has(reason) || entry.retries >= RETRY_MS.length) {
       entry.state = { state: "ended", reason, status };
-      return;
+    } else {
+      const delay = reason === "worker_restarted" && entry.retries === 0 ? 0 : RETRY_MS[entry.retries];
+      entry.retries += 1;
+      entry.state = { state: "retrying", reason, attempt: entry.retries, at: this.#now() + delay };
+      this.#clearTimer(entry.id);
+      this.#timers.set(entry.id, setTimeout(() => this.#open(entry), delay));
     }
-    const delay = reason === "worker_restarted" && entry.retries === 0 ? 0 : RETRY_MS[entry.retries];
-    entry.retries += 1;
-    entry.state = { state: "retrying", reason, attempt: entry.retries, at: this.#now() + delay };
-    this.#clearTimer(entry.id);
-    this.#timers.set(entry.id, setTimeout(() => this.#open(entry), delay));
+    // Last: a frame that runs at once publishes the entry as it is now.
+    this.#touch(entry);
   }
 
   /** Back to opening, so the entry is wanted again; `report` tells onWanted at once. */
