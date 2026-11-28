@@ -46,6 +46,10 @@ function SaveViewForm({ view, state, onSaved }: { view: LogView | null; state: V
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const trimmed = name.trim();
+    if (trimmed === "") {
+      setError("Give the view a name.");
+      return;
+    }
     if (trimmed.length > MAX_VIEW_NAME) {
       setError(`A name has at most ${MAX_VIEW_NAME} characters.`);
       return;

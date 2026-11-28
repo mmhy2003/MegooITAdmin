@@ -73,14 +73,20 @@ export function LogsPage() {
     if (!current) return;
     setViewError(null);
     try {
-      await updateView(current.id, bodyOf(state, current.name, current.shared));
+      keep(await updateView(current.id, bodyOf(state, current.name, current.shared)));
     } catch (e) {
       setViewError(errorOf(e));
     }
     reload();
   }
 
+  // A view just saved goes into the list at once: until the reload answers, the address must not lose its link to it.
+  function keep(next: LogView) {
+    setViews((prev) => [...(prev ?? []).filter((v) => v.id !== next.id), next]);
+  }
+
   function saved(next: LogView) {
+    keep(next);
     if (editing === "new") go(state, next.id);
     setEditing(null);
     reload();

@@ -24,21 +24,24 @@ export type ViewBody = { name: string; shared: boolean; sources: Record<string, 
 
 export const MAX_VIEW_NAME = 80;
 
-/** The views the person may open, each with only the sources that keep the rules of the address. */
+type RawView = Omit<LogView, "sources"> & { sources: Record<string, unknown>[] };
+
+/** A view as the server answers it, with only the sources that keep the rules of the address. */
+function normalized(view: RawView): LogView {
+  return { ...view, sources: view.sources.map(normalizeSource).filter((s): s is LogSource => s !== null) };
+}
+
+/** The views the person may open. */
 export async function listViews(): Promise<LogView[]> {
-  const views = await apiFetch<(Omit<LogView, "sources"> & { sources: Record<string, unknown>[] })[]>("/log-views");
-  return views.map((view) => ({
-    ...view,
-    sources: view.sources.map(normalizeSource).filter((s): s is LogSource => s !== null),
-  }));
+  return (await apiFetch<RawView[]>("/log-views")).map(normalized);
 }
 
-export function createView(body: ViewBody): Promise<LogView> {
-  return apiFetch<LogView>("/log-views", { method: "POST", body });
+export async function createView(body: ViewBody): Promise<LogView> {
+  return normalized(await apiFetch<RawView>("/log-views", { method: "POST", body }));
 }
 
-export function updateView(id: string, body: ViewBody): Promise<LogView> {
-  return apiFetch<LogView>(`/log-views/${id}`, { method: "PUT", body });
+export async function updateView(id: string, body: ViewBody): Promise<LogView> {
+  return normalized(await apiFetch<RawView>(`/log-views/${id}`, { method: "PUT", body }));
 }
 
 export function deleteView(id: string): Promise<void> {

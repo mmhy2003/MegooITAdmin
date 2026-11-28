@@ -172,6 +172,32 @@ describe("LogsPage", () => {
       expect(listed()).toHaveLength(2);
     });
 
+    it("keeps a view saved as new in the address while the views are read again", async () => {
+      const NEW: LogView = { ...MINE, id: "v9", name: "Edge", settings: CHANGED.settings };
+      views = [];
+      query(queryOf(CHANGED));
+      let lists = 0;
+      vi.mocked(apiFetch).mockImplementation(async (path: string, init?: { method?: string }) => {
+        if (path === "/servers") return servers;
+        // The first read answers, the one after the save never does: the list stays the one without the new view.
+        if (path === "/log-views" && !init) return lists++ === 0 ? views : new Promise<never>(() => {});
+        if (path === "/log-views" && init?.method === "POST") return NEW;
+        throw new Error(`unexpected ${path}`);
+      });
+      const { rerender } = await page();
+      await menu();
+      await userEvent.click(screen.getByRole("menuitem", { name: "Save as a new view" }));
+      await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "Edge");
+      await userEvent.click(screen.getByRole("button", { name: "Save view" }));
+      expect(replace).toHaveBeenLastCalledWith(`/logs?${queryOf(CHANGED, "v9")}`);
+
+      query(queryOf(CHANGED, "v9"));
+      rerender(<LogsPage />);
+      await act(async () => {});
+      expect(replace).toHaveBeenLastCalledWith(`/logs?${queryOf(CHANGED, "v9")}`);
+      expect(screen.getByRole("heading", { name: "Edge" })).toBeInTheDocument();
+    });
+
     it("drops the view from the address once a reload no longer lists it", async () => {
       views = [MINE];
       query(queryOf(stateOf(MINE), "v1"));

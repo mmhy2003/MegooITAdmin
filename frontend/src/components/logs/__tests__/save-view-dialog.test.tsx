@@ -88,6 +88,16 @@ describe("SaveViewDialog", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  it("refuses a name of spaces only without asking the server", async () => {
+    const { user, onSaved } = renderDialog();
+    await user.type(screen.getByRole("textbox", { name: "Name" }), "   ");
+    await user.click(screen.getByRole("button", { name: "Save view" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Give the view a name.");
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
   it.each(["view_name_taken", "too_many_views"])("says why the server refused: %s", async (reason) => {
     vi.mocked(apiFetch).mockRejectedValue(new ApiError(409, reason));
     const { user, onSaved } = renderDialog();
