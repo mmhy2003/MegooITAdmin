@@ -45,6 +45,8 @@ API_GRANTS: dict[str, frozenset[str]] = {
     "notification_deliveries": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
     # The Owner and a group's Admins add and remove patterns; a pattern is never changed in place.
     "log_file_allowlist": frozenset({"SELECT", "INSERT", "DELETE"}),
+    # A person saves, replaces and deletes their own views; the Owner any shared one.
+    "log_views": frozenset({"SELECT", "INSERT", "UPDATE", "DELETE"}),
 }
 # The sender claims an event FOR UPDATE and sets its dispatched_at, and changes nothing else of it.
 API_COLUMN_GRANTS = {("alert_events", "dispatched_at", "UPDATE")}
