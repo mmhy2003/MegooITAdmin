@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { LogPane } from "@/components/logs/log-pane";
 import { LogToolbar } from "@/components/logs/log-toolbar";
+import { SourceDialog } from "@/components/logs/source-dialog";
 import { useFiltered } from "@/components/logs/use-filtered";
+import { AllowlistDialog } from "@/components/settings/allowlist-dialog";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 import type { Container } from "@/lib/checks";
@@ -32,10 +34,12 @@ class SocketLink {
  * toolbar of its settings. Every change of sources or settings goes out through `onChange`, including a recreated
  * container found again by its name, which is said before the sources are subscribed to.
  */
-export function LogViewer({ state, onChange, servers, extra }: {
+export function LogViewer({ state, onChange, servers, serverId, extra }: {
   state: ViewState;
   onChange: (next: ViewState) => void;
   servers: Server[];
+  /** The one server the source dialog adds for, as on a server's Logs tab. */
+  serverId?: string;
   extra?: ReactNode;
 }) {
   // The store outlives a remount (React's strict mode mounts twice); each mount opens its own socket into `link`.
@@ -53,6 +57,11 @@ export function LogViewer({ state, onChange, servers, extra }: {
   // Each server's last list of containers; null when the read failed.
   const [listings] = useState(() => new Map<string, Promise<Container[] | null>>());
   const snapshot = useSyncExternalStore(subscribe, read, read);
+  const [adding, setAdding] = useState(false);
+  // Whether the person manages each group's log file patterns, read once per group for a file it refused.
+  const [manages, setManages] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [asked] = useState(() => new Set<string>());
+  const [managing, setManaging] = useState<{ id: string; name: string } | null>(null);
 
   const latest = useRef({ state, onChange });
   useEffect(() => {
@@ -119,6 +128,28 @@ export function LogViewer({ state, onChange, servers, extra }: {
   const { entries } = snapshot;
   const names = useMemo(() => new Map(servers.map((s) => [s.id, s.name])), [servers]);
   const serverName = (id: string) => names.get(id) ?? UNKNOWN_SERVER;
+  const groupOf = (id: string) => servers.find((s) => s.id === id);
+
+  // The groups of the files refused for matching none of their patterns.
+  const refusedGroups = [...new Set(entries.flatMap((e) => {
+    const group = e.state.state === "denied" && e.state.reason === "not_allowed" && groupOf(e.source.server_id);
+    return group ? [group.group_id] : [];
+  }))].join(" ");
+  useEffect(() => {
+    for (const group of refusedGroups ? refusedGroups.split(" ") : []) {
+      if (asked.has(group)) continue;
+      asked.add(group);
+      apiFetch<{ can_manage: boolean }>(`/server-groups/${group}/log-allowlist`).then(
+        (list) => setManages((known) => new Map(known).set(group, list.can_manage)),
+        () => asked.delete(group),
+      );
+    }
+  }, [refusedGroups, asked]);
+  const managePatterns = (sourceId: string) => {
+    const entry = entries.find((e) => e.id === sourceId);
+    const server = entry && groupOf(entry.source.server_id);
+    if (server) setManaging({ id: server.group_id, name: server.group_name });
+  };
   // A merged pane's label and coloured tag of each source: its server and what it follows.
   const tagged = useMemo(() => {
     const labels = new Map<string, string>();
@@ -154,7 +185,7 @@ export function LogViewer({ state, onChange, servers, extra }: {
     <div className="flex flex-col gap-4" onPointerDown={active} onKeyDown={active} onWheel={active}
       onScrollCapture={active}>
       <LogToolbar settings={settings} onSettings={(next) => onChange({ ...state, settings: next })}
-        matched={filtered.matched} total={filtered.total} extra={extra} />
+        matched={filtered.matched} total={filtered.total} onAddSource={() => setAdding(true)} extra={extra} />
       {snapshot.idle && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm">
           <p className="min-w-0 flex-1">Paused after 30 minutes without activity.</p>
@@ -170,14 +201,19 @@ export function LogViewer({ state, onChange, servers, extra }: {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {entries.map((entry, i) => {
             const title = serverName(entry.source.server_id);
+            const group = groupOf(entry.source.server_id)?.group_id;
             return (
               <LogPane key={entry.id} {...pane} title={title} entry={entry} entries={[entry]}
                 rows={filtered.lists[i] ?? []} merged={null} onRemove={remove}
+                onManagePatterns={group !== undefined && manages.get(group) ? managePatterns : undefined}
                 downloadParts={[title, sourceLabel(entry.source)]} />
             );
           })}
         </div>
       )}
+      <SourceDialog open={adding} onOpenChange={setAdding} servers={servers} serverId={serverId}
+        current={state.sources} onAdd={(added) => onChange({ ...state, sources: [...state.sources, ...added] })} />
+      <AllowlistDialog group={managing} open={managing !== null} onOpenChange={(open) => !open && setManaging(null)} />
     </div>
   );
 }

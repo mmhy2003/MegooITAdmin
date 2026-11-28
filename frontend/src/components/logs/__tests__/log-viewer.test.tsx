@@ -251,6 +251,42 @@ describe("LogViewer", () => {
     expect(ws.closedByClient).toBe(true);
   });
 
+  it("adds the sources of its dialog through onChange", async () => {
+    const { onChange } = await view(stateOf([CONTAINER]), { serverId: A });
+    fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Add source" }));
+    fireEvent.click(dialog.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith(stateOf([CONTAINER, { ...JOURNAL, unit: null }]));
+  });
+
+  it.each([true, false])("offers Manage patterns on a refused file when the allowlist says can_manage %s",
+    async (canManage) => {
+      const file: LogSource = { kind: "file", server_id: A, path: "/etc/shadow" };
+      vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+        if (path === "/server-groups/g/log-allowlist") return { can_manage: canManage, patterns: [] };
+        throw new Error(`unexpected ${path}`);
+      });
+      await view(stateOf([file, JOURNAL]));
+      const ws = socket();
+      act(() => ws.open());
+      act(() => ws.receive({
+        type: "subscribed", sources: [{ id: "s1", source: wire(JOURNAL) }],
+        denied: [{ source: wire(file), reason: "not_allowed" }],
+      }));
+      await flush();
+      const reads = vi.mocked(apiFetch).mock.calls.filter(([p]) => p === "/server-groups/g/log-allowlist");
+      expect(reads).toHaveLength(1);
+      expect(screen.getByText("This file matches none of the group's log file patterns.")).toBeInTheDocument();
+      const manage = screen.queryByRole("button", { name: "Manage patterns" });
+      if (!canManage) {
+        expect(manage).not.toBeInTheDocument();
+        return;
+      }
+      fireEvent.click(manage!);
+      await flush();
+      expect(screen.getByRole("heading", { name: "Log file patterns of Production" })).toBeInTheDocument();
+    });
+
   it("titles a source of a server it does not know Unknown server", async () => {
     const lost: LogSource = { ...JOURNAL, server_id: GONE };
     await view(stateOf([lost]));
