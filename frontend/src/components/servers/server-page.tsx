@@ -45,13 +45,19 @@ type Choices = { groups: ServerGroup[]; tags: string[] };
 /** A Linux server's checks, containers and alerts, as read together. */
 type Facts = { checks: ChecksResponse; containers: Container[]; alerts: ServerAlert[] };
 
-type Tab = "overview" | "performance" | "containers" | "alerts";
+type Tab = "overview" | "performance" | "containers" | "logs" | "alerts";
 
-/** The tabs a Linux server has besides Overview. */
+/** The tabs every Linux server has besides Overview; Logs is added for people who hold View logs on it. */
 const LINUX_TABS: readonly Tab[] = ["performance", "containers", "alerts"];
 
 // The charts and Recharts load only when the Performance tab opens, never with Overview.
 const PerformanceTab = dynamic(() => import("@/components/servers/performance/performance-tab"), {
+  ssr: false,
+  loading: () => <Skeleton className="h-64" />,
+});
+
+// The log viewer loads only when the Logs tab opens.
+const LogsTab = dynamic(() => import("@/components/logs/server-logs-tab"), {
   ssr: false,
   loading: () => <Skeleton className="h-64" />,
 });
@@ -70,8 +76,8 @@ const STATE_BADGES: Record<Exclude<HostKeyState, "none">, { label: string; varia
   };
 
 /**
- * One server's page: its name and badges, the Overview tab and, for a Linux server, Performance, Containers and Alerts,
- * with a banner above the tabs while alerts fire.
+ * One server's page: its name and badges, the Overview tab and, for a Linux server, Performance, Containers, Logs (with
+ * View logs) and Alerts, with a banner above the tabs while alerts fire.
  */
 export function ServerPage({ serverId }: { serverId: string }) {
   const router = useRouter();
@@ -212,7 +218,8 @@ export function ServerPage({ serverId }: { serverId: string }) {
 
   const linux = server?.os === "linux";
   // A Windows server has only Overview, whatever the address asks for.
-  const tab: Tab = (linux && LINUX_TABS.find((name) => name === wanted)) || "overview";
+  const tabs: readonly Tab[] = server?.can_view_logs ? [...LINUX_TABS, "logs"] : LINUX_TABS;
+  const tab: Tab = (linux && tabs.find((name) => name === wanted)) || "overview";
   const firing = linux && facts ? facts.alerts.filter((alert) => alert.state === "firing") : [];
 
   if (missing) {
@@ -344,6 +351,19 @@ export function ServerPage({ serverId }: { serverId: string }) {
                 >
                   {facts ? `Containers (${facts.containers.length})` : "Containers"}
                 </button>
+                {server.can_view_logs && (
+                  <button
+                    type="button"
+                    role="tab"
+                    id="server-tab-logs"
+                    aria-selected={tab === "logs"}
+                    aria-controls="server-tab-panel"
+                    className={tab === "logs" ? TAB_CLASSES.selected : TAB_CLASSES.other}
+                    onClick={() => showTab("logs")}
+                  >
+                    Logs
+                  </button>
+                )}
                 <button
                   type="button"
                   role="tab"
@@ -374,8 +394,16 @@ export function ServerPage({ serverId }: { serverId: string }) {
               <PerformanceTab server={server} range={range} onRange={showRange} />
             ) : tab === "containers" ? (
               facts && (
-                <ContainersTab check={checkOf(facts.checks, "containers")} containers={facts.containers} now={now} />
+                <ContainersTab
+                  check={checkOf(facts.checks, "containers")}
+                  containers={facts.containers}
+                  now={now}
+                  serverId={serverId}
+                  canViewLogs={server.can_view_logs}
+                />
               )
+            ) : tab === "logs" ? (
+              <LogsTab server={server} />
             ) : tab === "alerts" ? (
               facts && <ServerAlertsTab serverId={serverId} alerts={facts.alerts} />
             ) : (

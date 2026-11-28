@@ -2,8 +2,10 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ContainersTab } from "@/components/servers/checks/containers-tab";
 import type { Container, ServerCheck } from "@/lib/checks";
+import { encodeSource } from "@/lib/logs/sources";
 
 const now = new Date("2026-11-25T12:00:00Z");
+const SERVER = "6f1c2a8e-4b3d-4e5f-9a0b-1c2d3e4f5a6b";
 
 const CHECK: ServerCheck<"containers"> = {
   kind: "containers",
@@ -134,5 +136,20 @@ describe("ContainersTab", () => {
     );
     expect(screen.getByTestId("check-footer")).toHaveTextContent("Last checked 1 hour ago · every 30 seconds");
     expect(screen.getByText("shop-web-1")).toBeInTheDocument();
+  });
+
+  it("links each container to its logs on the server's Logs tab for someone who holds View logs", () => {
+    render(<ContainersTab check={CHECK} containers={CONTAINERS} now={now} serverId={SERVER} canViewLogs />);
+    expect(screen.getAllByRole("link", { name: "Logs" })).toHaveLength(4);
+    const src = encodeSource({ kind: "container", server_id: SERVER, container_id: "1".repeat(64), name: "shop-web-1" });
+    expect(within(rowOf("shop-web-1")).getByRole("link", { name: "Logs" })).toHaveAttribute(
+      "href",
+      `/servers/${SERVER}?tab=logs&src=${encodeURIComponent(src)}`,
+    );
+  });
+
+  it("has no Logs link without View logs", () => {
+    render(<ContainersTab check={CHECK} containers={CONTAINERS} now={now} serverId={SERVER} canViewLogs={false} />);
+    expect(screen.queryByRole("link", { name: "Logs" })).not.toBeInTheDocument();
   });
 });

@@ -15,15 +15,18 @@ vi.mock("@/lib/auth/navigate");
 vi.mock("@/hooks/use-refresh", () => ({ useRefresh: vi.fn() }));
 vi.mock("@/components/servers/performance/live-strip", () => ({ LiveStrip: () => <div>live strip</div> }));
 vi.mock("next/dynamic", () => ({
+  // The Performance tab gets a range; the Logs tab gets only the server.
   default: () =>
-    function PerformanceTab(p: { range: string; onRange: (range: string) => void }) {
+    function DynamicTab(p: { server: Server; range?: string; onRange?: (range: string) => void }) {
+      if (p.range === undefined || p.onRange === undefined) return <div>logs tab {p.server.name}</div>;
+      const onRange = p.onRange;
       return (
         <div>
           performance tab {p.range}
-          <button type="button" onClick={() => p.onRange("7d")}>
+          <button type="button" onClick={() => onRange("7d")}>
             pick 7 days
           </button>
-          <button type="button" onClick={() => p.onRange("live")}>
+          <button type="button" onClick={() => onRange("live")}>
             pick live
           </button>
         </div>
@@ -658,6 +661,58 @@ describe("ServerPage", () => {
     ]);
     expect(screen.getByRole("tab", { name: "Performance" })).toHaveAttribute("aria-selected", "false");
     expect(screen.queryByText(/performance tab/)).not.toBeInTheDocument();
+  });
+
+  it("offers the Logs tab after Containers to someone who holds View logs on the server", async () => {
+    mockApi({ ...PINNED, can_view_logs: true });
+    render(<ServerPage serverId="s-1" />);
+    const user = userEvent.setup();
+
+    await screen.findByRole("tab", { name: "Containers (4)" });
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Overview",
+      "Performance",
+      "Containers (4)",
+      "Logs",
+      "Alerts",
+    ]);
+    expect(screen.queryByText(/logs tab/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Logs" }));
+    expect(replace).toHaveBeenLastCalledWith("/servers/s-1?tab=logs", { scroll: false });
+  });
+
+  it("shows the Logs tab on ?tab=logs, and each container's Logs link on Containers", async () => {
+    setTab("logs");
+    mockApi({ ...PINNED, can_view_logs: true });
+    const { unmount } = render(<ServerPage serverId="s-1" />);
+
+    const tab = await screen.findByRole("tab", { name: "Logs" });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("logs tab db-01");
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "server-tab-logs");
+    unmount();
+
+    setTab("containers");
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("tab", { name: "Containers (4)" });
+    expect(screen.getAllByRole("link", { name: "Logs" })).toHaveLength(4);
+  });
+
+  it("shows Overview for ?tab=logs, with no Logs tab or link, without View logs", async () => {
+    setTab("logs");
+    mockApi(PINNED);
+    const { unmount } = render(<ServerPage serverId="s-1" />);
+
+    await screen.findByRole("tab", { name: "Containers (4)" });
+    expect(screen.queryByRole("tab", { name: "Logs" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText(/logs tab/)).not.toBeInTheDocument();
+    unmount();
+
+    setTab("containers");
+    render(<ServerPage serverId="s-1" />);
+    await screen.findByRole("tab", { name: "Containers (4)" });
+    expect(screen.queryByRole("link", { name: "Logs" })).not.toBeInTheDocument();
   });
 
   it("shows a Windows server's Overview for ?tab=performance, with no Performance tab", async () => {
