@@ -34,6 +34,7 @@ SERVER_KEYS = {
     "updated_at",
     "can_manage",
     "can_connect",
+    "can_view_logs",
     "metrics_interval_seconds",
     "monitoring",
 }
@@ -267,7 +268,11 @@ async def test_the_tasks_sentence(api, clock):
             for server in (on_staging, on_production):
                 response = await client.get(f"/api/servers/{server['id']}")
                 assert response.status_code == 200, response.text
-                assert response.json() == server | {"can_manage": can_manage, "can_connect": can_manage}
+                assert response.json() == server | {
+                    "can_manage": can_manage,
+                    "can_connect": can_manage,
+                    "can_view_logs": can_manage,
+                }
 
         missing = await owner.get(f"/api/servers/{uuid4()}")
         assert (missing.status_code, missing.json()) == (404, {"detail": "not_found"})

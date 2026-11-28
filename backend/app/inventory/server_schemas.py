@@ -150,3 +150,5 @@ class ServerOut(BaseModel):
     can_manage: bool
     # Whether the person may test the connection: a Linux server and Connect SSH in its group.
     can_connect: bool
+    # Whether the person may follow its logs: a Linux server and View logs in its group.
+    can_view_logs: bool

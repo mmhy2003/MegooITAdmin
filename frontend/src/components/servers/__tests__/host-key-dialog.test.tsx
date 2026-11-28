@@ -30,6 +30,7 @@ const WEB: Server = {
   host_key_changed_at: null,
   host_key_offered: null,
   can_connect: true,
+  can_view_logs: false,
   metrics_interval_seconds: 5,
   monitoring: null,
 };

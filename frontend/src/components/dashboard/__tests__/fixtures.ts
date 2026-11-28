@@ -31,6 +31,7 @@ export function server(
     host_key_changed_at: null,
     host_key_offered: null,
     can_connect: true,
+    can_view_logs: false,
     metrics_interval_seconds: 5,
     monitoring: state === null ? null : { state, reason, since: "2026-11-26T11:00:00Z", last_sample_at: null },
     ...extra,

@@ -33,6 +33,7 @@ const CHANGED: Server = {
   host_key_changed_at: "2026-11-03T00:00:00Z",
   host_key_offered: { fingerprint: OFFERED_KEY, type: "ssh-ed25519", at: "2026-11-03T00:00:00Z" },
   can_connect: true,
+  can_view_logs: false,
   metrics_interval_seconds: 5,
   monitoring: null,
 };

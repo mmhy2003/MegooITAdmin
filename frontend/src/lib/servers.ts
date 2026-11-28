@@ -41,6 +41,7 @@ export type Server = {
   host_key_changed_at: string | null;
   host_key_offered: HostKeyOffer | null;
   can_connect: boolean;
+  can_view_logs: boolean;
   metrics_interval_seconds: number;
   monitoring: Monitoring | null;
 };
