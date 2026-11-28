@@ -14,6 +14,7 @@ from app.inventory.router import router as inventory_router
 from app.inventory.server_router import router as server_router
 from app.logs.router import router as logs_allowlist_router
 from app.logs.socket import router as logs_socket_router
+from app.logs.views_router import router as log_views_router
 from app.metrics.router import router as metrics_router
 from app.metrics.socket import router as metrics_socket_router
 from app.notify.router import channels_router as notification_channels_router
@@ -68,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(users_router)
     api.include_router(inventory_router)
     api.include_router(logs_allowlist_router)
+    api.include_router(log_views_router)
     api.include_router(server_router)
     api.include_router(checks_router)
     api.include_router(metrics_router)
