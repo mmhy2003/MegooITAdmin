@@ -111,6 +111,15 @@ describe("LogPane", () => {
     expect(onRetryNow).toHaveBeenCalledWith("a");
   });
 
+  it("counts down from the time it turns retrying, not from when it was drawn first", () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const { rerender } = render(pane({ entry: entry({ state: "live" }) }));
+    act(() => vi.advanceTimersByTime(10 * 60_000));
+    const state: PaneState = { state: "retrying", reason: "unreachable", attempt: 1, at: Date.now() + 5000 };
+    rerender(pane({ entry: entry(state) }));
+    expect(screen.getByText("The server is not answering. Trying again in 5 s (1 of 5).")).toBeInTheDocument();
+  });
+
   it("keeps its lines when ended, and Reconnect reconnects", async () => {
     const onReconnect = vi.fn();
     const rows = [line("a", 1, "last words")];

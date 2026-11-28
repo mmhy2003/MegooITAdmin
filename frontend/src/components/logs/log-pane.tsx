@@ -1,7 +1,7 @@
 "use client";
 
 import { DownloadIcon, XIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { LogList } from "@/components/logs/log-list";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +33,8 @@ export const REASONS: Record<string, string> = {
 
 type Tag = { text: string; tone: number };
 
+const REVOKE_AFTER_MS = 1000;
+
 function reasonText(reason: string, status: number | null = null): string {
   const text = REASONS[reason];
   if (text === undefined) return `The stream ended (${reason}).`;
@@ -56,15 +58,34 @@ function badgeOf(entries: SourceEntry[], socket: SocketState, paused: boolean): 
   return paused ? "Paused" : "Live";
 }
 
+/**
+ * A clock that ticks each second while someone counts down. It is read afresh when a countdown subscribes, and React
+ * reads it again right after subscribing and draws before paint, so a countdown never starts from an old time.
+ */
+const clock = { now: Date.now(), listeners: new Set<() => void>(), timer: null as ReturnType<typeof setInterval> | null };
+
+function subscribeClock(listener: () => void): () => void {
+  clock.now = Date.now();
+  clock.listeners.add(listener);
+  clock.timer ??= setInterval(() => {
+    clock.now = Date.now();
+    clock.listeners.forEach((l) => l());
+  }, 1000);
+  return () => {
+    clock.listeners.delete(listener);
+    if (clock.listeners.size === 0 && clock.timer !== null) {
+      clearInterval(clock.timer);
+      clock.timer = null;
+    }
+  };
+}
+
+const stopped = () => () => {};
+const readClock = () => clock.now;
+
 /** Epoch ms, again each second while `on`: what a countdown draws from. */
 function useNow(on: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!on) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [on]);
-  return now;
+  return useSyncExternalStore(on ? subscribeClock : stopped, readClock, readClock);
 }
 
 /** What a source that is not live says, with the button that acts on it. */
@@ -129,6 +150,7 @@ export function LogPane({
   const heading = entry ? title : `Merged · ${entries.length} sources`;
   const label = entry ? sourceLabel(entry.source) : heading;
   const skipped = shown.reduce((sum, e) => sum + e.skipped, 0);
+  const badge = badgeOf(shown, socket, paused);
 
   function download() {
     const text = downloadText(rows, { utc, labels: merged?.labels ?? null });
@@ -137,7 +159,8 @@ export function LogPane({
     a.href = url;
     a.download = downloadName(downloadParts, new Date());
     a.click();
-    URL.revokeObjectURL(url);
+    // Some browsers start the download after click() returns: revoking at once could cancel it.
+    setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
   }
 
   return (
@@ -150,9 +173,7 @@ export function LogPane({
         {skipped > 0 && (
           <span className="shrink-0 text-xs text-muted-foreground">{skipped.toLocaleString("en-US")} skipped</span>
         )}
-        <Badge variant={badgeOf(shown, socket, paused) === "Live" ? "default" : "secondary"}>
-          {badgeOf(shown, socket, paused)}
-        </Badge>
+        <Badge variant={badge === "Live" ? "default" : "secondary"}>{badge}</Badge>
         <Button size="icon-xs" variant="ghost" aria-label={`Download ${label}`} title="Download" onClick={download}>
           <DownloadIcon />
         </Button>
