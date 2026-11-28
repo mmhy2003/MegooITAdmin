@@ -160,14 +160,57 @@ describe("LogViewer", () => {
   });
 
   it("follows a recreated container by its name, and says so before it subscribes", async () => {
-    containers = [listed("9e8d7c6b5a4f", "web"), listed("1a2b3c4d5e6f", "db")];
-    const { onChange } = await view(stateOf([CONTAINER, JOURNAL]));
+    const { rerender, onChange } = await view(stateOf([JOURNAL]));
+    const ws = socket();
+    act(() => ws.open());
+    // The containers arrive while the socket is open: onChange must come before the next subscribe.
+    let answer: (list: Container[]) => void = () => {};
+    vi.mocked(apiFetch).mockImplementation(() => new Promise((resolve) => (answer = resolve as typeof answer)));
+    const sentAtChange: number[] = [];
+    onChange.mockImplementation(() => sentAtChange.push(subscribes(ws).length));
+    rerender(<LogViewer state={stateOf([CONTAINER, JOURNAL])} onChange={onChange} servers={[WEB_01]} />);
+    await flush();
+    expect(subscribes(ws)).toHaveLength(1);
+
+    await act(async () => answer([listed("9e8d7c6b5a4f", "web"), listed("1a2b3c4d5e6f", "db")]));
     const swapped: LogSource = { ...CONTAINER, container_id: "9e8d7c6b5a4f" };
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(stateOf([swapped, JOURNAL]));
+    expect(sentAtChange).toEqual([1]);
+    expect(subscribes(ws)).toEqual([
+      { type: "subscribe", sources: [wire(JOURNAL)] },
+      { type: "subscribe", sources: [wire(swapped), wire(JOURNAL)] },
+    ]);
+  });
+
+  it("reads the containers again for an ID the last list lacks, never swapping back to an old one", async () => {
+    const { rerender, onChange } = await view(stateOf([CONTAINER]));
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    // Compose recreated web: the person adds the new one, which the list read at mount does not hold.
+    containers = [listed("9e8d7c6b5a4f", "web")];
+    const fresh: LogSource = { ...CONTAINER, container_id: "9e8d7c6b5a4f" };
+    rerender(<LogViewer state={stateOf([fresh])} onChange={onChange} servers={[WEB_01]} />);
+    await flush();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+    expect(onChange).not.toHaveBeenCalled();
     const ws = socket();
     act(() => ws.open());
-    expect(ws.sent).toEqual([{ type: "subscribe", sources: [wire(swapped), wire(JOURNAL)] }]);
+    expect(subscribes(ws).at(-1)).toEqual({ type: "subscribe", sources: [wire(fresh)] });
+  });
+
+  it("reads the containers again after a failed read", async () => {
+    vi.mocked(apiFetch).mockRejectedValueOnce(new Error("unreachable"));
+    const { rerender, onChange } = await view(stateOf([CONTAINER]));
+    rerender(<LogViewer state={stateOf([CONTAINER, JOURNAL])} onChange={onChange} servers={[WEB_01]} />);
+    await flush();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not read the containers again while its sources stay the same", async () => {
+    const { rerender, onChange } = await view(stateOf([CONTAINER]));
+    rerender(<LogViewer state={stateOf([CONTAINER], { q: "web" })} onChange={onChange} servers={[WEB_01]} />);
+    await flush();
+    expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 
   it("pauses after 30 minutes without activity, and Resume subscribes again", async () => {

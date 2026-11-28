@@ -50,7 +50,7 @@ export function LogViewer({ state, onChange, servers, extra }: {
     };
   });
   const [merger] = useState(() => new Merger());
-  // Each server's containers, read once per mount; null when the read failed.
+  // Each server's last list of containers; null when the read failed.
   const [listings] = useState(() => new Map<string, Promise<Container[] | null>>());
   const snapshot = useSyncExternalStore(subscribe, read, read);
 
@@ -75,23 +75,33 @@ export function LogViewer({ state, onChange, servers, extra }: {
     };
   }, [store, link]);
 
+  // Runs when the sources change, not on every new array of the same sources (a settings change).
+  const sourcesKey = state.sources.map(encodeSource).join(" ");
   useEffect(() => {
-    const sources = state.sources;
-    const ids = [...new Set(sources.filter((s) => s.kind === "container").map((s) => s.server_id))];
-    if (ids.length === 0) {
+    const sources = latest.current.state.sources;
+    const wanted = new Map<string, string[]>();
+    for (const s of sources) {
+      if (s.kind === "container") wanted.set(s.server_id, [...(wanted.get(s.server_id) ?? []), s.container_id]);
+    }
+    if (wanted.size === 0) {
       store.setSources(sources);
       return;
     }
     let current = true;
-    const containersOf = (id: string) => {
-      let listing = listings.get(id);
-      if (listing === undefined) {
-        listing = apiFetch<Container[]>(`/servers/${id}/containers`).catch(() => null);
+    // A list read earlier is used while it holds every container asked for. A failed read, or one without an ID
+    // asked for now, is read again: an old list could swap a container created since back to the one it replaced.
+    const containersOf = async (id: string, ids: string[]) => {
+      let list = await listings.get(id);
+      if (!list || ids.some((c) => !list!.some((listed) => listed.container_id === c))) {
+        const listing = apiFetch<Container[]>(`/servers/${id}/containers`).catch(() => null);
         listings.set(id, listing);
+        list = await listing;
       }
-      return listing.then((list) => [id, list] as const);
+      return [id, list] as const;
     };
-    void Promise.all(ids.map(containersOf)).then((pairs) => {
+    // Every source waits for the lists, journals and files too: one subscribe then carries the sources in their
+    // order, with any swapped container, and the reads take a moment.
+    void Promise.all([...wanted].map(([id, ids]) => containersOf(id, ids))).then((pairs) => {
       if (!current) return;
       const known = new Map<string, Container[]>();
       for (const [id, list] of pairs) if (list !== null) known.set(id, list);
@@ -102,7 +112,7 @@ export function LogViewer({ state, onChange, servers, extra }: {
     return () => {
       current = false;
     };
-  }, [state.sources, store, listings]);
+  }, [sourcesKey, store, listings]);
 
   const { settings } = state;
   const merged = settings.layout === "merged";
