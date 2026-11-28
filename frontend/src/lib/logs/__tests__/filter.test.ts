@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compileFilter, FilterCache, type CompiledFilter } from "@/lib/logs/filter";
 import type { LevelGroup } from "@/lib/logs/levels";
-import type { LineRow, MarkerRow, Row } from "@/lib/logs/store";
+import { MAX_ROWS, TRIM_BLOCK, type LineRow, type MarkerRow, type Row } from "@/lib/logs/store";
 
 function compiled(q: string, regex: boolean): CompiledFilter {
   const filter = compileFilter(q, regex);
@@ -133,5 +133,33 @@ describe("FilterCache.apply", () => {
     const result = new FilterCache(compiled("hit", false)).apply(rows, new Set<LevelGroup>(["info"]), 100);
     expect(result.matched).toBe(1);
     expect(result.total).toBe(3);
+  });
+});
+
+describe("FilterCache.prune", () => {
+  it("stays bounded while the rows roll past MAX_ROWS under one filter", () => {
+    const cache = new FilterCache(compiled("hit", false));
+    let rows: Row[] = [];
+    for (let seq = 0; seq < MAX_ROWS * 5; seq += TRIM_BLOCK) {
+      rows = [...rows, ...Array.from({ length: TRIM_BLOCK }, (_, i) => line(seq + i, "hit"))];
+      if (rows.length > MAX_ROWS) rows = rows.slice(rows.length - MAX_ROWS);
+      cache.apply(rows, ALL, Infinity);
+      cache.prune([rows]);
+      expect(cache.size).toBeLessThanOrEqual(2 * MAX_ROWS);
+    }
+  });
+
+  it("keeps the answers of the rows still held, across every list", () => {
+    const a: Row[] = [line(1, "hit"), line(2, "miss")];
+    const b: Row[] = [{ ...line(1, "hit"), key: "b:0:1" }];
+    const cache = new FilterCache(compiled("hit", false));
+    cache.apply([line(0, "gone"), ...a], ALL, 100);
+    cache.apply(b, ALL, 100);
+    // Nothing is dropped until the cache holds more than twice the rows.
+    cache.prune([a, b]);
+    expect(cache.size).toBe(4);
+    cache.prune([a.slice(1), []]);
+    expect(cache.size).toBe(1);
+    expect(cache.apply(a.slice(1), ALL, 100).used).toBe(0);
   });
 });

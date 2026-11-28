@@ -127,7 +127,7 @@ function StateMessage({ entry, prefix, now, onRetryNow, onReconnect, onManagePat
  */
 export function LogPane({
   title, entry, entries, rows, socket, utc, wrap, filter, merged, onRemove, onRetryNow, onReconnect, onManagePatterns,
-  downloadParts,
+  managesPatterns, downloadParts,
 }: {
   title: string;
   entry: SourceEntry | null;
@@ -142,6 +142,8 @@ export function LogPane({
   onRetryNow: (id: string) => void;
   onReconnect: (id: string) => void;
   onManagePatterns?: (id: string) => void;
+  /** Whether the person manages the patterns of a source's group; every source when absent. */
+  managesPatterns?: (id: string) => boolean;
   downloadParts: string[];
 }) {
   const [paused, setPaused] = useState(false);
@@ -186,7 +188,8 @@ export function LogPane({
       </div>
       {shown.map((e) => (
         <StateMessage key={e.id} entry={e} prefix={entry ? "" : `${merged?.labels.get(e.id) ?? sourceLabel(e.source)}: `}
-          now={now} onRetryNow={onRetryNow} onReconnect={onReconnect} onManagePatterns={onManagePatterns} />
+          now={now} onRetryNow={onRetryNow} onReconnect={onReconnect}
+          onManagePatterns={!managesPatterns || managesPatterns(e.id) ? onManagePatterns : undefined} />
       ))}
       <LogList rows={rows} utc={utc} wrap={wrap} filter={filter} tags={merged?.tags ?? null}
         label={entry ? `${title} · ${label}` : heading} onPaused={setPaused} />

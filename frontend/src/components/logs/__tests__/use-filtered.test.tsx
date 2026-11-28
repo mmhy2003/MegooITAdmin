@@ -119,6 +119,15 @@ describe("useFiltered", () => {
     expect((apply.mock.results.at(-1)?.value as { used: number }).used).toBe(1);
   });
 
+  it("forgets the rows the lists no longer hold under the same filter", () => {
+    const prune = vi.spyOn(FilterCache.prototype, "prune");
+    const a = lines("a", 10);
+    const { rerender } = hook([a], { ...DEFAULT_SETTINGS, q: "even" });
+    rerender({ lists: [a.slice(8)], settings: { ...DEFAULT_SETTINGS, q: "even" } });
+    expect(prune).toHaveBeenLastCalledWith([a.slice(8)]);
+    expect((prune.mock.contexts.at(-1) as FilterCache).size).toBe(2);
+  });
+
   it("cancels its frame on unmount", () => {
     const { unmount } = hook([lines("a", SLICE + 10)], { ...DEFAULT_SETTINGS, q: "even" });
     expect(frames.size).toBe(1);

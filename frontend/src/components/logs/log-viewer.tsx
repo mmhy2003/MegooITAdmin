@@ -126,9 +126,9 @@ export function LogViewer({ state, onChange, servers, serverId, extra }: {
   const { settings } = state;
   const merged = settings.layout === "merged";
   const { entries } = snapshot;
-  const names = useMemo(() => new Map(servers.map((s) => [s.id, s.name])), [servers]);
-  const serverName = (id: string) => names.get(id) ?? UNKNOWN_SERVER;
-  const groupOf = (id: string) => servers.find((s) => s.id === id);
+  const byId = useMemo(() => new Map(servers.map((s) => [s.id, s])), [servers]);
+  const serverName = (id: string) => byId.get(id)?.name ?? UNKNOWN_SERVER;
+  const groupOf = (id: string) => byId.get(id);
 
   // The groups of the files refused for matching none of their patterns.
   const refusedGroups = [...new Set(entries.flatMap((e) => {
@@ -145,9 +145,16 @@ export function LogViewer({ state, onChange, servers, serverId, extra }: {
       );
     }
   }, [refusedGroups, asked]);
-  const managePatterns = (sourceId: string) => {
+  const serverOf = (sourceId: string) => {
     const entry = entries.find((e) => e.id === sourceId);
-    const server = entry && groupOf(entry.source.server_id);
+    return entry && groupOf(entry.source.server_id);
+  };
+  const managesPatterns = (sourceId: string) => {
+    const server = serverOf(sourceId);
+    return server !== undefined && manages.get(server.group_id) === true;
+  };
+  const managePatterns = (sourceId: string) => {
+    const server = serverOf(sourceId);
     if (server) setManaging({ id: server.group_id, name: server.group_name });
   };
   // A merged pane's label and coloured tag of each source: its server and what it follows.
@@ -155,12 +162,12 @@ export function LogViewer({ state, onChange, servers, serverId, extra }: {
     const labels = new Map<string, string>();
     const tags = new Map<string, { text: string; tone: number }>();
     entries.forEach((e, i) => {
-      const text = `${names.get(e.source.server_id) ?? UNKNOWN_SERVER} · ${sourceLabel(e.source)}`;
+      const text = `${byId.get(e.source.server_id)?.name ?? UNKNOWN_SERVER} · ${sourceLabel(e.source)}`;
       labels.set(e.id, text);
       tags.set(e.id, { text, tone: i % TONES });
     });
     return { labels, tags };
-  }, [entries, names]);
+  }, [entries, byId]);
   const lists = useMemo(
     () => (merged ? [merger.update(entries)] : entries.map((e) => e.rows)),
     [merged, merger, entries],
@@ -193,19 +200,20 @@ export function LogViewer({ state, onChange, servers, serverId, extra }: {
         </div>
       )}
       {merged ? (
+        // No remove button: a merged pane has no one source to remove. Side by side, each pane has its own.
         entries.length > 0 && (
           <LogPane {...pane} title="Merged" entry={null} entries={entries} rows={filtered.lists[0] ?? []}
-            merged={tagged} downloadParts={["merged"]} />
+            merged={tagged} onManagePatterns={managePatterns} managesPatterns={managesPatterns}
+            downloadParts={["merged"]} />
         )
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {entries.map((entry, i) => {
             const title = serverName(entry.source.server_id);
-            const group = groupOf(entry.source.server_id)?.group_id;
             return (
               <LogPane key={entry.id} {...pane} title={title} entry={entry} entries={[entry]}
                 rows={filtered.lists[i] ?? []} merged={null} onRemove={remove}
-                onManagePatterns={group !== undefined && manages.get(group) ? managePatterns : undefined}
+                onManagePatterns={managesPatterns(entry.id) ? managePatterns : undefined}
                 downloadParts={[title, sourceLabel(entry.source)]} />
             );
           })}

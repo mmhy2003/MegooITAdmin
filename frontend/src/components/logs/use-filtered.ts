@@ -46,6 +46,7 @@ export function useFiltered(lists: Row[][], settings: ViewSettings): Filtered {
       pending ||= applied.pending;
       filtered.push(applied.rows);
     }
+    cache.prune(lists);
     return { lists: filtered, matched, total, pending };
   }, [lists, levels, cache, frame]);
 

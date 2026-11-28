@@ -48,11 +48,36 @@ export function compileFilter(q: string, regex: boolean): CompiledFilter | null 
   };
 }
 
-/** Remembers, per row key, whether a line matches the filter, so each line is tested once. */
+/**
+ * Remembers, per row key, whether a line matches the filter, so each line is tested once. `prune` forgets the rows
+ * the lists no longer hold, so the cache stays bounded by what the store keeps.
+ */
 export class FilterCache {
-  private readonly matches = new Map<string, boolean>();
+  private matches = new Map<string, boolean>();
 
   constructor(private readonly filter: CompiledFilter | null) {}
+
+  /** The answers remembered. */
+  get size(): number {
+    return this.matches.size;
+  }
+
+  /**
+   * Keeps only the answers of the rows `lists` hold, once the cache holds more than twice as many: a rebuild then
+   * costs no more than the lines tested since the last one.
+   */
+  prune(lists: Row[][]): void {
+    const held = lists.reduce((sum, rows) => sum + rows.length, 0);
+    if (this.matches.size <= 2 * held) return;
+    const kept = new Map<string, boolean>();
+    for (const rows of lists) {
+      for (const row of rows) {
+        const cached = this.matches.get(row.key);
+        if (cached !== undefined) kept.set(row.key, cached);
+      }
+    }
+    this.matches = kept;
+  }
 
   apply(
     rows: Row[],

@@ -259,14 +259,19 @@ describe("LogViewer", () => {
     expect(onChange).toHaveBeenCalledWith(stateOf([CONTAINER, { ...JOURNAL, unit: null }]));
   });
 
-  it.each([true, false])("offers Manage patterns on a refused file when the allowlist says can_manage %s",
-    async (canManage) => {
+  it.each([
+    [true, "side_by_side"],
+    [false, "side_by_side"],
+    [true, "merged"],
+    [false, "merged"],
+  ] as const)("offers Manage patterns on a refused file when the allowlist says can_manage %s (%s)",
+    async (canManage, layout) => {
       const file: LogSource = { kind: "file", server_id: A, path: "/etc/shadow" };
       vi.mocked(apiFetch).mockImplementation(async (path: string) => {
         if (path === "/server-groups/g/log-allowlist") return { can_manage: canManage, patterns: [] };
         throw new Error(`unexpected ${path}`);
       });
-      await view(stateOf([file, JOURNAL]));
+      await view(stateOf([file, JOURNAL], { layout }));
       const ws = socket();
       act(() => ws.open());
       act(() => ws.receive({
@@ -276,7 +281,7 @@ describe("LogViewer", () => {
       await flush();
       const reads = vi.mocked(apiFetch).mock.calls.filter(([p]) => p === "/server-groups/g/log-allowlist");
       expect(reads).toHaveLength(1);
-      expect(screen.getByText("This file matches none of the group's log file patterns.")).toBeInTheDocument();
+      expect(screen.getByText(/This file matches none of the group's log file patterns\.$/)).toBeInTheDocument();
       const manage = screen.queryByRole("button", { name: "Manage patterns" });
       if (!canManage) {
         expect(manage).not.toBeInTheDocument();
