@@ -26,6 +26,8 @@ ANY_SIGNED_IN: dict[str, str] = {
     "POST /api/alerts/seen": "a person moves their own read mark",
     "GET /api/log-views": "the list and the save filter and check by the person itself",
     "POST /api/log-views": "the list and the save filter and check by the person itself",
+    "PUT /api/log-views/{view_id}": "the list and the save filter and check by the person itself",
+    "DELETE /api/log-views/{view_id}": "the list and the save filter and check by the person itself",
 }
 
 

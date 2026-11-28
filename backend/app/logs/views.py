@@ -1,4 +1,5 @@
-"""The log views people save, between the routes and the table: who reads a view, and how one is saved and listed.
+"""The log views people save, between the routes and the table: who reads a view, and how one is saved, listed,
+replaced and deleted.
 
 A view names sources on one or more servers. A private view is its owner's alone. A shared view is listed for the
 Owner, and for whoever reads every one of its servers for views: so nobody gets a view that half works.
@@ -72,6 +73,51 @@ async def _check_servers(db: AsyncSession, access: Access, body: LogViewIn) -> N
         raise HTTPException(403, "forbidden")
 
 
+async def _check_name(db: AsyncSession, owner_id: UUID, name: str, view_id: UUID | None = None) -> None:
+    """Another view of the owner by that name, without regard to case: 409 view_name_taken."""
+    clash = select(LogView.id).where(LogView.owner_id == owner_id, func.lower(LogView.name) == name.lower())
+    if view_id is not None:
+        clash = clash.where(LogView.id != view_id)
+    if await db.scalar(clash) is not None:
+        raise HTTPException(409, "view_name_taken")
+
+
+async def _editable(db: AsyncSession, user: User, access: Access, view_id: UUID) -> tuple[LogView, str]:
+    """The view, locked until the commit, and its owner's name. One the person cannot see: 404 not_found; one they
+    see but may not change: 403 forbidden."""
+    row = (
+        await db.execute(
+            select(LogView, User.name)
+            .join(User, User.id == LogView.owner_id)
+            .where(LogView.id == view_id)
+            .with_for_update(of=LogView)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(404, "not_found")
+    view, owner_name = row
+    if view.owner_id != user.id:
+        if not view.shared:
+            raise HTTPException(404, "not_found")
+        if not access.is_owner:
+            servers = await _servers(db, _server_ids(view))
+            if not all(reads_for_views(access, servers.get(i)) for i in _server_ids(view)):
+                raise HTTPException(404, "not_found")
+            raise HTTPException(403, "forbidden")
+    return view, owner_name
+
+
+def _event(request: Request, user: User, action: str, view: LogView, change: dict[str, Any] | None):
+    return auth_event(
+        request,
+        action,
+        actor_of(user),
+        mfa=True,
+        target=Target(type="log_view", id=str(view.id), name=view.name),
+        change=change,
+    )
+
+
 async def list_views(db: AsyncSession, access: Access, user: User) -> list[LogViewOut]:
     """The person's own views and the shared views of others they read, by name without regard to case. The Owner
     gets every shared view; anyone else only those whose every server they read for views."""
@@ -102,9 +148,7 @@ async def create_view(db: AsyncSession, request: Request, user: User, access: Ac
     count = select(func.count()).select_from(LogView).where(LogView.owner_id == user.id)
     if await db.scalar(count) >= MAX_VIEWS:
         raise HTTPException(409, "too_many_views")
-    clash = select(LogView.id).where(LogView.owner_id == user.id, func.lower(LogView.name) == body.name.lower())
-    if await db.scalar(clash) is not None:
-        raise HTTPException(409, "view_name_taken")
+    await _check_name(db, user.id, body.name)
     view = LogView(
         owner_id=user.id,
         name=body.name,
@@ -116,13 +160,43 @@ async def create_view(db: AsyncSession, request: Request, user: User, access: Ac
     await flush_unique(db, "log_views_owner_id_name_key", "view_name_taken")
     await db.refresh(view)
     # record() last: it holds the audit chain lock until the commit.
-    event = auth_event(
-        request,
-        actions.LOG_VIEW_CREATED,
-        actor_of(user),
-        mfa=True,
-        target=Target(type="log_view", id=str(view.id), name=view.name),
-        change=changes({}, _fields(view)),
-    )
-    await record(db, event)
+    await record(db, _event(request, user, actions.LOG_VIEW_CREATED, view, changes({}, _fields(view))))
     return _out(view, user.name, user, access)
+
+
+async def update_view(
+    db: AsyncSession, request: Request, user: User, access: Access, view_id: UUID, body: LogViewIn
+) -> LogViewOut:
+    """Replaces the four fields of a view the person may change, with the checks of a save. Nothing differs: 409
+    no_change. The name is unique among the views of the view's owner, who may not be the person."""
+    view, owner_name = await _editable(db, user, access, view_id)
+    await _check_servers(db, access, body)
+    before = _fields(view)
+    after = {
+        "name": body.name,
+        "shared": body.shared,
+        "sources": [source.model_dump(mode="json") for source in body.sources],
+        "settings": body.settings.model_dump(mode="json"),
+    }
+    changed = changes(before, after)
+    if changed is None:
+        raise HTTPException(409, "no_change")
+    await _check_name(db, view.owner_id, body.name, view.id)
+    for field, value in after.items():
+        setattr(view, field, value)
+    view.updated_at = func.now()
+    await flush_unique(db, "log_views_owner_id_name_key", "view_name_taken")
+    await db.refresh(view)
+    # record() last: it holds the audit chain lock until the commit.
+    await record(db, _event(request, user, actions.LOG_VIEW_UPDATED, view, changed))
+    return _out(view, owner_name, user, access)
+
+
+async def delete_view(db: AsyncSession, request: Request, user: User, access: Access, view_id: UUID) -> None:
+    """Deletes a view the person may change."""
+    view, _ = await _editable(db, user, access, view_id)
+    change = changes(_fields(view), {})
+    await db.delete(view)
+    await db.flush()
+    # record() last: it holds the audit chain lock until the commit.
+    await record(db, _event(request, user, actions.LOG_VIEW_DELETED, view, change))
