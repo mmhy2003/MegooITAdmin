@@ -1,7 +1,8 @@
 "use client";
 
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { FileText, Pencil, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { AllowlistDialog } from "@/components/settings/allowlist-dialog";
 import { DeleteGroupDialog } from "@/components/settings/delete-group-dialog";
 import { GroupDialog } from "@/components/settings/group-dialog";
 import { Alert } from "@/components/ui/alert";
@@ -20,6 +21,7 @@ export function GroupsPage() {
   // `undefined` is closed, `null` is a new group.
   const [editing, setEditing] = useState<ServerGroup | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<ServerGroup | null>(null);
+  const [patterns, setPatterns] = useState<ServerGroup | null>(null);
 
   const reload = useCallback(
     () =>
@@ -93,6 +95,14 @@ export function GroupsPage() {
                         <Button
                           variant="ghost"
                           size="icon"
+                          aria-label={`Log files of ${group.name}`}
+                          onClick={() => setPatterns(group)}
+                        >
+                          <FileText aria-hidden />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           aria-label={`Edit ${group.name}`}
                           onClick={() => setEditing(group)}
                         >
@@ -120,6 +130,11 @@ export function GroupsPage() {
         open={editing !== undefined}
         onOpenChange={(open) => !open && setEditing(undefined)}
         onSaved={saved}
+      />
+      <AllowlistDialog
+        group={patterns}
+        open={patterns !== null}
+        onOpenChange={(open) => !open && setPatterns(null)}
       />
       <DeleteGroupDialog
         group={deleting}

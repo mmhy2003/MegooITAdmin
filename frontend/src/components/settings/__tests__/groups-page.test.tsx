@@ -117,6 +117,25 @@ describe("GroupsPage", () => {
     expect(listCalls()).toBe(2);
   });
 
+  it("opens the log file patterns of a group from its Log files button", async () => {
+    mockApi();
+    vi.mocked(apiFetch).mockImplementation(async (path: string) => {
+      if (path === "/server-groups/g-staging/log-allowlist") return { can_manage: true, patterns: [] };
+      if (path === "/server-groups") return [PRODUCTION, STAGING];
+      if (path === "/users") return USERS;
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<GroupsPage />);
+    const user = userEvent.setup();
+
+    const production = within(await screen.findByRole("row", { name: /production/ }));
+    expect(production.getByRole("button", { name: "Log files of production" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Log files of staging" }));
+
+    expect(screen.getByRole("heading", { name: "Log file patterns of staging" })).toBeInTheDocument();
+    expect(apiFetch).toHaveBeenCalledWith("/server-groups/g-staging/log-allowlist");
+  });
+
   it("names the people who hold a role in a group before deleting it", async () => {
     mockApi();
     render(<GroupsPage />);

@@ -111,6 +111,7 @@ def _out(
         updated_at=server.updated_at,
         can_manage=access.manages(server.server_group_id),
         can_connect=server.os == "linux" and access.allows(Permission.CONNECT_SSH, server.server_group_id),
+        can_view_logs=server.os == "linux" and access.allows(Permission.VIEW_LOGS, server.server_group_id),
     )
 
 

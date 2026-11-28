@@ -603,5 +603,21 @@ def test_the_database_refuses_a_second_equal_pattern_in_a_group():
         _execute("DELETE FROM server_groups WHERE name = 'Migration probe group 0012 unique'")
 
 
+def _log_views_objects() -> list:
+    return _fetch(
+        "SELECT to_regclass('log_views'),"
+        " to_regclass('log_views') IS NOT NULL AND has_table_privilege('megooitadmin_api', 'log_views', 'DELETE')"
+    )
+
+
+def test_0013_goes_down_and_up_again():
+    command.downgrade(_config(), "0012")
+    try:
+        assert _log_views_objects() == [(None, False)]
+    finally:
+        upgrade_to_head()
+    assert _log_views_objects() == [("log_views", True)]
+
+
 def test_the_models_match_the_migrations():
     command.check(_config())

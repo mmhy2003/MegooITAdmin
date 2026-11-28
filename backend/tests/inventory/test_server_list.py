@@ -65,6 +65,38 @@ async def test_can_manage_follows_the_role(api, clock):
     }
 
 
+async def test_can_view_logs_follows_view_logs_and_the_os(api, clock):
+    staging = await make_group("staging")
+    production = await make_group("production")
+    web = await make_server(staging.id, "web-01")
+    await make_server(staging.id, "win-02", os="windows", port=3389)
+    await make_server(production.id, "app-03")
+    async with (
+        signed_in(api, clock, ADMIN) as (ada, client),
+        signed_in(api, clock, OWNER, "owner") as (_, owner),
+        signed_in(api, clock, AUDITOR, "auditor") as (_, auditor),
+    ):
+        await add_grant(ada.id, staging.id, "operator", view_logs=True)
+        await add_grant(ada.id, production.id, "operator", view_logs=False)
+        response = await client.get("/api/servers")
+        one = await client.get(f"/api/servers/{web.id}")
+        seen = {
+            label: {server["name"]: server["can_view_logs"] for server in (await other.get("/api/servers")).json()}
+            for label, other in (("owner", owner), ("auditor", auditor))
+        }
+
+    assert {server["name"]: server["can_view_logs"] for server in response.json()} == {
+        "app-03": False,
+        "web-01": True,
+        "win-02": False,
+    }
+    assert (one.status_code, one.json()["can_view_logs"]) == (200, True)
+    assert seen == {
+        "owner": {"app-03": True, "web-01": True, "win-02": False},
+        "auditor": {"app-03": False, "web-01": False, "win-02": False},
+    }
+
+
 async def test_filters_by_group(api, clock):
     staging, production = await two_groups()
     async with signed_in(api, clock, OWNER, "owner") as (_, owner):

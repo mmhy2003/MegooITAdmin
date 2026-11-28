@@ -77,6 +77,17 @@ describe("the alert and notification codes", () => {
   });
 });
 
+describe("the saved view and log file pattern codes", () => {
+  it.each([
+    ["view_name_taken", "You have a view with this name already."],
+    ["too_many_views", "You have 100 saved views, the most allowed. Delete one first."],
+    ["pattern_exists", "This pattern is in the list already."],
+    ["too_many_patterns", "This group has 50 patterns, the most allowed. Remove one first."],
+  ])("%s → %s", (code, text) => {
+    expect(messageFor(code)).toBe(text);
+  });
+});
+
 describe("deliveryErrorText", () => {
   const codes = [
     "connection_failed",

@@ -184,14 +184,29 @@ The app is then at `http://<this host>/`, and `curl http://localhost/api/health`
 
 ### Live logs
 
-- People with View logs in a server's group follow its logs live, and so does the Owner. Auditors never do. The
-  WebSocket `/api/ws/logs` serves them; its page comes later.
+- People with View logs in a server's group follow its logs live, and so does the Owner. Auditors never do. They
+  follow them on the Logs page, across servers, and on a server's Logs tab, which shows to people with View logs
+  on that server. The WebSocket `/api/ws/logs` serves both.
 - A Linux server has three kinds of source: its journal (optionally one unit, a priority and worse, and this boot
   only), one file that the group's allowlist allows, and one Docker container.
 - Each server group has its own file allowlist. The upgrade gives every group, and a new group, four starter
   patterns: `/var/log/syslog`, `/var/log/messages`, `/var/log/nginx/*.log` and `/var/log/apache2/*.log`. The Owner
   and the group's Admins change them through `/api/server-groups/{id}/log-allowlist`. A wildcard stays inside one
   path segment, so `/var/log/*.log` does not reach `/var/log/nginx/access.log`. A group has at most 50 patterns.
+  One dialog edits them, and it has two doors: Settings → Server groups → Log files (the Owner), and Manage
+  patterns in the file picker (the Owner and the group's Admins).
+- The viewer follows the newest lines. Scrolling up pauses it, and "Jump to latest" follows again. Each source
+  keeps its last 10,000 lines.
+- Text and regex filters ignore case and highlight what they match. Five switches show or hide the levels, read
+  from the journal priority or from the text of the line. Sources show side by side or merged by time, with ANSI
+  colours, Wrap, and times in Local or UTC. Each pane downloads the lines it holds after its filters.
+- The address holds the view: its sources and its settings. Copy it to share what is on screen.
+- Saved views keep a name, the sources and the settings, private or shared. A shared view shows to people who
+  hold View logs on every server of it. Its owner and the Owner change or delete it; others save it as a new
+  view. A person has at most 100 views. The audit log records `log_view.created`, `log_view.updated` and
+  `log_view.deleted`.
+- A stream that ends for a passing reason (the worker unavailable or restarted, the server unreachable, an SSH
+  error) is retried 5 times, then waits for the person.
 - A viewer first gets the last 200 lines, then the new ones. The `logs` worker opens one SSH channel per source,
   shared by everyone who watches it, and closes it a few seconds after the last viewer leaves.
 - A source sends at most `LOG_STREAM_MAX_LINES_PER_SECOND` lines a second (2000 by default). The lines above it are

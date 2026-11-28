@@ -6,7 +6,8 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -449,6 +450,31 @@ def test_caddy_accepts_the_caddyfile_and_finds_nothing_to_reformat():
     assert fmt.stdout == CADDYFILE.read_text()
 
 
+@contextmanager
+def _invited_client(
+    owner: httpx.Client, name: str, email: str, grants: list[dict]
+) -> Iterator[tuple[str, httpx.Client]]:
+    """The Owner invites a person with these grants, who accepts, enrols an authenticator and is signed in.
+
+    The password is "<name in lower case>'s own long password"."""
+    response = owner.post("/api/users", json={"name": name, "email": email, "platform_role": None, "grants": grants})
+    assert response.status_code == 200, response.text
+    user_id, token = response.json()["user_id"], response.json()["token"]
+    with httpx.Client(base_url=_env("STACK_URL"), timeout=10) as client:
+        response = client.post("/api/auth/invite/check", json={"token": token})
+        assert response.status_code == 200, response.text
+        assert response.json() == {"name": name, "email": email}
+        password = f"{name.lower()}'s own long password"
+        response = client.post("/api/auth/invite/accept", json={"token": token, "password": password})
+        assert response.status_code == 200, response.text
+        response = client.post("/api/auth/mfa/enrol", json={})
+        assert response.status_code == 200, response.text
+        code = pyotp.TOTP(response.json()["secret"]).now()
+        response = client.post("/api/auth/mfa/enrol/confirm", json={"code": code})
+        assert response.status_code == 200, response.text
+        yield user_id, client
+
+
 def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disabled(owner):
     # The design's walkthrough on the real stack: two groups, an Admin on staging only, then disabled.
     groups = {}
@@ -456,27 +482,8 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         response = owner.post("/api/server-groups", json={"name": name})
         assert response.status_code == 200, response.text
         groups[name] = response.json()["id"]
-    invite = {
-        "name": "Ada",
-        "email": "ada@stack.invalid",
-        "platform_role": None,
-        "grants": [{"group_id": groups["staging"], "role": "admin", "connect_ssh": True}],
-    }
-    response = owner.post("/api/users", json=invite)
-    assert response.status_code == 200, response.text
-    ada_id, token = response.json()["user_id"], response.json()["token"]
-    with httpx.Client(base_url=_env("STACK_URL"), timeout=10) as client:
-        response = client.post("/api/auth/invite/check", json={"token": token})
-        assert response.status_code == 200, response.text
-        assert response.json() == {"name": "Ada", "email": "ada@stack.invalid"}
-        response = client.post("/api/auth/invite/accept", json={"token": token, "password": "ada's own long password"})
-        assert response.status_code == 200, response.text
-        response = client.post("/api/auth/mfa/enrol", json={})
-        assert response.status_code == 200, response.text
-        code = pyotp.TOTP(response.json()["secret"]).now()
-        response = client.post("/api/auth/mfa/enrol/confirm", json={"code": code})
-        assert response.status_code == 200, response.text
-
+    grants = [{"group_id": groups["staging"], "role": "admin", "connect_ssh": True}]
+    with _invited_client(owner, "Ada", "ada@stack.invalid", grants) as (ada_id, client):
         response = client.get("/api/auth/me")
         assert response.status_code == 200, response.text
         assert [(g["group_name"], g["role"]) for g in response.json()["grants"]] == [("staging", "admin")]
@@ -502,6 +509,25 @@ def test_a_staging_only_admin_sees_only_staging_is_refused_settings_and_is_disab
         assert client.get("/api/auth/me").status_code == 401
         response = client.post("/api/auth/login", json={"email": "ada@stack.invalid", "password": "ada's own long password"})
         assert (response.status_code, response.json()) == (401, {"detail": "invalid_credentials"})
+
+
+def test_the_logs_page_answers_and_a_shared_view_reaches_another_reader(owner):
+    assert owner.get("/logs").status_code == 200
+    response = owner.post("/api/server-groups", json={"name": "logs-views"})
+    assert response.status_code == 200, response.text
+    group_id = response.json()["id"]
+    server = {"name": "stack-logs-01", "address": "10.0.0.1", "group_id": group_id, "os": "linux", "port": 22}
+    response = owner.post("/api/servers", json=server)
+    assert response.status_code == 200, response.text
+    view = {"name": "Stack view", "shared": True, "sources": [{"kind": "journal", "server_id": response.json()["id"]}]}
+    response = owner.post("/api/log-views", json=view)
+    assert response.status_code == 200, response.text
+
+    grants = [{"group_id": group_id, "role": "operator", "view_logs": True}]
+    with _invited_client(owner, "Olga", "olga@stack.invalid", grants) as (_, client):
+        response = client.get("/api/log-views")
+        assert response.status_code == 200, response.text
+        assert [(v["name"], v["is_mine"], v["can_edit"]) for v in response.json()] == [("Stack view", False, False)]
 
 
 def _owner_sql(sql: str) -> str:
