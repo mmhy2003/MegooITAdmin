@@ -1,6 +1,6 @@
 import { stripAnsi } from "@/lib/logs/ansi";
 import { levelOf, type LevelGroup } from "@/lib/logs/levels";
-import type { ServerMessage, WireLine } from "@/lib/logs/socket";
+import type { LogSocketStatus, ServerMessage, WireLine } from "@/lib/logs/socket";
 import { encodeSource, sameSource, type LogSource } from "@/lib/logs/sources";
 
 export type LineRow = {
@@ -53,6 +53,16 @@ export type StoreSnapshot = { version: number; entries: SourceEntry[]; socket: S
 export const MAX_ROWS = 10_000;
 export const TRIM_BLOCK = 1_000;
 
+/** The waits before the five tries that follow a passing end; the first `worker_restarted` is tried at once. */
+export const RETRY_MS = [2000, 5000, 15000, 30000, 30000];
+/** The ends that pass by themselves: the stream is opened again. Any other end waits for the viewer. */
+export const RETRY_REASONS: ReadonlySet<string> = new Set([
+  "worker_unavailable",
+  "worker_restarted",
+  "unreachable",
+  "ssh_error",
+]);
+
 export type LogStoreOptions = {
   /** Called with the sources to subscribe to, each time that list changes. */
   onWanted: (sources: LogSource[]) => void;
@@ -72,6 +82,8 @@ export class LogStore {
   #reported: string[] = [];
   #socket: SocketState = "connecting";
   #markers = 0;
+  /** One retry timer per retrying entry, by entry id. */
+  #timers = new Map<string, ReturnType<typeof setTimeout>>();
   #listeners = new Set<() => void>();
   /** The ids of the entries changed since the last snapshot, and whether anything changed at all. */
   #changed = new Set<string>();
@@ -107,6 +119,9 @@ export class LogStore {
       };
       if (!kept.has(id)) this.#touch(entry);
       next.push(entry);
+    }
+    for (const id of this.#timers.keys()) {
+      if (!next.some((entry) => entry.id === id)) this.#clearTimer(id);
     }
     this.#entries = next;
     this.#dirty = true;
@@ -144,6 +159,53 @@ export class LogStore {
         this.#touch(entry);
         break;
       }
+      case "ended": {
+        const entry = this.#byWire(message.source);
+        if (entry === undefined) return;
+        this.#ended(entry, message.reason, message.status ?? null);
+        break;
+      }
+    }
+    this.#changedWanted();
+  }
+
+  socketStatus(status: LogSocketStatus): void {
+    const socket = status === "closed" ? "reconnecting" : status;
+    if (socket === this.#socket) return;
+    this.#socket = socket;
+    this.#dirty = true;
+    this.#schedule();
+  }
+
+  /** A new socket knows none of the old wire ids: live entries wait for their backlog again. */
+  socketOpened(): void {
+    for (const entry of this.#entries) {
+      if (entry.state.state === "live") entry.state = { state: "opening" };
+      entry.wireId = null;
+      this.#touch(entry);
+    }
+    this.#changedWanted();
+  }
+
+  /** A retrying entry tries now instead of at the end of its wait. */
+  retryNow(id: string): void {
+    const entry = this.#entries.find((e) => e.id === id);
+    if (entry === undefined || entry.state.state !== "retrying") return;
+    this.#open(entry);
+  }
+
+  /** An ended or refused entry opens again, with a fresh count of tries. */
+  reconnect(id: string): void {
+    const entry = this.#entries.find((e) => e.id === id);
+    if (entry === undefined || (entry.state.state !== "ended" && entry.state.state !== "denied")) return;
+    entry.retries = 0;
+    this.#open(entry);
+  }
+
+  /** Every idle entry opens again. */
+  resume(): void {
+    for (const entry of this.#entries) {
+      if (entry.state.state === "idle") this.#open(entry, false);
     }
     this.#changedWanted();
   }
@@ -159,6 +221,7 @@ export class LogStore {
 
   /** Stops notifying: a frame already asked for does nothing. */
   dispose(): void {
+    for (const id of [...this.#timers.keys()]) this.#clearTimer(id);
     this.#disposed = true;
     this.#listeners.clear();
   }
@@ -179,6 +242,41 @@ export class LogStore {
         this.#touch(entry);
       }
     }
+  }
+
+  /** `idle` waits for resume, a passing reason is tried again up to five times, anything else waits for Reconnect. */
+  #ended(entry: SourceEntry, reason: string, status: number | null): void {
+    entry.wireId = null;
+    this.#touch(entry);
+    if (reason === "idle") {
+      entry.state = { state: "idle" };
+      return;
+    }
+    if (!RETRY_REASONS.has(reason) || entry.retries >= RETRY_MS.length) {
+      entry.state = { state: "ended", reason, status };
+      return;
+    }
+    const delay = reason === "worker_restarted" && entry.retries === 0 ? 0 : RETRY_MS[entry.retries];
+    entry.retries += 1;
+    entry.state = { state: "retrying", reason, attempt: entry.retries, at: this.#now() + delay };
+    this.#clearTimer(entry.id);
+    this.#timers.set(entry.id, setTimeout(() => this.#open(entry), delay));
+  }
+
+  /** Back to opening, so the entry is wanted again; `report` tells onWanted at once. */
+  #open(entry: SourceEntry, report = true): void {
+    this.#clearTimer(entry.id);
+    entry.state = { state: "opening" };
+    entry.wireId = null;
+    this.#touch(entry);
+    if (report) this.#changedWanted();
+  }
+
+  #clearTimer(id: string): void {
+    const timer = this.#timers.get(id);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.#timers.delete(id);
   }
 
   /** A backlog continues the rows when it holds the last line row; otherwise it starts a new run after a marker. */
