@@ -8,6 +8,8 @@ import { compileFilter } from "@/lib/logs/filter";
 import { LEVEL_GROUPS, LEVEL_LABELS, type LevelGroup } from "@/lib/logs/levels";
 import { MAX_FILTER, type ViewSettings } from "@/lib/logs/sources";
 
+type Filter = { q: string; regex: boolean };
+
 /** Typing waits this long after the last key before the filter changes. */
 const DEBOUNCE_MS = 200;
 
@@ -40,15 +42,20 @@ export function LogToolbar({ settings, onSettings, matched, total, onAddSource, 
   const errorId = useId();
   const [text, setText] = useState(settings.q);
   const [regex, setRegex] = useState(settings.regex);
-  // A filter that comes from outside (a view opened, a link) replaces what the field holds. The filter this toolbar
-  // handed on comes back too, possibly after more was typed: that echo leaves the field alone.
+  // A filter that comes from outside (a view opened, a link) replaces what the field holds. The filters this toolbar
+  // handed on come back too, possibly after more was typed: each echo leaves the field alone and is consumed, with
+  // those handed on before it. An outside filter forgets every hand-off still to come back.
   const [given, setGiven] = useState({ q: settings.q, regex: settings.regex });
-  const [sent, setSent] = useState<{ q: string; regex: boolean } | null>(null);
+  const [inFlight, setInFlight] = useState<Filter[]>([]);
   if (given.q !== settings.q || given.regex !== settings.regex) {
     setGiven({ q: settings.q, regex: settings.regex });
-    if (sent?.q !== settings.q || sent.regex !== settings.regex) {
+    const echo = inFlight.findIndex((f) => f.q === settings.q && f.regex === settings.regex);
+    if (echo === -1) {
       setText(settings.q);
       setRegex(settings.regex);
+      setInFlight([]);
+    } else {
+      setInFlight(inFlight.slice(echo + 1));
     }
   }
   const invalid = isInvalid(text, regex);
@@ -73,7 +80,7 @@ export function LogToolbar({ settings, onSettings, matched, total, onAddSource, 
     if (isInvalid(value, regex)) return;
     timer.current = setTimeout(() => {
       timer.current = null;
-      setSent({ q: value, regex });
+      setInFlight((list) => [...list, { q: value, regex }]);
       onSettings({ ...latest.current, q: value, regex });
     }, DEBOUNCE_MS);
   }
@@ -83,7 +90,7 @@ export function LogToolbar({ settings, onSettings, matched, total, onAddSource, 
     setRegex(next);
     cancel();
     if (isInvalid(text, next)) return;
-    setSent({ q: text, regex: next });
+    setInFlight((list) => [...list, { q: text, regex: next }]);
     onSettings({ ...settings, q: text, regex: next });
   }
 

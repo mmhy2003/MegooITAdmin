@@ -83,6 +83,40 @@ describe("LogToolbar", () => {
     expect(onSettings).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, q: "abc" });
   });
 
+  it("takes an outside filter equal to one it handed on before", () => {
+    vi.useFakeTimers();
+    const onSettings = vi.fn();
+    const at = (q: string) => <LogToolbar settings={{ ...DEFAULT_SETTINGS, q }} onSettings={onSettings} matched={0}
+      total={0} />;
+    const { rerender } = render(at(""));
+    fireEvent.change(field(), { target: { value: "ab" } });
+    act(() => vi.advanceTimersByTime(200));
+    rerender(at("ab"));
+    rerender(at(""));
+    expect(field()).toHaveValue("");
+    rerender(at("ab"));
+    expect(field()).toHaveValue("ab");
+  });
+
+  it("keeps the field through the echoes of two hand-offs that come back late", () => {
+    vi.useFakeTimers();
+    const onSettings = vi.fn();
+    const at = (q: string) => <LogToolbar settings={{ ...DEFAULT_SETTINGS, q }} onSettings={onSettings} matched={0}
+      total={0} />;
+    const { rerender } = render(at(""));
+    fireEvent.change(field(), { target: { value: "ab" } });
+    act(() => vi.advanceTimersByTime(200));
+    fireEvent.change(field(), { target: { value: "abc" } });
+    act(() => vi.advanceTimersByTime(200));
+    fireEvent.change(field(), { target: { value: "abcd" } });
+    rerender(at("ab"));
+    expect(field()).toHaveValue("abcd");
+    rerender(at("abc"));
+    expect(field()).toHaveValue("abcd");
+    rerender(at(""));
+    expect(field()).toHaveValue("");
+  });
+
   it("keeps the regex draft when its own switch comes back late", () => {
     const onSettings = vi.fn();
     const settings = { ...DEFAULT_SETTINGS, q: "a" };
