@@ -27,14 +27,16 @@ function rowsAfter(rows: Row[], key: string | null): number {
 /**
  * The virtualised rows of a pane. It follows appended rows while it is scrolled to the end, and pauses when the
  * person scrolls up: "Jump to latest" then counts the rows that came since. With wrap on, rows are measured.
+ * `onPaused` hears each change between following and paused.
  */
-export function LogList({ rows, utc, wrap, filter, tags, label }: {
+export function LogList({ rows, utc, wrap, filter, tags, label, onPaused }: {
   rows: Row[];
   utc: boolean;
   wrap: boolean;
   filter: CompiledFilter | null;
   tags: Map<string, { text: string; tone: number }> | null;
   label: string;
+  onPaused?: (paused: boolean) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The key of the last row when the list paused; undefined while it follows.
@@ -62,12 +64,18 @@ export function LogList({ rows, utc, wrap, filter, tags, label }: {
     const el = scrollRef.current;
     if (!el) return;
     const away = el.scrollHeight - el.scrollTop - el.clientHeight > END_THRESHOLD;
-    if (away && !paused) setPausedAt(rows.at(-1)?.key ?? null);
-    else if (!away && paused) setPausedAt(undefined);
+    if (away && !paused) {
+      setPausedAt(rows.at(-1)?.key ?? null);
+      onPaused?.(true);
+    } else if (!away && paused) {
+      setPausedAt(undefined);
+      onPaused?.(false);
+    }
   }
 
   function jump() {
     setPausedAt(undefined);
+    onPaused?.(false);
     if (rows.length > 0) virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
   }
 
