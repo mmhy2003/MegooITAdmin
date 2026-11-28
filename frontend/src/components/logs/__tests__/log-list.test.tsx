@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockElementSize } from "@/__tests__/helpers/element-size";
 import { LogList } from "@/components/logs/log-list";
 import { clock } from "@/lib/logs/download";
@@ -79,6 +79,30 @@ describe("LogList", () => {
     const jump = screen.getByRole("button", { name: "Jump to latest · 3 new" });
     await userEvent.click(jump);
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).not.toBeInTheDocument();
+  });
+
+  it("says no count once the row seen at the pause is gone", () => {
+    const { rerender } = render(list(lines(50)));
+    const scroller = screen.getByRole("log");
+    act(() => {
+      scroller.scrollTop = 100;
+      fireEvent.scroll(scroller);
+    });
+    rerender(list(lines(50, 60)));
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toBeInTheDocument();
+  });
+
+  it("forgets the wrapped heights when wrap goes off", () => {
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      if (this.hasAttribute("data-log-scroll")) return 400;
+      return this.getAttribute("data-index") === "0" ? 60 : 20;
+    });
+    const { container, rerender } = render(list(lines(5), { wrap: true }));
+    const offsets = () =>
+      [...container.querySelectorAll<HTMLElement>("[data-index]")].map((el) => el.style.transform);
+    expect(offsets()[1]).toBe("translateY(60px)");
+    rerender(list(lines(5)));
+    expect(offsets()).toEqual([0, 20, 40, 60, 80].map((y) => `translateY(${y}px)`));
   });
 
   it("keeps following within 24 px of the end", () => {

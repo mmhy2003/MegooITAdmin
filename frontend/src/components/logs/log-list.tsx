@@ -1,7 +1,7 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { LogLine } from "@/components/logs/log-line";
 import { Button } from "@/components/ui/button";
 import type { CompiledFilter } from "@/lib/logs/filter";
@@ -12,12 +12,16 @@ import { cn } from "@/lib/utils";
 const END_THRESHOLD = 24;
 const ROW_HEIGHT = 20;
 
-/** How many rows come after the row with `key`, looking from the end. */
+/**
+ * How many rows come after the row with `key`, looking from the end; every row when the list was empty (null). A
+ * key that is gone (trimmed by the cap, or hidden by a filter) gives 0: the count is no longer known.
+ */
 function rowsAfter(rows: Row[], key: string | null): number {
+  if (key === null) return rows.length;
   for (let i = rows.length - 1; i >= 0; i--) {
     if (rows[i].key === key) return rows.length - 1 - i;
   }
-  return key === null ? 0 : rows.length;
+  return 0;
 }
 
 /**
@@ -48,6 +52,11 @@ export function LogList({ rows, utc, wrap, filter, tags, label }: {
     overscan: 20,
   });
   const paused = pausedAt !== undefined;
+
+  // Measured heights stay in the virtualizer's cache: drop them when wrap changes, so rows go back to their estimate.
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [virtualizer, wrap]);
 
   function onScroll() {
     const el = scrollRef.current;
