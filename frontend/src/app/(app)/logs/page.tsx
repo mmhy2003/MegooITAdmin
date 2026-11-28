@@ -1,9 +1,14 @@
 import type { Metadata } from "next";
-import { PlaceholderPage } from "@/components/placeholder-page";
+import { Suspense } from "react";
+import { LogsPage } from "@/components/logs/logs-page";
 import { navItem } from "@/lib/navigation";
 
 export const metadata: Metadata = { title: navItem("/logs").title };
 
-export default function LogsPage() {
-  return <PlaceholderPage href="/logs" />;
+export default function LogsRoute() {
+  return (
+    <Suspense>
+      <LogsPage />
+    </Suspense>
+  );
 }
