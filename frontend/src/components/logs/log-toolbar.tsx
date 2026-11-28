@@ -40,12 +40,16 @@ export function LogToolbar({ settings, onSettings, matched, total, onAddSource, 
   const errorId = useId();
   const [text, setText] = useState(settings.q);
   const [regex, setRegex] = useState(settings.regex);
-  // A filter that comes from outside (a view opened, a link) replaces what the field holds.
+  // A filter that comes from outside (a view opened, a link) replaces what the field holds. The filter this toolbar
+  // handed on comes back too, possibly after more was typed: that echo leaves the field alone.
   const [given, setGiven] = useState({ q: settings.q, regex: settings.regex });
+  const [sent, setSent] = useState<{ q: string; regex: boolean } | null>(null);
   if (given.q !== settings.q || given.regex !== settings.regex) {
     setGiven({ q: settings.q, regex: settings.regex });
-    setText(settings.q);
-    setRegex(settings.regex);
+    if (sent?.q !== settings.q || sent.regex !== settings.regex) {
+      setText(settings.q);
+      setRegex(settings.regex);
+    }
   }
   const invalid = isInvalid(text, regex);
 
@@ -69,6 +73,7 @@ export function LogToolbar({ settings, onSettings, matched, total, onAddSource, 
     if (isInvalid(value, regex)) return;
     timer.current = setTimeout(() => {
       timer.current = null;
+      setSent({ q: value, regex });
       onSettings({ ...latest.current, q: value, regex });
     }, DEBOUNCE_MS);
   }
@@ -77,7 +82,9 @@ export function LogToolbar({ settings, onSettings, matched, total, onAddSource, 
     const next = !regex;
     setRegex(next);
     cancel();
-    if (!isInvalid(text, next)) onSettings({ ...settings, q: text, regex: next });
+    if (isInvalid(text, next)) return;
+    setSent({ q: text, regex: next });
+    onSettings({ ...settings, q: text, regex: next });
   }
 
   function switchLevel(level: LevelGroup) {

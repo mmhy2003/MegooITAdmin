@@ -22,12 +22,17 @@ export function useFiltered(lists: Row[][], settings: ViewSettings): Filtered {
   // One cache per filter: a new filter tests every line again, the same one only the lines that came since.
   const cache = useMemo(() => new FilterCache(filter), [filter]);
   const levelsKey = settings.levels.join(",");
-  const levels = useMemo(() => new Set(levelsKey.split(",") as LevelGroup[]), [levelsKey]);
-  // Bumped by each frame while lines are left to test, so the next slice runs.
+  // No levels on gives an empty set, not one holding "".
+  const levels = useMemo(
+    () => new Set(levelsKey === "" ? [] : (levelsKey.split(",") as LevelGroup[])),
+    [levelsKey],
+  );
+  // A tick, bumped by each frame while lines are left to test: its value is never read, but as a dependency of the
+  // memo below it makes the next slice run.
   const [frame, setFrame] = useState(0);
 
   const result = useMemo(() => {
-    void frame;
+    void frame; // only a dependency: see `frame` above
     let budget = SLICE;
     let matched = 0;
     let total = 0;

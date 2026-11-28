@@ -67,6 +67,33 @@ describe("LogToolbar", () => {
     expect(field()).toHaveValue("sshd");
   });
 
+  it("keeps what was typed since when its own filter comes back late", () => {
+    vi.useFakeTimers();
+    const onSettings = vi.fn();
+    const { rerender } = render(<LogToolbar settings={DEFAULT_SETTINGS} onSettings={onSettings} matched={0}
+      total={0} />);
+    fireEvent.change(field(), { target: { value: "ab" } });
+    act(() => vi.advanceTimersByTime(200));
+    expect(onSettings).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, q: "ab" });
+    fireEvent.change(field(), { target: { value: "abc" } });
+    rerender(<LogToolbar settings={{ ...DEFAULT_SETTINGS, q: "ab" }} onSettings={onSettings} matched={0}
+      total={0} />);
+    expect(field()).toHaveValue("abc");
+    act(() => vi.advanceTimersByTime(200));
+    expect(onSettings).toHaveBeenLastCalledWith({ ...DEFAULT_SETTINGS, q: "abc" });
+  });
+
+  it("keeps the regex draft when its own switch comes back late", () => {
+    const onSettings = vi.fn();
+    const settings = { ...DEFAULT_SETTINGS, q: "a" };
+    const { rerender } = render(<LogToolbar settings={settings} onSettings={onSettings} matched={0} total={0} />);
+    fireEvent.click(screen.getByRole("button", { name: "Regex" }));
+    fireEvent.change(field(), { target: { value: "a(" } });
+    rerender(<LogToolbar settings={{ ...settings, regex: true }} onSettings={onSettings} matched={0} total={0} />);
+    expect(field()).toHaveValue("a(");
+    expect(field()).toHaveAttribute("aria-invalid", "true");
+  });
+
   it("switches the regex on with the text in the field", () => {
     const settings = { ...DEFAULT_SETTINGS, q: "err|warn" };
     const { onSettings } = toolbar({ settings });
