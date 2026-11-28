@@ -177,6 +177,87 @@
   }
 }
 
+/* Log lines: the 16 terminal colours, the filter's matches, the source tags of a merged pane and the level tags. */
+@layer components {
+  .ansi-fg-0,
+  .ansi-fg-8 {
+    color: var(--muted-foreground);
+  }
+  .ansi-fg-1,
+  .ansi-fg-9 {
+    color: var(--pink-ink);
+  }
+  .ansi-fg-2,
+  .ansi-fg-10 {
+    color: var(--green-ink);
+  }
+  .ansi-fg-3,
+  .ansi-fg-11 {
+    color: var(--amber-ink);
+  }
+  .ansi-fg-4,
+  .ansi-fg-12,
+  .ansi-fg-6,
+  .ansi-fg-14 {
+    color: var(--cyan-ink);
+  }
+  .ansi-fg-5,
+  .ansi-fg-13 {
+    color: var(--violet);
+  }
+  .ansi-fg-7,
+  .ansi-fg-15 {
+    color: var(--fg);
+  }
+  .ansi-bold {
+    font-weight: 600;
+  }
+  .ansi-dim {
+    opacity: 0.7;
+  }
+  .ansi-italic {
+    font-style: italic;
+  }
+  .ansi-underline {
+    text-decoration: underline;
+  }
+  .log-match {
+    background: color-mix(in srgb, var(--amber) 30%, transparent);
+    color: inherit;
+    border-radius: 2px;
+  }
+  .log-tag-0 {
+    color: var(--cyan-ink);
+  }
+  .log-tag-1 {
+    color: var(--pink-ink);
+  }
+  .log-tag-2 {
+    color: var(--green-ink);
+  }
+  .log-tag-3 {
+    color: var(--amber-ink);
+  }
+  .log-tag-4 {
+    color: var(--violet);
+  }
+  .log-tag-5 {
+    color: var(--fg);
+  }
+  .log-level-error {
+    color: var(--pink-ink);
+  }
+  .log-level-warning {
+    color: var(--amber-ink);
+  }
+  .log-level-info {
+    color: var(--cyan-ink);
+  }
+  .log-level-debug {
+    color: var(--muted-foreground);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [data-slot="sidebar-gap"],
   [data-slot="sidebar-container"],
