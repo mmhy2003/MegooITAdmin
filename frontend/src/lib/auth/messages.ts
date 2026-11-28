@@ -42,6 +42,10 @@ const MESSAGES: Record<string, string> = {
   bad_telegram_token: "This is not a Telegram bot token.",
   bad_chat_id: "This is not a Telegram chat ID.",
   email_not_set_up: "Set up email first.",
+  view_name_taken: "You have a view with this name already.",
+  too_many_views: "You have 100 saved views, the most allowed. Delete one first.",
+  pattern_exists: "This pattern is in the list already.",
+  too_many_patterns: "This group has 50 patterns, the most allowed. Remove one first.",
 };
 
 /** The text shown for an `ApiError` detail. */
